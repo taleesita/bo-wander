@@ -2855,10 +2855,17 @@
 
       // Check-in / check-out times
       // Strategy 1: Booking.com format — "Check-in Wednesday, May 6, 2026 (3:00 PM - 10:00 PM)"
-      const ciParenMatch = full.match(/check[\s-]?in[^()]*\(\s*(\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM))/i);
-      if (ciParenMatch) result.checkInTime = ciParenMatch[1].replace(/\s+/g, ' ').trim();
-      const coParenMatch = full.match(/check[\s-]?out[^()]*\(\s*(\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM))/i);
-      if (coParenMatch) result.checkOutTime = coParenMatch[1].replace(/\s+/g, ' ').trim();
+      // For check-in ranges, take the EARLY (first) time; for check-out ranges, take the LATE (last) time
+      const ciParenMatch = full.match(/check[\s-]?in[^()]*\(([^)]+)\)/i);
+      if (ciParenMatch) {
+        const ciTimes = ciParenMatch[1].match(/(\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM))/gi);
+        if (ciTimes) result.checkInTime = ciTimes[0].replace(/\s+/g, ' ').trim(); // earliest
+      }
+      const coParenMatch = full.match(/check[\s-]?out[^()]*\(([^)]+)\)/i);
+      if (coParenMatch) {
+        const coTimes = coParenMatch[1].match(/(\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM))/gi);
+        if (coTimes) result.checkOutTime = coTimes[coTimes.length - 1].replace(/\s+/g, ' ').trim(); // latest
+      }
       // Strategy 2: Labeled time — "Check-in time: 3:00 PM" or "Check-in: ... 3:00 PM"
       if (!result.checkInTime) {
         const ciTimeMatch = full.match(/check[\s-]?in\s*(?:time)?[:\s]+.*?(\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM))/i);
@@ -3074,8 +3081,68 @@
       const [geocodingName, setGeocodingName] = useState(false);
       const [resolvedLat, setResolvedLat] = useState(0);
       const [resolvedLng, setResolvedLng] = useState(0);
+      const [usdPrice, setUsdPrice] = useState('');
+      const [exchangeRate, setExchangeRate] = useState(null);
+      const [exchangeRateDate, setExchangeRateDate] = useState('');
+      const [priceCurrency, setPriceCurrency] = useState('');
       const geocodeTimerRef = useRef(null);
       const fileInputRef = useRef(null);
+
+      // Detect currency from price string and fetch USD conversion
+      const CURRENCY_SYMBOLS = { '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR', '₩': 'KRW', '฿': 'THB', '₫': 'VND', '₱': 'PHP', 'R$': 'BRL', 'kr': 'SEK' };
+      const CURRENCY_CODES = { USD: 1, EUR: 1, GBP: 1, JPY: 1, INR: 1, KRW: 1, THB: 1, VND: 1, PHP: 1, BRL: 1, SEK: 1, AUD: 1, CAD: 1, CHF: 1, CNY: 1, NZD: 1, MXN: 1, SGD: 1, HKD: 1, TWD: 1, CZK: 1, PLN: 1, DKK: 1, NOK: 1, HUF: 1, ILS: 1, ZAR: 1, MYR: 1, IDR: 1, ARS: 1, CLP: 1, COP: 1, PEN: 1 };
+
+      const detectCurrency = (priceStr) => {
+        if (!priceStr) return null;
+        for (const [sym, code] of Object.entries(CURRENCY_SYMBOLS)) {
+          if (priceStr.includes(sym)) return code;
+        }
+        const codeMatch = priceStr.match(/([A-Z]{3})/);
+        if (codeMatch && CURRENCY_CODES[codeMatch[1]]) return codeMatch[1];
+        return null;
+      };
+
+      const extractNumericPrice = (priceStr) => {
+        if (!priceStr) return 0;
+        const cleaned = priceStr.replace(/[^0-9.,]/g, '');
+        // Handle comma as thousands separator (e.g., ¥561,600)
+        const num = parseFloat(cleaned.replace(/,/g, ''));
+        return isNaN(num) ? 0 : num;
+      };
+
+      const fetchExchangeRate = useCallback(async (currency, dateStr) => {
+        if (!currency || currency === 'USD') {
+          setUsdPrice(''); setExchangeRate(null); setPriceCurrency('');
+          return;
+        }
+        setPriceCurrency(currency);
+        try {
+          // Try check-in date first, fallback to latest
+          let apiDate = 'latest';
+          if (dateStr) {
+            const d = new Date(dateStr);
+            if (!isNaN(d.getTime())) {
+              const today = new Date();
+              // Only use historical if date is in the past
+              if (d <= today) {
+                apiDate = d.toISOString().split('T')[0];
+              }
+            }
+          }
+          const resp = await fetch(`https://api.frankfurter.app/${apiDate}?from=${currency}&to=USD`);
+          const data = await resp.json();
+          if (data.rates?.USD) {
+            setExchangeRate(data.rates.USD);
+            setExchangeRateDate(data.date || apiDate);
+            const numPrice = extractNumericPrice(price);
+            if (numPrice > 0) {
+              setUsdPrice('$' + (numPrice * data.rates.USD).toFixed(2));
+            }
+          }
+        } catch {
+          // Silently fail — conversion is nice-to-have
+        }
+      }, [price]);
 
       // Geocode hotel name to get address (like add places)
       const geocodeHotelName = useCallback(async (name) => {
@@ -3235,7 +3302,7 @@
           lng: resolvedLng,
           description: [
             roomType && `Room: ${roomType}`,
-            price && `Price: ${price}`,
+            price && `Price: ${price}${usdPrice ? ' (' + usdPrice + ' USD)' : ''}`,
             checkIn && `Check-in: ${checkIn}${checkInTime ? ' at ' + checkInTime : ''}`,
             checkOut && `Check-out: ${checkOut}${checkOutTime ? ' at ' + checkOutTime : ''}`,
             confirmationNumber && `Confirmation #: ${confirmationNumber}`,
@@ -3256,11 +3323,35 @@
             booking_source: bookingSource,
             room_type: roomType,
             price: price,
+            price_usd: usdPrice || '',
+            exchange_rate: exchangeRate || null,
+            exchange_rate_date: exchangeRateDate || '',
+            price_currency: priceCurrency || '',
             includes_breakfast: includesBreakfast,
           },
           attachment: fileDataUrl ? { name: fileName, data: fileDataUrl, thumbnail: fileThumbnail } : null,
         });
       };
+
+      // Auto-fetch exchange rate when price or check-in changes
+      useEffect(() => {
+        const currency = detectCurrency(price);
+        if (currency && currency !== 'USD') {
+          fetchExchangeRate(currency, checkIn);
+        } else {
+          setUsdPrice(''); setExchangeRate(null); setPriceCurrency('');
+        }
+      }, [price, checkIn]);
+
+      // Update USD price when exchange rate changes
+      useEffect(() => {
+        if (exchangeRate && price) {
+          const numPrice = extractNumericPrice(price);
+          if (numPrice > 0) {
+            setUsdPrice('$' + (numPrice * exchangeRate).toFixed(2));
+          }
+        }
+      }, [exchangeRate, price]);
 
       const inputClass = "w-full px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm";
 
@@ -3370,7 +3461,7 @@
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Hotel / Property *</label>
                     <div className="relative">
-                      <input type="text" value={propertyName} onChange={e => handlePropertyNameChange(e.target.value)} placeholder="e.g. MIMARU SUITES Kyoto Shijo" className={inputClass} autoFocus />
+                      <input type="text" value={propertyName} onChange={e => handlePropertyNameChange(e.target.value)} placeholder="e.g. MIMARU SUITES Kyoto Shijo" className={inputClass} autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" />
                       {geocodingName && <span className="absolute right-3 top-2.5 text-xs text-gray-400 animate-pulse">Looking up...</span>}
                     </div>
                     {addressSuggestions.length > 0 && (
@@ -3392,30 +3483,35 @@
                   {/* Address */}
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Address</label>
-                    <input type="text" value={address} onChange={e => { setAddress(e.target.value); setAddressSuggestions([]); }} placeholder="Hotel address (auto-filled from name)" className={inputClass} />
+                    <input type="text" value={address} onChange={e => { setAddress(e.target.value); setAddressSuggestions([]); }} placeholder="Hotel address (auto-filled from name)" className={inputClass} autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" />
                   </div>
 
                   {/* Room Type */}
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Room Type</label>
-                    <input type="text" value={roomType} onChange={e => setRoomType(e.target.value)} placeholder="e.g. Superior Two-Bedroom Suite" className={inputClass} />
+                    <input type="text" value={roomType} onChange={e => setRoomType(e.target.value)} placeholder="e.g. Superior Two-Bedroom Suite" className={inputClass} autoComplete="off" data-1p-ignore />
                   </div>
 
                   {/* Price */}
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Price</label>
-                    <input type="text" value={price} onChange={e => setPrice(e.target.value)} placeholder="e.g. ¥176,951" className={inputClass} />
+                    <input type="text" value={price} onChange={e => setPrice(e.target.value)} placeholder="e.g. ¥176,951" className={inputClass} autoComplete="off" data-1p-ignore />
+                    {usdPrice && (
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                        ≈ {usdPrice} USD {exchangeRateDate && <span className="text-gray-400 dark:text-gray-500">(rate as of {exchangeRateDate})</span>}
+                      </p>
+                    )}
                   </div>
 
                   {/* Check-in date + time */}
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Check-in Date</label>
-                      <input type="text" value={checkIn} onChange={e => setCheckIn(e.target.value)} placeholder="e.g. Mar 23, 2026" className={inputClass} />
+                      <input type="text" value={checkIn} onChange={e => setCheckIn(e.target.value)} placeholder="e.g. Mar 23, 2026" className={inputClass} autoComplete="off" data-1p-ignore />
                     </div>
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Check-in Time</label>
-                      <input type="text" value={checkInTime} onChange={e => setCheckInTime(e.target.value)} placeholder="e.g. 4:00 PM" className={inputClass} />
+                      <input type="text" value={checkInTime} onChange={e => setCheckInTime(e.target.value)} placeholder="e.g. 4:00 PM" className={inputClass} autoComplete="off" data-1p-ignore />
                     </div>
                   </div>
 
@@ -3423,11 +3519,11 @@
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Check-out Date</label>
-                      <input type="text" value={checkOut} onChange={e => setCheckOut(e.target.value)} placeholder="e.g. Apr 28, 2026" className={inputClass} />
+                      <input type="text" value={checkOut} onChange={e => setCheckOut(e.target.value)} placeholder="e.g. Apr 28, 2026" className={inputClass} autoComplete="off" data-1p-ignore />
                     </div>
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Check-out Time</label>
-                      <input type="text" value={checkOutTime} onChange={e => setCheckOutTime(e.target.value)} placeholder="e.g. 12:00 PM" className={inputClass} />
+                      <input type="text" value={checkOutTime} onChange={e => setCheckOutTime(e.target.value)} placeholder="e.g. 12:00 PM" className={inputClass} autoComplete="off" data-1p-ignore />
                     </div>
                   </div>
 
@@ -3435,18 +3531,18 @@
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Confirmation #</label>
-                      <input type="text" value={confirmationNumber} onChange={e => setConfirmationNumber(e.target.value)} placeholder="e.g. 6232626558" className={inputClass} />
+                      <input type="text" value={confirmationNumber} onChange={e => setConfirmationNumber(e.target.value)} placeholder="e.g. 6232626558" className={inputClass} autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" />
                     </div>
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">PIN</label>
-                      <input type="text" value={pin} onChange={e => setPin(e.target.value)} placeholder="e.g. 1234" className={inputClass} />
+                      <input type="text" value={pin} onChange={e => setPin(e.target.value)} placeholder="e.g. 1234" className={inputClass} autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" />
                     </div>
                   </div>
 
                   {/* Booking Source */}
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Booking Source</label>
-                    <input type="text" value={bookingSource} onChange={e => setBookingSource(e.target.value)} placeholder="e.g. Booking.com, Airbnb" className={inputClass} />
+                    <input type="text" value={bookingSource} onChange={e => setBookingSource(e.target.value)} placeholder="e.g. Booking.com, Airbnb" className={inputClass} autoComplete="off" data-1p-ignore />
                   </div>
 
                   {/* Includes Breakfast */}
