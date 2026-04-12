@@ -2076,30 +2076,75 @@
       const [searching, setSearching] = useState(false);
       const timerRef = useRef(null);
 
-      const doSearch = useCallback((q) => {
+      // Search Google Places API
+      const searchGoogle = useCallback(async (q) => {
+        const apiKey = getGoogleApiKey();
+        if (!apiKey) return [];
+        try {
+          const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Goog-Api-Key': apiKey,
+              'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types'
+            },
+            body: JSON.stringify({ textQuery: q, maxResultCount: 5 })
+          });
+          if (!resp.ok) return [];
+          const data = await resp.json();
+          return (data.places || []).map(p => ({
+            name: p.displayName?.text || '',
+            address: p.formattedAddress || '',
+            lat: p.location?.latitude,
+            lng: p.location?.longitude,
+            type: p.types?.[0] || '',
+            source: 'google',
+          })).filter(r => r.name && r.lat && r.lng);
+        } catch { return []; }
+      }, []);
+
+      const doSearch = useCallback(async (q) => {
         if (q.length < 2) { setResults([]); return; }
         setSearching(true);
-        fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=8`)
-          .then(r => r.json())
-          .then(data => {
-            setResults((data.features || []).map(f => {
-              const p = f.properties || {};
-              const geo = f.geometry?.coordinates || [];
-              const name = p.name || p.street || '';
-              const parts = [p.street, p.housenumber].filter(Boolean).join(' ');
-              const locality = [p.city || p.town || p.village, p.state, p.country].filter(Boolean).join(', ');
-              return {
-                name,
-                address: [parts || name, locality].filter(Boolean).join(', '),
-                lat: geo[1],
-                lng: geo[0],
-                type: p.osm_value || p.osm_key || '',
-              };
-            }).filter(r => r.name && r.lat && r.lng));
-            setSearching(false);
-          })
-          .catch(() => setSearching(false));
-      }, []);
+        try {
+          // Search Photon (OSM) first
+          const photonResp = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=5`);
+          const photonData = await photonResp.json();
+          const photonResults = (photonData.features || []).map(f => {
+            const p = f.properties || {};
+            const geo = f.geometry?.coordinates || [];
+            const name = p.name || p.street || '';
+            const parts = [p.street, p.housenumber].filter(Boolean).join(' ');
+            const locality = [p.city || p.town || p.village, p.state, p.country].filter(Boolean).join(', ');
+            return {
+              name,
+              address: [parts || name, locality].filter(Boolean).join(', '),
+              lat: geo[1],
+              lng: geo[0],
+              type: p.osm_value || p.osm_key || '',
+              source: 'osm',
+            };
+          }).filter(r => r.name && r.lat && r.lng);
+
+          // Also search Google Places for businesses
+          const googleResults = await searchGoogle(q);
+
+          // Merge: Google results first (better for businesses), then Photon, deduplicate by name
+          const seen = new Set();
+          const merged = [];
+          for (const r of [...googleResults, ...photonResults]) {
+            const key = r.name.toLowerCase().trim();
+            if (!seen.has(key)) {
+              seen.add(key);
+              merged.push(r);
+            }
+          }
+          setResults(merged.slice(0, 8));
+        } catch {
+          setResults([]);
+        }
+        setSearching(false);
+      }, [searchGoogle]);
 
       const handleInput = (val) => {
         setQuery(val);
@@ -2114,7 +2159,7 @@
               type="text"
               value={query}
               onChange={e => handleInput(e.target.value)}
-              placeholder="Search for a place (e.g. Bombolona Bakehouse)..."
+              placeholder="Search for a place (e.g. Brooklyn Granary & Mill)..."
               className="w-full px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white pr-8"
               autoFocus
             />
@@ -3007,32 +3052,53 @@
 
     const SourceField = ({ value, onChange, allPins }) => {
       const [showCustom, setShowCustom] = useState(false);
-      const [customValue, setCustomValue] = useState(value && !['Lonely Planet', 'Eater', 'Google Maps', 'Yelp', 'Friend recommendation', 'Sarah R.', "Doug's friend"].includes(value) ? value : '');
+      const [showManage, setShowManage] = useState(false);
+      const [customValue, setCustomValue] = useState('');
+      const [hiddenSources, setHiddenSources] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('boWanderHiddenSources') || '[]'); } catch { return []; }
+      });
 
-      const commonSources = ['Lonely Planet', 'Eater', 'Google Maps', 'Yelp', 'Friend recommendation', 'Sarah R.', "Doug's friend"];
-      const uniqueSources = [...new Set(allPins.map(p => p.source_name).filter(s => s && !commonSources.includes(s)))];
-      const allSources = [...commonSources, ...uniqueSources];
+      const defaultSources = ['Lonely Planet', 'Eater', 'Google Maps', 'Yelp', 'Friend recommendation', 'Sarah R.', "Doug's friend"];
+      const uniqueSources = [...new Set(allPins.map(p => p.source_name).filter(s => s && !defaultSources.includes(s)))];
+      const allSources = [...defaultSources, ...uniqueSources].filter(s => !hiddenSources.includes(s));
+
+      const handleHideSource = (src) => {
+        const updated = [...hiddenSources, src];
+        setHiddenSources(updated);
+        localStorage.setItem('boWanderHiddenSources', JSON.stringify(updated));
+        if (value === src) onChange('');
+      };
+      const handleRestoreSource = (src) => {
+        const updated = hiddenSources.filter(s => s !== src);
+        setHiddenSources(updated);
+        localStorage.setItem('boWanderHiddenSources', JSON.stringify(updated));
+      };
 
       return (
         <div className="space-y-2">
-          <select
-            value={showCustom ? '__custom__' : (value || '')}
-            onChange={e => {
-              if (e.target.value === '__custom__') {
-                setShowCustom(true);
-              } else {
-                onChange(e.target.value);
-                setShowCustom(false);
-              }
-            }}
-            className="w-full px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white"
-          >
-            <option value="">Select a source...</option>
-            {allSources.map(src => (
-              <option key={src} value={src}>{src}</option>
-            ))}
-            <option value="__custom__">Custom...</option>
-          </select>
+          <div className="flex gap-2">
+            <select
+              value={showCustom ? '__custom__' : (value || '')}
+              onChange={e => {
+                if (e.target.value === '__custom__') {
+                  setShowCustom(true);
+                } else if (e.target.value === '__manage__') {
+                  setShowManage(true);
+                } else {
+                  onChange(e.target.value);
+                  setShowCustom(false);
+                }
+              }}
+              className="flex-1 px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white"
+            >
+              <option value="">Select a source...</option>
+              {allSources.map(src => (
+                <option key={src} value={src}>{src}</option>
+              ))}
+              <option value="__custom__">+ Add custom...</option>
+              <option value="__manage__">Manage sources...</option>
+            </select>
+          </div>
           {showCustom && (
             <input
               type="text"
@@ -3046,11 +3112,42 @@
               autoFocus
             />
           )}
+          {showManage && (
+            <div className="border rounded-lg dark:border-slate-700 p-3 space-y-2 bg-gray-50 dark:bg-slate-800">
+              <div className="flex justify-between items-center mb-1">
+                <p className="text-xs font-semibold text-gray-600 dark:text-gray-400">Manage Sources</p>
+                <button onClick={() => setShowManage(false)} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">Done</button>
+              </div>
+              {allSources.map(src => (
+                <div key={src} className="flex justify-between items-center py-1">
+                  <span className="text-sm dark:text-white">{src}</span>
+                  <button
+                    onClick={() => handleHideSource(src)}
+                    className="text-xs text-red-500 hover:underline"
+                  >Remove</button>
+                </div>
+              ))}
+              {hiddenSources.length > 0 && (
+                <div className="pt-2 border-t dark:border-slate-700">
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Removed</p>
+                  {hiddenSources.map(src => (
+                    <div key={src} className="flex justify-between items-center py-1">
+                      <span className="text-sm text-gray-400 dark:text-gray-500">{src}</span>
+                      <button
+                        onClick={() => handleRestoreSource(src)}
+                        className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                      >Restore</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       );
     };
 
-    const PinEditForm = ({ pin, collections, onSave, onCancel, isDarkMode, onAddCollection, allPins = [], customIcons = [], onUploadIcon }) => {
+    const PinEditForm = ({ pin, collections, onSave, onCancel, isDarkMode, onAddCollection, allPins = [], customIcons = [], onUploadIcon, onMapCenter }) => {
       const [formData, setFormData] = useState(pin);
       const [showEmojiPicker, setShowEmojiPicker] = useState(false);
       const [showPlaceSearch, setShowPlaceSearch] = useState(!pin.id && !pin.lat);
@@ -3073,6 +3170,10 @@
           category: result.category,
         }));
         setShowPlaceSearch(false);
+        // Center map on the selected place
+        if (onMapCenter && place.lat && place.lng) {
+          onMapCenter({ lat: place.lat, lng: place.lng });
+        }
       };
 
       const handleCreateCollection = () => {
@@ -3175,6 +3276,16 @@
                   </div>
 
                   <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Source</label>
+                    <SourceField value={formData.source_name || ''} onChange={e => handleChange('source_name', e)} allPins={allPins} />
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Category</label>
+                    <CategoryField value={formData.category || 'other'} onChange={cat => handleChange('category', cat)} />
+                  </div>
+
+                  <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Description</label>
                     <textarea
                       value={formData.description || ''}
@@ -3183,16 +3294,6 @@
                       rows={2}
                       placeholder="What's special about this place?"
                     />
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Source</label>
-                    <SourceField value={formData.source_name || ''} onChange={e => handleChange('source_name', e)} allPins={allPins} />
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Category</label>
-                    <CategoryField value={formData.category || 'other'} onChange={cat => handleChange('category', cat)} />
                   </div>
 
                   {pin.id && (
@@ -5014,6 +5115,7 @@
               allPins={pins}
               customIcons={customIcons}
               onUploadIcon={handleUploadIcon}
+              onMapCenter={setMapCenter}
             />
           )}
 
