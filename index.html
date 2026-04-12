@@ -2,13 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Bo Wander - Travel Planning</title>
 
   <!-- PWA Manifest -->
   <link rel="manifest" href="data:application/manifest+json;base64,ewogICJuYW1lIjogIkJvIFdhbmRlciIsCiAgInNob3J0X25hbWUiOiAiQm8gV2FuZGVyIiwKICAiZGVzY3JpcHRpb24iOiAiWW91ciBwcml2YXRlIHRyYXZlbCBtYXAiLAogICJzdGFydF91cmwiOiAiLiIsCiAgImRpc3BsYXkiOiAic3RhbmRhbG9uZSIsCiAgInNjb3BlIjogIi8iLAogICJ0aGVtZV9jb2xvciI6ICIjMjU2M0VCIiwKICAiYmFja2dyb3VuZF9jb2xvciI6ICIjZmZmZmZmIiwKICAiaWNvbnMiOiBbCiAgICB7CiAgICAgICJzcmMiOiAiaWNvbi5wbmciLAogICAgICAic2l6ZXMiOiAiMTkyeDE5MiIsCiAgICAgICJ0eXBlIjogImltYWdlL3BuZyIsCiAgICAgICJwdXJwb3NlIjogImFueSBtYXNrYWJsZSIKICAgIH0KICBdCn0=" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗺️</text></svg>">
-  <link rel="apple-touch-icon" href="icon.png">
+  <link rel="apple-touch-icon" href="data:image/png;base64,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">
   <meta name="theme-color" content="#2563EB">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -98,12 +98,12 @@
 
     .bottom-sheet {
       position: fixed;
-      bottom: 60px;
+      bottom: 0;
       left: 0;
       right: 0;
       background: white;
       border-radius: 16px 16px 0 0;
-      max-height: 80vh;
+      max-height: 85vh;
       overflow-y: auto;
       z-index: 1100;
       box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
@@ -2120,7 +2120,7 @@
               return (
                 <button
                   key={pin.id}
-                  className="w-full text-left px-3 py-2.5 hover:bg-blue-50 dark:hover:bg-slate-700 transition flex items-center gap-2 border-b dark:border-slate-700"
+                  className="w-full text-left px-2.5 py-1.5 hover:bg-blue-50 dark:hover:bg-slate-700 transition flex items-center gap-2 border-b dark:border-slate-700"
                   onClick={() => {
                     onSelectPin(pin);
                     setQuery('');
@@ -2129,29 +2129,24 @@
                   }}
                 >
                   {isCustomIcon(pin.emoji) ? (
-                    <img src={pin.emoji} alt="" className="w-6 h-6 rounded-full object-cover flex-shrink-0" />
+                    <img src={pin.emoji} alt="" className="w-5 h-5 rounded-full object-cover flex-shrink-0" />
                   ) : (
-                    <span className="w-6 h-6 rounded-full flex items-center justify-center text-xs flex-shrink-0" style={{ backgroundColor: catData.color, color: 'white' }}>{pin.emoji}</span>
+                    <span className="text-sm flex-shrink-0">{pin.emoji}</span>
                   )}
-                  <div className="flex-1 min-w-0">
-                    <span className="font-semibold text-sm dark:text-white">{pin.name}</span>
-                    <span className="text-xs text-gray-500 dark:text-gray-400 ml-2">{catData.label}</span>
-                    {pin.collection_id !== activeCollection && collections && (
-                      <span className="text-xs text-gray-400 ml-1">· {collections.find(c => c.id === pin.collection_id)?.name}</span>
-                    )}
-                  </div>
+                  <span className="font-medium text-sm dark:text-white truncate">{pin.name}</span>
+                  <span className="text-xs text-gray-400 truncate ml-auto flex-shrink-0">{catData.label}</span>
                 </button>
               );
             })}
 
             {/* Place search results */}
             {placeResults.length > 0 && (
-              <div className="px-3 py-1.5 text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide bg-gray-50 dark:bg-slate-750">Search results</div>
+              <div className="px-2.5 py-1 text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide bg-gray-50 dark:bg-slate-750">Search results</div>
             )}
             {placeResults.map((r, i) => (
               <button
                 key={`place-${i}`}
-                className="w-full text-left px-3 py-2.5 hover:bg-blue-50 dark:hover:bg-slate-700 transition flex items-center gap-2 border-b dark:border-slate-700"
+                className="w-full text-left px-2.5 py-1.5 hover:bg-blue-50 dark:hover:bg-slate-700 transition flex items-center gap-2 border-b dark:border-slate-700"
                 onClick={() => {
                   onAddPlace(r);
                   setQuery('');
@@ -2159,11 +2154,9 @@
                   setPlaceResults([]);
                 }}
               >
-                <span className="text-gray-400 text-lg flex-shrink-0">📍</span>
-                <div className="flex-1 min-w-0">
-                  <span className="font-semibold text-sm dark:text-white">{r.name}</span>
-                  <span className="text-xs text-gray-500 dark:text-gray-400 ml-2 truncate">{r.address.split(',').slice(0, 2).join(',')}</span>
-                </div>
+                <span className="text-gray-400 text-sm flex-shrink-0">📍</span>
+                <span className="font-medium text-sm dark:text-white truncate">{r.name}</span>
+                <span className="text-xs text-gray-400 truncate ml-auto flex-shrink-0">{r.address.split(',').slice(0, 2).join(',')}</span>
               </button>
             ))}
 
@@ -4480,9 +4473,9 @@
             <div className="flex items-center gap-2 flex-1 justify-end">
               <button
                 onClick={() => setShowCreateDialog(true)}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium text-sm transition"
+                className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 dark:bg-slate-600 dark:hover:bg-slate-500 text-white rounded-lg font-medium text-xs transition"
               >
-                + Create a New Map
+                + New Map
               </button>
               <button
                 onClick={() => setShowSettings(!showSettings)}
@@ -5319,15 +5312,6 @@
             />
           )}
 
-          {/* Mobile List Toggle */}
-          {isMobile && !showList && (
-            <button
-              onClick={() => setShowList(true)}
-              className="fixed bottom-20 right-4 bg-blue-600 hover:bg-blue-700 text-white rounded-full p-3 shadow-lg z-500"
-            >
-              <ListIcon />
-            </button>
-          )}
 
           {/* Edit Form */}
           {editingPin && (
@@ -5465,37 +5449,25 @@
             />
           )}
 
-          {/* Tab Bar (Mobile) */}
-          {isMobile && view === 'collection' && (
-            <div className="tab-bar">
-              <div
-                onClick={() => setShowList(false)}
-                className={`tab-bar-item ${!showList ? 'active' : ''}`}
+          {/* Floating bottom buttons (Mobile) */}
+          {isMobile && view === 'collection' && !selectedPin && !editingPin && (
+            <div className="fixed bottom-4 left-0 right-0 flex justify-center gap-3" style={{ zIndex: 500 }}>
+              <button
+                onClick={() => setShowList(!showList)}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-full shadow-lg text-sm font-medium transition ${
+                  showList
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 border dark:border-slate-600'
+                }`}
               >
-                <MapIcon />
-                <span>Map</span>
-              </div>
-              <div
-                onClick={() => setShowList(true)}
-                className={`tab-bar-item ${showList ? 'active' : ''}`}
-              >
-                <ListIcon />
-                <span>List</span>
-              </div>
-              <div
-                onClick={() => setShowAddMenu(!showAddMenu)}
-                className="tab-bar-item cursor-pointer"
-              >
-                <AddIcon />
-                <span>Add</span>
-              </div>
-              <div
+                {showList ? <><MapIcon /> Map</> : <><ListIcon /> List</>}
+              </button>
+              <button
                 onClick={() => setView('home')}
-                className="tab-bar-item cursor-pointer"
+                className="flex items-center gap-2 px-4 py-2.5 rounded-full shadow-lg text-sm font-medium bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 border dark:border-slate-600 transition"
               >
-                <span>🏠</span>
-                <span>Home</span>
-              </div>
+                🏠
+              </button>
             </div>
           )}
 
