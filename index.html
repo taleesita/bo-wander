@@ -257,6 +257,23 @@
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
+    @keyframes pulse-preview {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.15); }
+    }
+    .preview-tooltip {
+      background: #3b82f6 !important;
+      color: white !important;
+      border: none !important;
+      border-radius: 6px !important;
+      font-weight: 600 !important;
+      font-size: 12px !important;
+      padding: 3px 8px !important;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2) !important;
+    }
+    .preview-tooltip::before {
+      border-top-color: #3b82f6 !important;
+    }
   </style>
 </head>
 <body>
@@ -3187,7 +3204,7 @@
       );
     };
 
-    const PinEditForm = ({ pin, collections, onSave, onCancel, isDarkMode, onAddCollection, allPins = [], customIcons = [], onUploadIcon, onMapCenter }) => {
+    const PinEditForm = ({ pin, collections, onSave, onCancel, isDarkMode, onAddCollection, allPins = [], customIcons = [], onUploadIcon, onMapCenter, onPreviewPin }) => {
       const [formData, setFormData] = useState(pin);
       const [showEmojiPicker, setShowEmojiPicker] = useState(false);
       const [showPlaceSearch, setShowPlaceSearch] = useState(!pin.id && !pin.lat);
@@ -3210,9 +3227,10 @@
           category: result.category,
         }));
         setShowPlaceSearch(false);
-        // Center map on the selected place (timestamp ensures re-trigger even for same location)
-        if (onMapCenter && place.lat && place.lng) {
-          onMapCenter({ lat: place.lat, lng: place.lng, _t: Date.now() });
+        // Center map and show preview pin
+        if (place.lat && place.lng) {
+          if (onMapCenter) onMapCenter({ lat: place.lat, lng: place.lng, _t: Date.now() });
+          if (onPreviewPin) onPreviewPin({ lat: place.lat, lng: place.lng, name: place.name, emoji: result.emoji });
         }
       };
 
@@ -3230,9 +3248,9 @@
       };
 
       return (
-        <div className="fixed inset-0 md:inset-auto md:top-0 md:left-0 md:bottom-0 md:w-96 bg-black bg-opacity-50 md:bg-opacity-0 flex items-end md:items-stretch justify-center md:justify-start" style={{ zIndex: 9999 }}>
+        <div className="fixed inset-0 md:inset-auto md:top-0 md:right-0 md:bottom-0 md:w-96 bg-black bg-opacity-50 md:bg-opacity-0 flex items-end md:items-stretch justify-center md:justify-end" style={{ zIndex: 9999 }}>
           <div
-            className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-t-xl md:rounded-none w-full md:w-96 shadow-2xl md:shadow-xl md:border-r dark:md:border-slate-700`}
+            className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-t-xl md:rounded-none w-full md:w-96 shadow-2xl md:shadow-xl md:border-l dark:md:border-slate-700`}
             onClick={e => e.stopPropagation()}
             style={{ position: 'relative', zIndex: 10000 }}
           >
@@ -3474,7 +3492,7 @@
       );
     };
 
-    const MapView = ({ pins, selectedPin, onSelectPin, isDarkMode, onNavigate, sidebarWidth = 0, collectionName, onMapCenterChange, panTo }) => {
+    const MapView = ({ pins, selectedPin, onSelectPin, isDarkMode, onNavigate, sidebarWidth = 0, collectionName, onMapCenterChange, panTo, previewPin }) => {
       const mapRef = useRef(null);
       const mapInstanceRef = useRef(null);
       const tileLayerRef = useRef(null);
@@ -3482,6 +3500,7 @@
       const prevCollectionKey = useRef(null);
       const userLocationRef = useRef(null);
       const userAccuracyRef = useRef(null);
+      const previewMarkerRef = useRef(null);
 
       // Initialize map once
       useEffect(() => {
@@ -3573,6 +3592,37 @@
         console.log('[BoWander Map] Flying to:', panTo.lat, panTo.lng);
         map.flyTo([panTo.lat, panTo.lng], 15, { duration: 0.8 });
       }, [panTo]);
+
+      // Show/hide preview pin (temporary marker while adding a place)
+      useEffect(() => {
+        const map = mapInstanceRef.current;
+        if (!map) return;
+        // Remove existing preview marker
+        if (previewMarkerRef.current) {
+          map.removeLayer(previewMarkerRef.current);
+          previewMarkerRef.current = null;
+        }
+        // Add new preview marker if we have one
+        if (previewPin && previewPin.lat && previewPin.lng) {
+          const icon = L.divIcon({
+            className: 'preview-pin',
+            html: `<div style="
+              width: 36px; height: 36px;
+              background: #3b82f6;
+              border: 3px solid white;
+              border-radius: 50%;
+              box-shadow: 0 2px 8px rgba(59,130,246,0.5), 0 0 0 4px rgba(59,130,246,0.2);
+              display: flex; align-items: center; justify-content: center;
+              font-size: 18px;
+              animation: pulse-preview 1.5s ease-in-out infinite;
+            ">${previewPin.emoji || '📍'}</div>`,
+            iconSize: [36, 36],
+            iconAnchor: [18, 18],
+          });
+          previewMarkerRef.current = L.marker([previewPin.lat, previewPin.lng], { icon, zIndexOffset: 2000 }).addTo(map);
+          previewMarkerRef.current.bindTooltip(previewPin.name || 'New pin', { permanent: true, direction: 'top', offset: [0, -20], className: 'preview-tooltip' });
+        }
+      }, [previewPin]);
 
       // Update tiles when dark mode changes
       useEffect(() => {
@@ -4711,6 +4761,7 @@
       const [showUploadConfirmation, setShowUploadConfirmation] = useState(false);
       const [mapCenter, setMapCenter] = useState(null); // passive: where the map currently is (for search biasing)
       const [mapPanTarget, setMapPanTarget] = useState(null); // active: where to fly the map to
+      const [previewPin, setPreviewPin] = useState(null); // temporary pin shown while adding a place
       const [fetchingRatingsFor, setFetchingRatingsFor] = useState(null); // pin id currently fetching ratings for
       const [ratingFetchStatus, setRatingFetchStatus] = useState(''); // status message for rating fetch
 
@@ -5037,8 +5088,11 @@
               onAddPlace={(place) => {
                 const result = guessEmojiAndCategory(place.name, place.type);
                 const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
-                // Pan map to the selected place
-                if (place.lat && place.lng) setMapPanTarget({ lat: place.lat, lng: place.lng, _t: Date.now() });
+                // Pan map and show preview pin
+                if (place.lat && place.lng) {
+                  setMapPanTarget({ lat: place.lat, lng: place.lng, _t: Date.now() });
+                  setPreviewPin({ lat: place.lat, lng: place.lng, name: place.name, emoji: result.emoji });
+                }
                 setEditingPin({
                   name: place.name,
                   address: place.address,
@@ -5104,6 +5158,7 @@
                   collectionName={collections.find(c => c.id === activeCollection)?.name}
                   onMapCenterChange={setMapCenter}
                   panTo={mapPanTarget}
+                  previewPin={previewPin}
                 />
               </div>
             </div>
@@ -5161,14 +5216,15 @@
             <PinEditForm
               pin={editingPin}
               collections={collections}
-              onSave={handleSavePin}
-              onCancel={() => setEditingPin(null)}
+              onSave={(pin) => { setPreviewPin(null); handleSavePin(pin); }}
+              onCancel={() => { setPreviewPin(null); setEditingPin(null); }}
               isDarkMode={darkMode}
               onAddCollection={handleAddCollection}
               allPins={pins}
               customIcons={customIcons}
               onUploadIcon={handleUploadIcon}
               onMapCenter={setMapPanTarget}
+              onPreviewPin={setPreviewPin}
             />
           )}
 
