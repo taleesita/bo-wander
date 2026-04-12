@@ -1864,6 +1864,7 @@
             fetch(photonUrl).then(r => r.json()).catch(() => ({ features: [] })),
             (async () => {
               const apiKey = getGoogleApiKey();
+              console.log('[BoWander Search] Google API key:', apiKey ? `${apiKey.substring(0,10)}...` : 'NONE');
               if (!apiKey) return [];
               try {
                 const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
@@ -1879,8 +1880,14 @@
                     ...(mapCenter?.lat ? { locationBias: { circle: { center: { latitude: mapCenter.lat, longitude: mapCenter.lng }, radius: 50000.0 }}} : {})
                   })
                 });
-                if (!resp.ok) return [];
+                console.log('[BoWander Search] Google Places response:', resp.status);
+                if (!resp.ok) {
+                  const errText = await resp.text();
+                  console.error('[BoWander Search] Google Places error:', errText);
+                  return [];
+                }
                 const data = await resp.json();
+                console.log('[BoWander Search] Google Places results:', data.places?.length || 0, data);
                 return (data.places || []).map(p => ({
                   name: p.displayName?.text || '',
                   address: p.formattedAddress || '',
@@ -1889,11 +1896,13 @@
                   type: p.types?.[0] || '',
                   source: 'google',
                 })).filter(r => r.name && r.lat && r.lng);
-              } catch { return []; }
+              } catch (e) { console.error('[BoWander Search] Google fetch error:', e); return []; }
             })()
           ]);
 
           if (searchId !== searchIdRef.current) return;
+
+          console.log('[BoWander Search] Photon results:', photonResp.features?.length || 0, 'Google results:', googleResults.length);
 
           // Parse Photon results
           const photonResults = (photonResp.features || []).map(f => {
@@ -3559,7 +3568,9 @@
       // Pan/fly to a location when requested externally (e.g. from place search)
       useEffect(() => {
         const map = mapInstanceRef.current;
+        console.log('[BoWander Map] panTo effect:', panTo, 'map exists:', !!map);
         if (!map || !panTo || !panTo.lat || !panTo.lng) return;
+        console.log('[BoWander Map] Flying to:', panTo.lat, panTo.lng);
         map.flyTo([panTo.lat, panTo.lng], 15, { duration: 0.8 });
       }, [panTo]);
 
