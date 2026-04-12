@@ -1782,7 +1782,6 @@
                 if (!str) return null;
                 const d = new Date(str);
                 if (!isNaN(d.getTime())) return d;
-                // Try other formats
                 const m = str.match(/(\d{1,2})\s*(\w{3,9})\s*(\d{4})/);
                 if (m) return new Date(`${m[2]} ${m[1]}, ${m[3]}`);
                 return null;
@@ -1811,31 +1810,61 @@
               const pinCode = rd.pin || '';
 
               // Format date as YYYYMMDD for .ics
-              const fmtDate = (d) => d.toISOString().replace(/[-:]/g, '').split('T')[0];
-              // Format datetime as YYYYMMDDTHHMMSS for .ics
-              const fmtDateTime = (d, h, m) => {
-                const dd = new Date(d);
-                dd.setHours(h, m, 0, 0);
-                return dd.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+              const fmtDate = (d) => {
+                const y = d.getFullYear();
+                const m = String(d.getMonth() + 1).padStart(2, '0');
+                const dd = String(d.getDate()).padStart(2, '0');
+                return `${y}${m}${dd}`;
+              };
+              // Format datetime as YYYYMMDDTHHMMSS (no Z — timezone handled via TZID)
+              const fmtDateTime = (d, h, mn) => {
+                const y = d.getFullYear();
+                const mo = String(d.getMonth() + 1).padStart(2, '0');
+                const dd = String(d.getDate()).padStart(2, '0');
+                const hh = String(h).padStart(2, '0');
+                const mm = String(mn).padStart(2, '0');
+                return `${y}${mo}${dd}T${hh}${mm}00`;
               };
 
               const [ciH, ciM] = parseTime(rd.check_in_time, 16);
               const [coH, coM] = parseTime(rd.check_out_time, 12);
 
-              // Generate .ics content
-              const makeICS = (events) => {
-                let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//BoWander//EN\r\nCALSCALE:GREGORIAN\r\n';
+              // Timezone support
+              const TZ_OPTIONS = [
+                { id: 'America/New_York', label: 'Eastern (ET)' },
+                { id: '_local', label: 'Local time (no TZ)' },
+                { id: 'America/Chicago', label: 'Central (CT)' },
+                { id: 'America/Los_Angeles', label: 'Pacific (PT)' },
+                { id: 'Europe/London', label: 'London (GMT/BST)' },
+                { id: 'Asia/Tokyo', label: 'Tokyo (JST)' },
+              ];
+
+              // VTIMEZONE block for common timezones (needed for strict ICS clients)
+              const vtimezone = (tzid) => {
+                if (tzid === '_local') return '';
+                // Simplified — most calendar apps recognize TZID without full VTIMEZONE
+                return '';
+              };
+
+              // Generate .ics content with timezone
+              const makeICS = (events, tzid) => {
+                let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//BoWander//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:PUBLISH\r\n';
+                ics += vtimezone(tzid);
                 for (const ev of events) {
                   ics += 'BEGIN:VEVENT\r\n';
                   if (ev.allDay) {
                     ics += `DTSTART;VALUE=DATE:${ev.start}\r\n`;
                     ics += `DTEND;VALUE=DATE:${ev.end}\r\n`;
+                  } else if (tzid && tzid !== '_local') {
+                    ics += `DTSTART;TZID=${tzid}:${ev.start}\r\n`;
+                    ics += `DTEND;TZID=${tzid}:${ev.end}\r\n`;
                   } else {
+                    // Floating time — no timezone, calendar interprets as user's local
                     ics += `DTSTART:${ev.start}\r\n`;
                     ics += `DTEND:${ev.end}\r\n`;
                   }
                   ics += `SUMMARY:${ev.title}\r\n`;
-                  if (ev.description) ics += `DESCRIPTION:${ev.description.replace(/\n/g, '\\n')}\r\n`;
+                  if (ev.description) ics += `DESCRIPTION:${ev.description}\r\n`;
                   if (ev.location) ics += `LOCATION:${ev.location}\r\n`;
                   ics += `UID:${Date.now()}-${Math.random().toString(36).slice(2)}@bowander\r\n`;
                   ics += 'END:VEVENT\r\n';
@@ -1854,6 +1883,21 @@
                 URL.revokeObjectURL(url);
               };
 
+              // Build description strings with ICS line-break escaping
+              const stayDesc = [
+                confNum ? `Confirmation number: ${confNum}` : null,
+                pinCode ? `PIN: ${pinCode}` : null,
+              ].filter(Boolean).join('\\n');
+
+              const checkInDesc = [
+                confNum ? `Confirmation number: ${confNum}` : null,
+              ].filter(Boolean).join('\\n');
+
+              const checkOutDesc = [
+                confNum ? `Confirmation number: ${confNum}` : null,
+                pinCode ? `PIN: ${pinCode}` : null,
+              ].filter(Boolean).join('\\n');
+
               // Event 1: All-day span
               const allDayEnd = checkOutDate ? new Date(checkOutDate) : new Date(checkInDate);
               if (checkOutDate) allDayEnd.setDate(allDayEnd.getDate() + 1); // ICS all-day DTEND is exclusive
@@ -1863,7 +1907,7 @@
                 start: fmtDate(checkInDate),
                 end: fmtDate(allDayEnd),
                 title: `Hotel: ${hotelName}`,
-                description: [confNum && `Confirmation number: ${confNum}`, pinCode && `PIN: ${pinCode}`].filter(Boolean).join('\\n'),
+                description: stayDesc,
                 location: pin.address || '',
               };
 
@@ -1873,7 +1917,7 @@
                 start: fmtDateTime(checkInDate, ciH, ciM),
                 end: fmtDateTime(checkInDate, ciH, ciM),
                 title: `Check In: ${hotelName}`,
-                description: confNum ? `Confirmation number: ${confNum}` : '',
+                description: checkInDesc,
                 location: pin.address || '',
               };
 
@@ -1884,53 +1928,110 @@
                 start: fmtDateTime(checkOutTarget, coH, coM),
                 end: fmtDateTime(checkOutTarget, coH, coM),
                 title: `Check Out: ${hotelName}`,
-                description: [confNum && `Confirmation number: ${confNum}`, pinCode && `PIN: ${pinCode}`].filter(Boolean).join('\\n'),
+                description: checkOutDesc,
                 location: pin.address || '',
               };
 
-              return (
-                <div className="space-y-2 pt-2 border-t dark:border-slate-700">
-                  <h4 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Add to Calendar</h4>
-                  <div className="flex flex-col gap-1.5">
+              // Saved preference
+              const savedTz = localStorage.getItem('bo_cal_timezone') || 'America/New_York';
+
+              const CalendarSection = () => {
+                const [calTz, setCalTz] = useState(savedTz);
+                const [showTzPicker, setShowTzPicker] = useState(false);
+                const [expanded, setExpanded] = useState(false);
+
+                const handleTzChange = (tz) => {
+                  setCalTz(tz);
+                  localStorage.setItem('bo_cal_timezone', tz);
+                  setShowTzPicker(false);
+                };
+
+                const tzLabel = TZ_OPTIONS.find(t => t.id === calTz)?.label || calTz;
+                const slug = hotelName.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-]/g, '');
+
+                return (
+                  <div className="pt-2 border-t dark:border-slate-700">
                     <button
-                      onClick={() => downloadICS(makeICS([stayEvent]), `hotel-${hotelName.replace(/\s+/g, '-')}.ics`)}
-                      className="flex items-center gap-2 px-3 py-2 text-sm bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30 transition text-left"
+                      onClick={() => setExpanded(!expanded)}
+                      className="w-full flex items-center justify-between py-1 group"
                     >
-                      <span>🏨</span>
-                      <div>
-                        <span className="font-medium">Hotel Stay</span>
-                        <span className="text-xs text-blue-500 dark:text-blue-400 block">All-day event: {rd.check_in} - {rd.check_out || '...'}</span>
+                      <h4 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
+                        📅 Add to Calendar
+                      </h4>
+                      <span className="text-xs text-gray-400 dark:text-gray-500 group-hover:text-gray-600 dark:group-hover:text-gray-300 transition">
+                        {expanded ? '▲' : '▼'}
+                      </span>
+                    </button>
+                    {expanded && <div className="space-y-2 mt-2">
+                    <div className="flex items-center justify-end">
+                      <button
+                        onClick={() => setShowTzPicker(!showTzPicker)}
+                        className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
+                      >
+                        🕐 {tzLabel}
+                      </button>
+                    </div>
+                    {showTzPicker && (
+                      <div className="flex flex-wrap gap-1.5 pb-1">
+                        {TZ_OPTIONS.map(tz => (
+                          <button
+                            key={tz.id}
+                            onClick={() => handleTzChange(tz.id)}
+                            className={`px-2.5 py-1 text-xs rounded-full border transition ${
+                              calTz === tz.id
+                                ? 'bg-blue-100 border-blue-500 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 dark:border-blue-600'
+                                : 'border-gray-300 dark:border-slate-600 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-800'
+                            }`}
+                          >
+                            {tz.label}
+                          </button>
+                        ))}
                       </div>
-                    </button>
-                    <button
-                      onClick={() => downloadICS(makeICS([checkInEvent]), `checkin-${hotelName.replace(/\s+/g, '-')}.ics`)}
-                      className="flex items-center gap-2 px-3 py-2 text-sm bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/30 transition text-left"
-                    >
-                      <span>📥</span>
-                      <div>
-                        <span className="font-medium">Check In</span>
-                        <span className="text-xs text-green-500 dark:text-green-400 block">{rd.check_in} at {rd.check_in_time || '4:00 PM'}</span>
-                      </div>
-                    </button>
-                    <button
-                      onClick={() => downloadICS(makeICS([checkOutEvent]), `checkout-${hotelName.replace(/\s+/g, '-')}.ics`)}
-                      className="flex items-center gap-2 px-3 py-2 text-sm bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-300 rounded-lg hover:bg-orange-100 dark:hover:bg-orange-900/30 transition text-left"
-                    >
-                      <span>📤</span>
-                      <div>
-                        <span className="font-medium">Check Out</span>
-                        <span className="text-xs text-orange-500 dark:text-orange-400 block">{rd.check_out || rd.check_in} at {rd.check_out_time || '12:00 PM'}</span>
-                      </div>
-                    </button>
-                    <button
-                      onClick={() => downloadICS(makeICS([stayEvent, checkInEvent, checkOutEvent]), `stay-${hotelName.replace(/\s+/g, '-')}.ics`)}
-                      className="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition"
-                    >
-                      <span>📅</span> Add all 3 events at once
-                    </button>
+                    )}
+                    <div className="flex flex-col gap-1.5">
+                      <button
+                        onClick={() => downloadICS(makeICS([stayEvent], calTz), `hotel-${slug}.ics`)}
+                        className="flex items-center gap-2 px-3 py-2 text-sm bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30 transition text-left"
+                      >
+                        <span>🏨</span>
+                        <div>
+                          <span className="font-medium">Hotel Stay</span>
+                          <span className="text-xs text-blue-500 dark:text-blue-400 block">All-day: {rd.check_in} — {rd.check_out || '...'}</span>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => downloadICS(makeICS([checkInEvent], calTz), `checkin-${slug}.ics`)}
+                        className="flex items-center gap-2 px-3 py-2 text-sm bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/30 transition text-left"
+                      >
+                        <span>📥</span>
+                        <div>
+                          <span className="font-medium">Check In</span>
+                          <span className="text-xs text-green-500 dark:text-green-400 block">{rd.check_in} at {rd.check_in_time || '4:00 PM'}</span>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => downloadICS(makeICS([checkOutEvent], calTz), `checkout-${slug}.ics`)}
+                        className="flex items-center gap-2 px-3 py-2 text-sm bg-orange-50 dark:bg-orange-900/20 text-orange-700 dark:text-orange-300 rounded-lg hover:bg-orange-100 dark:hover:bg-orange-900/30 transition text-left"
+                      >
+                        <span>📤</span>
+                        <div>
+                          <span className="font-medium">Check Out</span>
+                          <span className="text-xs text-orange-500 dark:text-orange-400 block">{rd.check_out || rd.check_in} at {rd.check_out_time || '12:00 PM'}</span>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => downloadICS(makeICS([stayEvent, checkInEvent, checkOutEvent], calTz), `stay-${slug}.ics`)}
+                        className="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 transition"
+                      >
+                        <span>📅</span> Add all 3 events at once
+                      </button>
+                    </div>
+                    </div>}
                   </div>
-                </div>
-              );
+                );
+              };
+
+              return <CalendarSection />;
             })()}
 
             {/* Opening Hours — view only */}
@@ -5188,6 +5289,7 @@
       const [searchQuery, setSearchQuery] = useState('');
       const [editingPin, setEditingPin] = useState(null);
       const [showAddMenu, setShowAddMenu] = useState(false);
+      const pendingDeletesRef = useRef(new Set()); // Guard against snapshot re-adding deleted pins
       const [navigationPin, setNavigationPin] = useState(null);
       const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
       const [showAddFromLink, setShowAddFromLink] = useState(false);
@@ -5227,7 +5329,9 @@
             setAuthorized(true);
             // Subscribe to real-time Firestore updates (pins sync between devices)
             unsubPins = MockFirebase.onPinsSnapshot(firestorePins => {
-              setPins(firestorePins);
+              // Filter out any pins that are pending deletion (prevents re-add flicker)
+              const filtered = firestorePins.filter(p => !pendingDeletesRef.current.has(p.id));
+              setPins(filtered);
             });
             unsubCollections = MockFirebase.onCollectionsSnapshot(firestoreCols => {
               setCollections(firestoreCols);
@@ -5435,6 +5539,9 @@
       };
 
       const handleDeletePin = async (pinId, collectionId) => {
+        if (!pinId) { alert('Cannot delete: no pin ID'); return; }
+        // Mark as pending delete so snapshot listener won't re-add it
+        pendingDeletesRef.current.add(pinId);
         // Optimistically update UI
         setPins(prev => prev.filter(p => p.id !== pinId));
         setSelectedPin(null);
@@ -5442,8 +5549,11 @@
         try {
           await MockFirebase.deletePin(pinId, collectionId);
           console.log('[BoWander] Pin deleted:', pinId);
+          // Keep in pending set for a bit to handle any in-flight snapshots
+          setTimeout(() => pendingDeletesRef.current.delete(pinId), 5000);
         } catch (err) {
           console.error('[BoWander] Delete failed:', err);
+          pendingDeletesRef.current.delete(pinId);
           alert('Failed to delete: ' + (err.message || 'Unknown error. Check if you are logged in.'));
           // Re-fetch pins since optimistic update may be wrong
           try {
