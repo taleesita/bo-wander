@@ -3230,13 +3230,13 @@
       };
 
       return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ zIndex: 9999 }}>
+        <div className="fixed inset-0 md:inset-auto md:top-0 md:left-0 md:bottom-0 md:w-96 bg-black bg-opacity-50 md:bg-opacity-0 flex items-end md:items-stretch justify-center md:justify-start" style={{ zIndex: 9999 }}>
           <div
-            className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-xl w-full max-w-md shadow-2xl`}
+            className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-t-xl md:rounded-none w-full md:w-96 shadow-2xl md:shadow-xl md:border-r dark:md:border-slate-700`}
             onClick={e => e.stopPropagation()}
             style={{ position: 'relative', zIndex: 10000 }}
           >
-            <div className="max-h-[85vh] overflow-y-auto p-6 space-y-4">
+            <div className="max-h-[85vh] md:max-h-full md:h-full overflow-y-auto p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-bold dark:text-white">
                   {pin.id ? 'Edit Pin' : 'Add Place'}
