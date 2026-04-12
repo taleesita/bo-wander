@@ -1846,53 +1846,84 @@
       const dropdownRef = useRef(null);
       const [dropdownPos, setDropdownPos] = useState(null);
 
-      // Search using Photon API (Komoot) — much better for businesses/POIs, supports location biasing
-      const doPlaceSearch = useCallback((q) => {
+      // Search using Photon API + Google Places API for businesses
+      const doPlaceSearch = useCallback(async (q) => {
         if (q.length < 2) { setPlaceResults([]); return; }
         setSearching(true);
         const searchId = ++searchIdRef.current;
-        // Build URL with location bias if we know the map center
-        let url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=8`;
-        if (mapCenter && mapCenter.lat && mapCenter.lng) {
-          url += `&lat=${mapCenter.lat}&lon=${mapCenter.lng}`;
-        }
-        fetch(url)
-          .then(r => r.json())
-          .then(data => {
-            // Only apply results if this is still the latest search
-            if (searchId !== searchIdRef.current) return;
-            const results = (data.features || []).map(f => {
-              const p = f.properties || {};
-              const geo = f.geometry?.coordinates || [];
-              const name = p.name || p.street || '';
-              const parts = [p.street, p.housenumber].filter(Boolean).join(' ');
-              const locality = [p.city || p.town || p.village, p.state, p.country].filter(Boolean).join(', ');
-              const address = [parts || name, locality].filter(Boolean).join(', ');
-              return {
-                name: name,
-                address: address,
-                lat: geo[1],
-                lng: geo[0],
-                type: p.osm_value || p.osm_key || '',
-                osmType: p.osm_type || '',
-              };
-            }).filter(r => r.name && r.lat && r.lng);
-            // Sort by distance from map center
-            if (mapCenter && mapCenter.lat && mapCenter.lng) {
-              const toRad = d => d * Math.PI / 180;
-              const dist = (lat1, lng1, lat2, lng2) => {
-                const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
-                const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
-                return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-              };
-              results.sort((a, b) => dist(mapCenter.lat, mapCenter.lng, a.lat, a.lng) - dist(mapCenter.lat, mapCenter.lng, b.lat, b.lng));
+
+        try {
+          // Build Photon URL with location bias
+          let photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=5`;
+          if (mapCenter && mapCenter.lat && mapCenter.lng) {
+            photonUrl += `&lat=${mapCenter.lat}&lon=${mapCenter.lng}`;
+          }
+
+          // Search Photon and Google in parallel
+          const [photonResp, googleResults] = await Promise.all([
+            fetch(photonUrl).then(r => r.json()).catch(() => ({ features: [] })),
+            (async () => {
+              const apiKey = getGoogleApiKey();
+              if (!apiKey) return [];
+              try {
+                const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'X-Goog-Api-Key': apiKey,
+                    'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types'
+                  },
+                  body: JSON.stringify({
+                    textQuery: q,
+                    maxResultCount: 5,
+                    ...(mapCenter?.lat ? { locationBias: { circle: { center: { latitude: mapCenter.lat, longitude: mapCenter.lng }, radius: 50000.0 }}} : {})
+                  })
+                });
+                if (!resp.ok) return [];
+                const data = await resp.json();
+                return (data.places || []).map(p => ({
+                  name: p.displayName?.text || '',
+                  address: p.formattedAddress || '',
+                  lat: p.location?.latitude,
+                  lng: p.location?.longitude,
+                  type: p.types?.[0] || '',
+                  source: 'google',
+                })).filter(r => r.name && r.lat && r.lng);
+              } catch { return []; }
+            })()
+          ]);
+
+          if (searchId !== searchIdRef.current) return;
+
+          // Parse Photon results
+          const photonResults = (photonResp.features || []).map(f => {
+            const p = f.properties || {};
+            const geo = f.geometry?.coordinates || [];
+            const name = p.name || p.street || '';
+            const parts = [p.street, p.housenumber].filter(Boolean).join(' ');
+            const locality = [p.city || p.town || p.village, p.state, p.country].filter(Boolean).join(', ');
+            return {
+              name, address: [parts || name, locality].filter(Boolean).join(', '),
+              lat: geo[1], lng: geo[0],
+              type: p.osm_value || p.osm_key || '', osmType: p.osm_type || '',
+              source: 'osm',
+            };
+          }).filter(r => r.name && r.lat && r.lng);
+
+          // Merge: Google first (better for businesses), then Photon, deduplicate
+          const seen = new Set();
+          const merged = [];
+          for (const r of [...googleResults, ...photonResults]) {
+            const key = r.name.toLowerCase().trim();
+            if (!seen.has(key)) {
+              seen.add(key);
+              merged.push(r);
             }
-            setPlaceResults(results);
-            setSearching(false);
-          })
-          .catch(() => {
-            if (searchId === searchIdRef.current) setSearching(false);
-          });
+          }
+
+          setPlaceResults(merged.slice(0, 8));
+        } catch {}
+        if (searchId === searchIdRef.current) setSearching(false);
       }, [mapCenter]);
 
       const handleInput = (val) => {
@@ -3170,9 +3201,9 @@
           category: result.category,
         }));
         setShowPlaceSearch(false);
-        // Center map on the selected place
+        // Center map on the selected place (timestamp ensures re-trigger even for same location)
         if (onMapCenter && place.lat && place.lng) {
-          onMapCenter({ lat: place.lat, lng: place.lng });
+          onMapCenter({ lat: place.lat, lng: place.lng, _t: Date.now() });
         }
       };
 
@@ -3434,7 +3465,7 @@
       );
     };
 
-    const MapView = ({ pins, selectedPin, onSelectPin, isDarkMode, onNavigate, sidebarWidth = 0, collectionName, onMapCenterChange }) => {
+    const MapView = ({ pins, selectedPin, onSelectPin, isDarkMode, onNavigate, sidebarWidth = 0, collectionName, onMapCenterChange, panTo }) => {
       const mapRef = useRef(null);
       const mapInstanceRef = useRef(null);
       const tileLayerRef = useRef(null);
@@ -3524,6 +3555,13 @@
           mapInstanceRef.current = null;
         };
       }, []);
+
+      // Pan/fly to a location when requested externally (e.g. from place search)
+      useEffect(() => {
+        const map = mapInstanceRef.current;
+        if (!map || !panTo || !panTo.lat || !panTo.lng) return;
+        map.flyTo([panTo.lat, panTo.lng], 15, { duration: 0.8 });
+      }, [panTo]);
 
       // Update tiles when dark mode changes
       useEffect(() => {
@@ -4660,7 +4698,8 @@
         });
       };
       const [showUploadConfirmation, setShowUploadConfirmation] = useState(false);
-      const [mapCenter, setMapCenter] = useState(null);
+      const [mapCenter, setMapCenter] = useState(null); // passive: where the map currently is (for search biasing)
+      const [mapPanTarget, setMapPanTarget] = useState(null); // active: where to fly the map to
       const [fetchingRatingsFor, setFetchingRatingsFor] = useState(null); // pin id currently fetching ratings for
       const [ratingFetchStatus, setRatingFetchStatus] = useState(''); // status message for rating fetch
 
@@ -4987,6 +5026,8 @@
               onAddPlace={(place) => {
                 const result = guessEmojiAndCategory(place.name, place.type);
                 const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
+                // Pan map to the selected place
+                if (place.lat && place.lng) setMapPanTarget({ lat: place.lat, lng: place.lng, _t: Date.now() });
                 setEditingPin({
                   name: place.name,
                   address: place.address,
@@ -5051,6 +5092,7 @@
                   sidebarWidth={selectedPin && !isMobile ? 384 : 0}
                   collectionName={collections.find(c => c.id === activeCollection)?.name}
                   onMapCenterChange={setMapCenter}
+                  panTo={mapPanTarget}
                 />
               </div>
             </div>
@@ -5115,7 +5157,7 @@
               allPins={pins}
               customIcons={customIcons}
               onUploadIcon={handleUploadIcon}
-              onMapCenter={setMapCenter}
+              onMapCenter={setMapPanTarget}
             />
           )}
 
