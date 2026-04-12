@@ -2854,16 +2854,28 @@
       if (pinMatch) result.pin = pinMatch[1].trim();
 
       // Check-in / check-out times
-      const timeRe = /(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?|\d{1,2}\s*(?:AM|PM|am|pm))/;
-      const checkInTimeMatch = full.match(/check[\s-]?in\s*(?:time|from|after)?[:\s]*(?:[^\n]*?)(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?|\d{1,2}\s*(?:AM|PM|am|pm))/i);
-      if (checkInTimeMatch) result.checkInTime = checkInTimeMatch[1].trim();
-      const checkOutTimeMatch = full.match(/check[\s-]?out\s*(?:time|before|by|until)?[:\s]*(?:[^\n]*?)(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?|\d{1,2}\s*(?:AM|PM|am|pm))/i);
-      if (checkOutTimeMatch) result.checkOutTime = checkOutTimeMatch[1].trim();
+      // Strategy 1: Booking.com format — "Check-in Wednesday, May 6, 2026 (3:00 PM - 10:00 PM)"
+      const ciParenMatch = full.match(/check[\s-]?in[^()]*\(\s*(\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM))/i);
+      if (ciParenMatch) result.checkInTime = ciParenMatch[1].replace(/\s+/g, ' ').trim();
+      const coParenMatch = full.match(/check[\s-]?out[^()]*\(\s*(\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM))/i);
+      if (coParenMatch) result.checkOutTime = coParenMatch[1].replace(/\s+/g, ' ').trim();
+      // Strategy 2: Labeled time — "Check-in time: 3:00 PM" or "Check-in: ... 3:00 PM"
+      if (!result.checkInTime) {
+        const ciTimeMatch = full.match(/check[\s-]?in\s*(?:time)?[:\s]+.*?(\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM))/i);
+        if (ciTimeMatch) result.checkInTime = ciTimeMatch[1].replace(/\s+/g, ' ').trim();
+      }
+      if (!result.checkOutTime) {
+        const coTimeMatch = full.match(/check[\s-]?out\s*(?:time)?[:\s]+.*?(\d{1,2}\s*:\s*\d{2}\s*(?:AM|PM))/i);
+        if (coTimeMatch) result.checkOutTime = coTimeMatch[1].replace(/\s+/g, ' ').trim();
+      }
+      // Normalize: collapse any spaces around colons ("3 : 00 PM" → "3:00 PM")
+      if (result.checkInTime) result.checkInTime = result.checkInTime.replace(/\s*:\s*/, ':');
+      if (result.checkOutTime) result.checkOutTime = result.checkOutTime.replace(/\s*:\s*/, ':');
 
       // Breakfast detection
       if (/breakfast\s*included|includes?\s*breakfast|complimentary\s*breakfast|free\s*breakfast|with\s*breakfast/i.test(full)) {
         result.includesBreakfast = 'yes';
-      } else if (/no\s*breakfast|without\s*breakfast|breakfast\s*not\s*included|room\s*only/i.test(full)) {
+      } else if (/no\s*breakfast|without\s*breakfast|breakfast\s*not\s*included|room\s*only|no\s*meal\s*is\s*included/i.test(full)) {
         result.includesBreakfast = 'no';
       }
 
@@ -3037,7 +3049,7 @@
       return result;
     };
 
-    const UploadConfirmationModal = ({ onSelect, onClose, isDarkMode }) => {
+    const UploadConfirmationModal = ({ onSelect, onClose, isDarkMode, onMapCenter, onPreviewPin }) => {
       const [step, setStep] = useState('upload'); // 'upload' | 'review'
       const [dragging, setDragging] = useState(false);
       const [extractedText, setExtractedText] = useState('');
@@ -3083,9 +3095,14 @@
             };
           }).filter(s => s.address);
           setAddressSuggestions(suggestions);
+          // Auto-show preview pin for top result
+          if (suggestions.length > 0 && suggestions[0].lat && suggestions[0].lng) {
+            onPreviewPin?.({ lat: suggestions[0].lat, lng: suggestions[0].lng, name: name });
+            onMapCenter?.([suggestions[0].lat, suggestions[0].lng], 15);
+          }
         } catch { setAddressSuggestions([]); }
         setGeocodingName(false);
-      }, []);
+      }, [onPreviewPin, onMapCenter]);
 
       // Auto-geocode when hotel name changes (debounced)
       const handlePropertyNameChange = (name) => {
@@ -3099,6 +3116,11 @@
         setResolvedLat(suggestion.lat);
         setResolvedLng(suggestion.lng);
         setAddressSuggestions([]);
+        // Show preview pin and center map
+        if (suggestion.lat && suggestion.lng) {
+          onPreviewPin?.({ lat: suggestion.lat, lng: suggestion.lng, name: propertyName || suggestion.name });
+          onMapCenter?.([suggestion.lat, suggestion.lng], 15);
+        }
       };
 
       // Store the file as a data URL for later retrieval
@@ -3243,12 +3265,13 @@
       const inputClass = "w-full px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm";
 
       return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ zIndex: 9999 }} onClick={onClose}>
+        <div className="fixed inset-0 md:inset-auto md:top-0 md:right-0 md:bottom-0 md:w-96 bg-black bg-opacity-50 md:bg-opacity-0 flex items-end md:items-stretch justify-center md:justify-end" style={{ zIndex: 9999 }} onClick={onClose}>
           <div
-            className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-xl w-full max-w-md shadow-2xl`}
+            className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-t-xl md:rounded-none w-full md:w-96 shadow-2xl md:shadow-xl md:border-l dark:md:border-slate-700`}
             onClick={e => e.stopPropagation()}
+            style={{ position: 'relative', zIndex: 10000 }}
           >
-            <div className="p-6 space-y-4 max-h-[85vh] overflow-y-auto">
+            <div className="max-h-[85vh] md:max-h-full md:h-full overflow-y-auto p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-bold dark:text-white">
                   {step === 'upload' ? 'Upload Booking' : 'Review Booking'}
@@ -3350,7 +3373,7 @@
                       <input type="text" value={propertyName} onChange={e => handlePropertyNameChange(e.target.value)} placeholder="e.g. MIMARU SUITES Kyoto Shijo" className={inputClass} autoFocus />
                       {geocodingName && <span className="absolute right-3 top-2.5 text-xs text-gray-400 animate-pulse">Looking up...</span>}
                     </div>
-                    {addressSuggestions.length > 0 && !address && (
+                    {addressSuggestions.length > 0 && (
                       <div className="mt-1 border rounded-lg overflow-hidden dark:border-slate-700 bg-white dark:bg-slate-800">
                         {addressSuggestions.map((s, i) => (
                           <button
@@ -5881,10 +5904,13 @@
                 };
                 // Save directly — no need to open edit form
                 handleSavePin(newPin);
+                setPreviewPin(null);
                 setShowUploadConfirmation(false);
               }}
-              onClose={() => setShowUploadConfirmation(false)}
+              onClose={() => { setPreviewPin(null); setShowUploadConfirmation(false); }}
               isDarkMode={darkMode}
+              onMapCenter={(coords, zoom) => setMapPanTarget({ lat: coords[0], lng: coords[1], _t: Date.now() })}
+              onPreviewPin={(pin) => setPreviewPin({ lat: pin.lat, lng: pin.lng, name: pin.name, emoji: '🏨' })}
             />
           )}
 
