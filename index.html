@@ -2882,7 +2882,7 @@
       // Breakfast detection
       if (/breakfast\s*included|includes?\s*breakfast|complimentary\s*breakfast|free\s*breakfast|with\s*breakfast/i.test(full)) {
         result.includesBreakfast = 'yes';
-      } else if (/no\s*breakfast|without\s*breakfast|breakfast\s*not\s*included|room\s*only|no\s*meal\s*is\s*included/i.test(full)) {
+      } else if (/no\s*breakfast|without\s*breakfast|breakfast\s*not\s*included|room\s*only|no\s*meal\s*is\s*included|no\s*meal\s*option/i.test(full)) {
         result.includesBreakfast = 'no';
       }
 
