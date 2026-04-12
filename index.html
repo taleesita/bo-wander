@@ -5052,10 +5052,7 @@
       const handleSavePin = (pin) => {
         // Handle delete via _delete flag from edit form
         if (pin._delete) {
-          MockFirebase.deletePin(pin.id, pin.collection_id);
-          setPins(prev => prev.filter(p => p.id !== pin.id));
-          setEditingPin(null);
-          setSelectedPin(null);
+          handleDeletePin(pin.id, pin.collection_id);
           return;
         }
         const isExisting = !!pin.id;
@@ -5089,11 +5086,23 @@
         setSelectedPin(updatedPin);
       };
 
-      const handleDeletePin = (pinId, collectionId) => {
-        MockFirebase.deletePin(pinId, collectionId);
+      const handleDeletePin = async (pinId, collectionId) => {
+        // Optimistically update UI
         setPins(prev => prev.filter(p => p.id !== pinId));
         setSelectedPin(null);
         setEditingPin(null);
+        try {
+          await MockFirebase.deletePin(pinId, collectionId);
+          console.log('[BoWander] Pin deleted:', pinId);
+        } catch (err) {
+          console.error('[BoWander] Delete failed:', err);
+          alert('Failed to delete: ' + (err.message || 'Unknown error. Check if you are logged in.'));
+          // Re-fetch pins since optimistic update may be wrong
+          try {
+            const fresh = await MockFirebase.loadPins();
+            setPins(fresh);
+          } catch {}
+        }
       };
 
       const handleAddCollection = (newCol) => {
