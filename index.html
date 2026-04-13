@@ -5523,6 +5523,35 @@
         };
       }, []);
 
+      // Auto-repair pins with missing coordinates (lat=0, lng=0)
+      useEffect(() => {
+        const missingCoords = pins.filter(p => p.name && (!p.lat && !p.lng));
+        if (missingCoords.length === 0) return;
+        console.log('[BoWander] Auto-repairing', missingCoords.length, 'pins with missing coordinates:', missingCoords.map(p => p.name));
+        let repaired = 0;
+        const repair = async (pin) => {
+          try {
+            const resp = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(pin.name)}&limit=1`);
+            const data = await resp.json();
+            const f = data.features?.[0];
+            if (f?.geometry?.coordinates) {
+              const lng = f.geometry.coordinates[0];
+              const lat = f.geometry.coordinates[1];
+              const addr = !pin.address ? [f.properties?.street, f.properties?.city, f.properties?.country].filter(Boolean).join(', ') : pin.address;
+              const updated = { ...pin, lat, lng, address: addr || pin.address };
+              MockFirebase.savePin(updated);
+              setPins(prev => prev.map(p => p.id === pin.id ? updated : p));
+              repaired++;
+              console.log('[BoWander] Repaired:', pin.name, '->', lat, lng);
+            }
+          } catch (err) {
+            console.warn('[BoWander] Failed to repair:', pin.name, err);
+          }
+        };
+        // Stagger requests to avoid rate limiting
+        missingCoords.forEach((pin, i) => setTimeout(() => repair(pin), i * 500));
+      }, [pins.length]); // Only re-run when total pin count changes
+
       // Sync URL hash with current view state
       useEffect(() => {
         if (view === 'collection' && activeCollection) {
