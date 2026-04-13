@@ -3019,7 +3019,7 @@
         // Booking.com: "Your reservation 1 night, Two-Bedroom Suite with Living Room"
         /(?:your\s+reservation|reserved)\s+\d+\s+nights?,\s*([^$€£¥₹\n]{3,80}?)(?=\s+(?:You\b|\d+\s+(?:adult|guest)))/i,
         // X-Bedroom patterns: "Two-Bedroom Suite", "1-Bedroom Apartment"
-        /((?:\w+-)?Bedroom\s+(?:Suite|Room|Studio|Apartment|Villa)(?:\s+(?:with|and)\s+[\w\s]+)?)/i,
+        /((?:\w+-)?Bedroom\s+(?:Suite|Room|Studio|Apartment|Villa)(?:\s+(?:with|and)\s+(?:[\w]+\s*){1,4}?(?:Room|View|Bed|Sofa|Bath|Kitchen|Balcony|Terrace|Pool|Garden)))/i,
         /(\d+\s+(?:superior|deluxe|standard|premium|executive|classic|economy|luxury)\s+(?:[\w-]+\s+){0,4}(?:room|suite|studio|apartment|bed))/i,
         /((?:superior|deluxe|standard|premium|executive|classic|economy|luxury)\s+(?:[\w-]+\s+){0,3}(?:room|suite|studio|apartment))/i,
         /((?:double|single|twin|king|queen|family)\s+(?:room|suite|studio|bed)(?:\s+[\w-]+){0,2})/i,
@@ -3530,21 +3530,59 @@
         if (!name || name.length < 3) { setAddressSuggestions([]); return; }
         setGeocodingName(true);
         try {
-          const resp = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(name)}&limit=5`);
-          const data = await resp.json();
-          console.log('[BoWander Geocode] raw response:', data.features?.length, 'features');
-          const suggestions = (data.features || []).map(f => {
+          // Search Google Places + Photon in parallel (same as main search bar)
+          const [photonResp, googleResults] = await Promise.all([
+            fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(name)}&limit=5`).then(r => r.json()).catch(() => ({ features: [] })),
+            (async () => {
+              const apiKey = getGoogleApiKey();
+              if (!apiKey) return [];
+              try {
+                const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'X-Goog-Api-Key': apiKey,
+                    'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types'
+                  },
+                  body: JSON.stringify({ textQuery: name, maxResultCount: 5 })
+                });
+                if (!resp.ok) return [];
+                const data = await resp.json();
+                return (data.places || []).map(p => ({
+                  name: p.displayName?.text || '',
+                  address: p.formattedAddress || '',
+                  lat: p.location?.latitude,
+                  lng: p.location?.longitude,
+                  source: 'google',
+                })).filter(r => r.name && r.lat && r.lng);
+              } catch { return []; }
+            })()
+          ]);
+
+          // Parse Photon results
+          const photonResults = (photonResp.features || []).map(f => {
             const p = f.properties || {};
-            const parts = [p.housenumber, p.street, p.city, p.state, p.country].filter(Boolean);
+            const parts = [p.street, p.housenumber].filter(Boolean).join(' ');
+            const locality = [p.city || p.town || p.village, p.state, p.country].filter(Boolean).join(', ');
             return {
-              address: parts.join(', '),
+              address: [parts || p.name, locality].filter(Boolean).join(', '),
               lat: f.geometry?.coordinates?.[1] || 0,
               lng: f.geometry?.coordinates?.[0] || 0,
               name: p.name || '',
+              source: 'osm',
             };
-          }).filter(s => s.address);
-          console.log('[BoWander Geocode] suggestions:', suggestions.length, suggestions);
-          setAddressSuggestions(suggestions);
+          }).filter(s => s.address && s.lat && s.lng);
+
+          // Merge: Google first (better for businesses), then Photon, deduplicate
+          const seen = new Set();
+          const suggestions = [];
+          for (const r of [...googleResults, ...photonResults]) {
+            const key = r.name.toLowerCase().trim();
+            if (!seen.has(key)) { seen.add(key); suggestions.push(r); }
+          }
+
+          console.log('[BoWander Geocode] merged suggestions:', suggestions.length, '(Google:', googleResults.length, 'Photon:', photonResults.length, ')');
+          setAddressSuggestions(suggestions.slice(0, 6));
           // Auto-select top result coordinates (user can override by picking a different suggestion)
           if (suggestions.length > 0 && suggestions[0].lat && suggestions[0].lng) {
             setResolvedLat(suggestions[0].lat);
@@ -3960,10 +3998,13 @@
                           <button
                             key={i}
                             onClick={() => selectAddressSuggestion(s)}
-                            className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-slate-700 border-b last:border-b-0 dark:border-slate-700"
+                            className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-slate-700 border-b last:border-b-0 dark:border-slate-700 flex items-start gap-2"
                           >
-                            <span className="font-medium dark:text-white">{s.name || propertyName}</span>
-                            <span className="text-gray-500 dark:text-gray-400 text-xs block">{s.address}</span>
+                            <span className="text-red-400 mt-0.5">📍</span>
+                            <div>
+                              <span className="font-medium dark:text-white">{s.name || propertyName}</span>
+                              <span className="text-gray-500 dark:text-gray-400 text-xs block">{s.address}</span>
+                            </div>
                           </button>
                         ))}
                       </div>
