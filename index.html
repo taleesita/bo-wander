@@ -1775,6 +1775,33 @@
               </div>
             )}
 
+            {/* Reservation Details Card — for hotel pins */}
+            {!editing && pin.reservation_details && pin.category === 'hotel' && (() => {
+              const rd = pin.reservation_details;
+              const details = [
+                rd.room_type && { label: 'Room', value: rd.room_type },
+                rd.check_in && { label: 'Check-in', value: `${rd.check_in}${rd.check_in_time ? ' at ' + rd.check_in_time : ''}` },
+                rd.check_out && { label: 'Check-out', value: `${rd.check_out}${rd.check_out_time ? ' at ' + rd.check_out_time : ''}` },
+                rd.confirmation_number && { label: 'Confirmation #', value: rd.confirmation_number },
+                rd.pin && { label: 'PIN', value: rd.pin },
+                rd.price && { label: 'Price', value: rd.price + (rd.price_usd ? ` (${rd.price_usd} USD)` : '') },
+                rd.includes_breakfast && rd.includes_breakfast !== 'unknown' && { label: 'Breakfast', value: rd.includes_breakfast === 'yes' ? 'Included' : 'Not included' },
+                rd.booking_source && { label: 'Source', value: rd.booking_source },
+              ].filter(Boolean);
+              if (details.length === 0) return null;
+              return (
+                <div className="bg-blue-50 dark:bg-slate-800 rounded-lg p-3 space-y-1.5">
+                  <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wide">Reservation Details</p>
+                  {details.map((d, i) => (
+                    <div key={i} className="flex justify-between text-sm">
+                      <span className="text-gray-500 dark:text-gray-400">{d.label}</span>
+                      <span className="font-medium text-gray-800 dark:text-gray-200 text-right max-w-[65%]">{d.value}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+
             {/* Add to Calendar — for hotel pins with reservation details */}
             {!editing && pin.reservation_details?.check_in && pin.category === 'hotel' && (() => {
               // Helper to parse a date string into a Date object
@@ -2934,6 +2961,10 @@
       // Room type — look for room/suite/bed patterns, but stop before currency symbols
       const roomPatterns = [
         /(?:room\s*type|accommodation)[:\s]+([^$€£¥₹\n]{3,60})/i,
+        // Booking.com: "Your reservation 1 night, Two-Bedroom Suite with Living Room"
+        /(?:your\s+reservation|reserved)\s+\d+\s+nights?,\s*([^$€£¥₹\n]{3,80}?)(?=\s+(?:You\b|\d+\s+(?:adult|guest)))/i,
+        // X-Bedroom patterns: "Two-Bedroom Suite", "1-Bedroom Apartment"
+        /((?:\w+-)?Bedroom\s+(?:Suite|Room|Studio|Apartment|Villa)(?:\s+(?:with|and)\s+[\w\s]+)?)/i,
         /(\d+\s+(?:superior|deluxe|standard|premium|executive|classic|economy|luxury)\s+(?:[\w-]+\s+){0,4}(?:room|suite|studio|apartment|bed))/i,
         /((?:superior|deluxe|standard|premium|executive|classic|economy|luxury)\s+(?:[\w-]+\s+){0,3}(?:room|suite|studio|apartment))/i,
         /((?:double|single|twin|king|queen|family)\s+(?:room|suite|studio|bed)(?:\s+[\w-]+){0,2})/i,
@@ -3110,7 +3141,8 @@
         return isNaN(num) ? 0 : num;
       };
 
-      const fetchExchangeRate = useCallback(async (currency, dateStr) => {
+      const fetchExchangeRate = useCallback(async (currency, dateStr, priceVal) => {
+        console.log('[BoWander FX] fetchExchangeRate called:', currency, dateStr, priceVal);
         if (!currency || currency === 'USD') {
           setUsdPrice(''); setExchangeRate(null); setPriceCurrency('');
           return;
@@ -3123,34 +3155,40 @@
             const d = new Date(dateStr);
             if (!isNaN(d.getTime())) {
               const today = new Date();
-              // Only use historical if date is in the past
               if (d <= today) {
                 apiDate = d.toISOString().split('T')[0];
               }
             }
           }
-          const resp = await fetch(`https://api.frankfurter.app/${apiDate}?from=${currency}&to=USD`);
+          const url = `https://api.frankfurter.app/${apiDate}?from=${currency}&to=USD`;
+          console.log('[BoWander FX] fetching:', url);
+          const resp = await fetch(url);
           const data = await resp.json();
+          console.log('[BoWander FX] response:', data);
           if (data.rates?.USD) {
             setExchangeRate(data.rates.USD);
             setExchangeRateDate(data.date || apiDate);
-            const numPrice = extractNumericPrice(price);
+            const numPrice = extractNumericPrice(priceVal);
             if (numPrice > 0) {
-              setUsdPrice('$' + (numPrice * data.rates.USD).toFixed(2));
+              const usd = '$' + (numPrice * data.rates.USD).toFixed(2);
+              console.log('[BoWander FX] converted:', priceVal, '->', usd);
+              setUsdPrice(usd);
             }
           }
-        } catch {
-          // Silently fail — conversion is nice-to-have
+        } catch (err) {
+          console.error('[BoWander FX] error:', err);
         }
-      }, [price]);
+      }, []);
 
       // Geocode hotel name to get address (like add places)
-      const geocodeHotelName = useCallback(async (name) => {
+      const geocodeHotelName = useCallback(async (name, currentAddress) => {
+        console.log('[BoWander Geocode] called with:', name, 'currentAddress:', currentAddress);
         if (!name || name.length < 3) { setAddressSuggestions([]); return; }
         setGeocodingName(true);
         try {
-          const resp = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(name)}&limit=3`);
+          const resp = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(name)}&limit=5`);
           const data = await resp.json();
+          console.log('[BoWander Geocode] raw response:', data.features?.length, 'features');
           const suggestions = (data.features || []).map(f => {
             const p = f.properties || {};
             const parts = [p.housenumber, p.street, p.city, p.state, p.country].filter(Boolean);
@@ -3161,13 +3199,17 @@
               name: p.name || '',
             };
           }).filter(s => s.address);
+          console.log('[BoWander Geocode] suggestions:', suggestions.length, suggestions);
           setAddressSuggestions(suggestions);
-          // Auto-show preview pin for top result
+          // Auto-select top result coordinates (user can override by picking a different suggestion)
           if (suggestions.length > 0 && suggestions[0].lat && suggestions[0].lng) {
+            setResolvedLat(suggestions[0].lat);
+            setResolvedLng(suggestions[0].lng);
+            if (!currentAddress && suggestions[0].address) setAddress(suggestions[0].address);
             onPreviewPin?.({ lat: suggestions[0].lat, lng: suggestions[0].lng, name: name });
             onMapCenter?.([suggestions[0].lat, suggestions[0].lng], 15);
           }
-        } catch { setAddressSuggestions([]); }
+        } catch (err) { console.error('[BoWander Geocode] error:', err); setAddressSuggestions([]); }
         setGeocodingName(false);
       }, [onPreviewPin, onMapCenter]);
 
@@ -3175,7 +3217,7 @@
       const handlePropertyNameChange = (name) => {
         setPropertyName(name);
         if (geocodeTimerRef.current) clearTimeout(geocodeTimerRef.current);
-        geocodeTimerRef.current = setTimeout(() => geocodeHotelName(name), 500);
+        geocodeTimerRef.current = setTimeout(() => geocodeHotelName(name, address), 500);
       };
 
       const selectAddressSuggestion = (suggestion) => {
@@ -3276,7 +3318,7 @@
         setPrice(parsed.price);
         setIncludesBreakfast(parsed.includesBreakfast);
         // Auto-geocode the property name
-        if (parsed.propertyName) geocodeHotelName(parsed.propertyName);
+        if (parsed.propertyName) geocodeHotelName(parsed.propertyName, parsed.address);
 
         setProcessing(false);
         setStep('review');
@@ -3302,7 +3344,7 @@
           lng: resolvedLng,
           description: [
             roomType && `Room: ${roomType}`,
-            price && `Price: ${price}${usdPrice ? ' (' + usdPrice + ' USD)' : ''}`,
+            price && `Price: ${price}`,
             checkIn && `Check-in: ${checkIn}${checkInTime ? ' at ' + checkInTime : ''}`,
             checkOut && `Check-out: ${checkOut}${checkOutTime ? ' at ' + checkOutTime : ''}`,
             confirmationNumber && `Confirmation #: ${confirmationNumber}`,
@@ -3336,12 +3378,13 @@
       // Auto-fetch exchange rate when price or check-in changes
       useEffect(() => {
         const currency = detectCurrency(price);
+        console.log('[BoWander FX] useEffect - price:', price, 'currency:', currency);
         if (currency && currency !== 'USD') {
-          fetchExchangeRate(currency, checkIn);
+          fetchExchangeRate(currency, checkIn, price);
         } else {
           setUsdPrice(''); setExchangeRate(null); setPriceCurrency('');
         }
-      }, [price, checkIn]);
+      }, [price, checkIn, fetchExchangeRate]);
 
       // Update USD price when exchange rate changes
       useEffect(() => {
