@@ -1577,6 +1577,98 @@
       );
     };
 
+    // Live USD conversion component for reservation detail cards
+    const ReservationDetailsCard = ({ rd, category, isDarkMode }) => {
+      const [liveUsd, setLiveUsd] = useState(rd.price_usd || '');
+      const [liveRate, setLiveRate] = useState(rd.exchange_rate || null);
+      const [liveRateDate, setLiveRateDate] = useState(rd.exchange_rate_date || '');
+      const [fetchingRate, setFetchingRate] = useState(false);
+
+      useEffect(() => {
+        if (liveUsd || !rd.price) return; // already have USD or no price
+        // Detect currency from the price string
+        const SYMS = { '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR', '₩': 'KRW' };
+        let currency = null;
+        for (const [sym, code] of Object.entries(SYMS)) {
+          if (rd.price.includes(sym)) { currency = code; break; }
+        }
+        if (!currency) {
+          const m = rd.price.match(/([A-Z]{3})/);
+          if (m && ['EUR','GBP','JPY','INR','KRW','THB','VND','AUD','CAD','CHF','CNY','SGD','HKD','TWD','MXN','SEK','NOK','DKK','CZK','PLN'].includes(m[1])) currency = m[1];
+        }
+        if (!currency || currency === 'USD') return;
+
+        setFetchingRate(true);
+        const numPrice = parseFloat(rd.price.replace(/[^0-9.,]/g, '').replace(/,/g, ''));
+        if (!numPrice || isNaN(numPrice)) { setFetchingRate(false); return; }
+
+        fetch(`https://api.frankfurter.app/latest?from=${currency}&to=USD`)
+          .then(r => r.json())
+          .then(data => {
+            if (data.rates?.USD) {
+              const usd = '$' + (numPrice * data.rates.USD).toFixed(2);
+              setLiveUsd(usd);
+              setLiveRate(data.rates.USD);
+              setLiveRateDate(data.date || 'latest');
+            }
+          })
+          .catch(() => {})
+          .finally(() => setFetchingRate(false));
+      }, [rd.price, rd.price_usd, liveUsd]);
+
+      const isActivity = rd.type === 'activity' || category === 'activity';
+      const priceDisplay = rd.price ? (
+        <span>
+          {rd.price}
+          {(liveUsd || fetchingRate) && (
+            <span className="text-xs ml-1">
+              {fetchingRate ? (
+                <span className="text-gray-400 animate-pulse">converting...</span>
+              ) : (
+                <span className="text-green-600 dark:text-green-400">≈ {liveUsd}</span>
+              )}
+              {liveRateDate && !fetchingRate && (
+                <span className="text-gray-400 dark:text-gray-500 ml-1">({liveRateDate})</span>
+              )}
+            </span>
+          )}
+        </span>
+      ) : null;
+
+      const details = isActivity ? [
+        rd.tour_operator && { label: 'Operator', value: rd.tour_operator },
+        rd.date && { label: 'Date', value: `${rd.date}${rd.time ? ' at ' + rd.time : ''}` },
+        rd.duration && { label: 'Duration', value: rd.duration },
+        rd.confirmation_number && { label: 'Confirmation #', value: rd.confirmation_number },
+        rd.price && { label: 'Price', value: priceDisplay },
+        rd.contact_info && { label: 'Contact', value: rd.contact_info },
+        rd.address && { label: 'Meeting Point', value: rd.address },
+        rd.booking_source && { label: 'Booked via', value: rd.booking_source },
+      ].filter(Boolean) : [
+        rd.room_type && { label: 'Room', value: rd.room_type },
+        rd.check_in && { label: 'Check-in', value: `${rd.check_in}${rd.check_in_time ? ' at ' + rd.check_in_time : ''}` },
+        rd.check_out && { label: 'Check-out', value: `${rd.check_out}${rd.check_out_time ? ' at ' + rd.check_out_time : ''}` },
+        rd.confirmation_number && { label: 'Confirmation #', value: rd.confirmation_number },
+        rd.pin && { label: 'PIN', value: rd.pin },
+        rd.price && { label: 'Price', value: priceDisplay },
+        rd.includes_breakfast && rd.includes_breakfast !== 'unknown' && { label: 'Breakfast', value: rd.includes_breakfast === 'yes' ? 'Included' : 'Not included' },
+        rd.booking_source && { label: 'Source', value: rd.booking_source },
+      ].filter(Boolean);
+
+      if (details.length === 0) return null;
+      return (
+        <div className="bg-blue-50 dark:bg-slate-800 rounded-lg p-3 space-y-1.5">
+          <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wide">{isActivity ? 'Activity Details' : 'Reservation Details'}</p>
+          {details.map((d, i) => (
+            <div key={i} className="flex justify-between text-sm">
+              <span className="text-gray-500 dark:text-gray-400">{d.label}</span>
+              <span className="font-medium text-gray-800 dark:text-gray-200 text-right max-w-[65%]">{d.value}</span>
+            </div>
+          ))}
+        </div>
+      );
+    };
+
     const PinDetailSheet = ({ pin, onClose, onEdit, onInlineUpdate, isDarkMode, isDesktop, onDelete, onNavigate, collections, allPins, fetchingRatings, onRetryRatings, ratingFetchStatus, customIcons, onUploadIcon, onDeleteIcon }) => {
       const [translated, setTranslated] = useState(null);
       const [translating, setTranslating] = useState(false);
@@ -1808,41 +1900,9 @@
             )}
 
             {/* Reservation Details Card — for hotel and activity pins */}
-            {!editing && pin.reservation_details && (pin.category === 'hotel' || pin.category === 'activity') && (() => {
-              const rd = pin.reservation_details;
-              const isActivity = rd.type === 'activity' || pin.category === 'activity';
-              const details = isActivity ? [
-                rd.tour_operator && { label: 'Operator', value: rd.tour_operator },
-                rd.date && { label: 'Date', value: `${rd.date}${rd.time ? ' at ' + rd.time : ''}` },
-                rd.duration && { label: 'Duration', value: rd.duration },
-                rd.confirmation_number && { label: 'Confirmation #', value: rd.confirmation_number },
-                rd.price && { label: 'Price', value: rd.price + (rd.price_usd ? ` (${rd.price_usd} USD)` : '') },
-                rd.contact_info && { label: 'Contact', value: rd.contact_info },
-                rd.address && { label: 'Meeting Point', value: rd.address },
-                rd.booking_source && { label: 'Booked via', value: rd.booking_source },
-              ].filter(Boolean) : [
-                rd.room_type && { label: 'Room', value: rd.room_type },
-                rd.check_in && { label: 'Check-in', value: `${rd.check_in}${rd.check_in_time ? ' at ' + rd.check_in_time : ''}` },
-                rd.check_out && { label: 'Check-out', value: `${rd.check_out}${rd.check_out_time ? ' at ' + rd.check_out_time : ''}` },
-                rd.confirmation_number && { label: 'Confirmation #', value: rd.confirmation_number },
-                rd.pin && { label: 'PIN', value: rd.pin },
-                rd.price && { label: 'Price', value: rd.price + (rd.price_usd ? ` (${rd.price_usd} USD)` : '') },
-                rd.includes_breakfast && rd.includes_breakfast !== 'unknown' && { label: 'Breakfast', value: rd.includes_breakfast === 'yes' ? 'Included' : 'Not included' },
-                rd.booking_source && { label: 'Source', value: rd.booking_source },
-              ].filter(Boolean);
-              if (details.length === 0) return null;
-              return (
-                <div className="bg-blue-50 dark:bg-slate-800 rounded-lg p-3 space-y-1.5">
-                  <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wide">{isActivity ? 'Activity Details' : 'Reservation Details'}</p>
-                  {details.map((d, i) => (
-                    <div key={i} className="flex justify-between text-sm">
-                      <span className="text-gray-500 dark:text-gray-400">{d.label}</span>
-                      <span className="font-medium text-gray-800 dark:text-gray-200 text-right max-w-[65%]">{d.value}</span>
-                    </div>
-                  ))}
-                </div>
-              );
-            })()}
+            {!editing && pin.reservation_details && (pin.category === 'hotel' || pin.category === 'activity') && (
+              <ReservationDetailsCard rd={pin.reservation_details} category={pin.category} isDarkMode={isDarkMode} />
+            )}
 
             {/* Add to Calendar — for hotel pins with reservation details */}
             {!editing && pin.reservation_details?.check_in && pin.category === 'hotel' && (() => {
@@ -3164,10 +3224,11 @@
         if (pat.test(full)) { result.bookingSite = name; break; }
       }
 
-      // Confirmation / booking number
+      // Confirmation / booking number — try URL patterns first (most reliable, full number)
       const confPatterns = [
-        /booking\s*(?:no|number|#|ref|reference)\.?\s*:?\s*([A-Z0-9][-A-Z0-9]{4,20})/i,
-        /(?:confirmation|reservation|order|reference)\s*(?:#|no|number|code)?\.?\s*:?\s*([A-Z0-9][-A-Z0-9]{4,20})/i,
+        /bookingNo=([A-Z0-9][-A-Z0-9]{3,20})/i, // from URLs like Klook
+        /booking\s*(?:no|number|#|ref|reference)\.?\s*:?\s*([A-Z0-9][-A-Z0-9]{3,20})/i,
+        /(?:confirmation|reservation|order|reference)\s*(?:#|no|number|code)?\.?\s*:?\s*([A-Z0-9][-A-Z0-9]{3,20})/i,
       ];
       for (const pat of confPatterns) {
         const m = full.match(pat);
@@ -3216,43 +3277,66 @@
       emails.forEach(e => { if (!/noreply|no-reply|mailer/i.test(e)) contacts.push(e); });
       result.contactInfo = contacts.slice(0, 3).join(' | ');
 
-      // Tour operator — prefer named operator, then email domain
-      // First try explicit "operator/provider/organized by" patterns, but only grab NAME text (not phone/email)
-      const opMatch = full.match(/(?:operator|provider|company|organized?\s*by|supplied\s*by|hosted\s*by)[:\s]+([A-Z][\w\s&'.,-]{2,50}?)(?=[,.\n]|\s{2,}|\s+(?:TEL|tel|Tel|phone|email|contact|http|\+\d|\(\d))/i);
-      if (opMatch) {
-        result.tourOperator = opMatch[1].trim();
-      } else if (emails.length > 0) {
-        // Extract operator name from email domain (skip booking site emails)
-        const opEmail = emails.find(e => !/klook|viator|getyourguide|airbnb|tripadvisor|musement|tiqets|civitatis|noreply|no-reply/i.test(e));
-        if (opEmail) {
-          const domain = opEmail.split('@')[1]?.split('.')[0];
-          if (domain && domain.length > 2) {
-            // Capitalize and use as operator name
-            result.tourOperator = domain.charAt(0).toUpperCase() + domain.slice(1);
-          }
+      // Tour operator — extract from email domain first (most reliable), then try labeled patterns
+      // Skip generic matches like "operator for more information"
+      const opEmail = emails.find(e => !/klook|viator|getyourguide|airbnb|tripadvisor|musement|tiqets|civitatis|noreply|no-reply|mailer/i.test(e));
+      if (opEmail) {
+        const domain = opEmail.split('@')[1]?.split('.')[0];
+        if (domain && domain.length > 2) {
+          result.tourOperator = domain.charAt(0).toUpperCase() + domain.slice(1);
+        }
+      }
+      if (!result.tourOperator) {
+        // Try "supplied by X", "organized by X", "hosted by X" — require the name to start with uppercase
+        const opMatch = full.match(/(?:supplied|organized?|hosted|operated|provided)\s+by[:\s]+([A-Z][\w\s&'.]{2,40}?)(?=[,.\n]|\s{2,}|$)/i);
+        if (opMatch && !/more\s+info|contact/i.test(opMatch[1])) {
+          result.tourOperator = opMatch[1].trim();
         }
       }
 
-      // Tour name — try activity-specific patterns
-      const namePatterns = [
-        // Klook-style: "Activity: <name>" or product name lines
-        /(?:activity|product|experience|tour)\s*(?:name)?[:\s]+([^\n]{5,100})/i,
-        // After "booking confirmed" look for the prominent title line
-        /(?:booking\s+confirmed|your\s+booking|order\s+confirmed)[:\s!]*\s*(?:for\s+)?([A-Z][\w\s]+(?:Tour|Experience|Ride|Walk|Cruise|Class|Workshop|Adventure|Excursion|Tasting|Show|Visit|Trip|Pass|Ticket))/i,
-        // Direct match of activity keywords in any line
-        /((?:[A-Z][\w]+\s+){1,8}(?:Tour|Experience|Ride|Walk|Cruise|Class|Workshop|Adventure|Excursion|Tasting|Show|Visit|Trip|Pass|Ticket))/,
-      ];
-      for (const pat of namePatterns) {
-        const m = full.match(pat);
-        if (m) {
-          let name = m[1].trim();
+      // Tour name — use LINE-BASED parsing for much better accuracy
+      // Strategy 1: Find a line that ends with a Tour/Experience/etc keyword and is a proper title
+      const activityEndWords = /(?:Tour|Experience|Ride|Walk|Cruise|Class|Workshop|Adventure|Excursion|Tasting|Show|Visit|Trip|Pass|Ticket)$/i;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        // Skip very short lines, URLs, or lines that are clearly navigation/UI text
+        if (trimmed.length < 10 || trimmed.length > 120) continue;
+        if (/^(http|www\.|search|help|go to|en usd|recently|more ideas|spring deal)/i.test(trimmed)) continue;
+        // Skip lines starting with durations, numbers, prices, or UI elements
+        if (/^(\d+[-–\s]?(?:minute|min|hour|hr)|US\$|€|£|¥|See |Cancel|Change|Receipt|From |★)/i.test(trimmed)) continue;
+        if (activityEndWords.test(trimmed)) {
+          let name = trimmed;
           name = name.replace(/^(?:the|a|an|your)\s+/i, '');
-          // Skip if it's just generic text like "Tour Operator" or "Experience Details"
-          if (name.length >= 5 && name.length <= 100 && !/^(?:tour operator|experience details|activity details)/i.test(name)) {
+          // Must start with an uppercase letter and be a real title (not "Contact operator", "30-minute Tour")
+          if (name.length >= 10 && /^[A-Z]/.test(name) && !/^(?:tour operator|experience details|activity details|contact operator|contact klook)/i.test(name)) {
             result.tourName = name;
             break;
           }
         }
+      }
+      // Strategy 2: If no match, look for a prominent line right after "Booking confirmed"
+      if (!result.tourName) {
+        for (let i = 0; i < lines.length; i++) {
+          if (/booking\s+confirmed/i.test(lines[i])) {
+            // Scan the next few non-empty lines for a substantial title
+            for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+              const candidate = lines[j].trim();
+              if (candidate.length >= 10 && candidate.length <= 120
+                && /^[A-Z]/.test(candidate)
+                && !/^(US\$|€|£|¥|See |Cancel|Change|Receipt|Payment|You can)/i.test(candidate)
+                && !/^\d/.test(candidate)) {
+                result.tourName = candidate;
+                break;
+              }
+            }
+            if (result.tourName) break;
+          }
+        }
+      }
+      // Strategy 3: fallback to flattened text regex
+      if (!result.tourName) {
+        const m = full.match(/((?:[A-Z][\w]+\s+){1,8}(?:Tour|Experience|Ride|Walk|Cruise|Class|Workshop|Adventure|Excursion|Tasting|Show|Visit|Trip|Pass|Ticket))/);
+        if (m && m[1].length >= 8) result.tourName = m[1].trim();
       }
 
       // Description — what's included (capture content between "What's included" and next section header)
@@ -3267,8 +3351,9 @@
 
       // Address / meeting point — be strict about what constitutes an address
       const meetPatterns = [
-        /(?:meet(?:ing)?\s*point|pick[\s-]?up\s*(?:point|location|address)|starting\s+point|getting\s+there|location|venue|address)[:\s]+([^\n]{5,150})/i,
-        /(?:meet\s+(?:at|up\s+at))\s+([^\n]{5,150})/i,
+        /(?:meet\s+(?:up\s+)?at)\s+([^\n]{5,150})/i,
+        /(?:meet(?:ing)?\s*point|pick[\s-]?up\s*(?:point|location|address)|starting\s+point)[:\s]+([^\n]{5,150})/i,
+        /(?:getting\s+there|venue\s+address|meeting\s+location)[:\s]+([^\n]{5,150})/i,
       ];
       for (const pat of meetPatterns) {
         const m = text.match(pat); // use original text (with newlines) not flattened
@@ -4152,9 +4237,12 @@
                     {addressSuggestions.length > 0 && (
                       <div className="mt-1 border rounded-lg overflow-hidden dark:border-slate-700 bg-white dark:bg-slate-800">
                         {addressSuggestions.map((s, i) => (
-                          <button key={i} onClick={() => selectAddressSuggestion(s)} className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-slate-700 border-b last:border-b-0 dark:border-slate-700">
-                            <span className="font-medium dark:text-white">{s.name}</span>
-                            <span className="text-gray-500 dark:text-gray-400 text-xs block">{s.address}</span>
+                          <button key={i} onClick={() => selectAddressSuggestion(s)} className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-slate-700 border-b last:border-b-0 dark:border-slate-700 flex items-start gap-2">
+                            <span className="text-red-400 mt-0.5">📍</span>
+                            <div>
+                              <span className="font-medium dark:text-white">{s.name}</span>
+                              <span className="text-gray-500 dark:text-gray-400 text-xs block">{s.address}</span>
+                            </div>
                           </button>
                         ))}
                       </div>
@@ -4918,8 +5006,29 @@
         markersRef.current.forEach(marker => map.removeLayer(marker));
         markersRef.current.clear();
 
-        // Add new markers
+        // Add new markers — offset pins that share the same coordinates
         const validPins = pins.filter(p => p.lat && p.lng);
+        // Group pins by rounded coords to detect overlaps (within ~10m)
+        const coordGroups = {};
+        validPins.forEach(pin => {
+          const key = `${pin.lat.toFixed(4)},${pin.lng.toFixed(4)}`;
+          if (!coordGroups[key]) coordGroups[key] = [];
+          coordGroups[key].push(pin);
+        });
+        // Build offset map: for groups of 2+ pins, fan them out in a circle
+        const offsetMap = {};
+        Object.values(coordGroups).forEach(group => {
+          if (group.length <= 1) return;
+          const offsetDist = 0.00015; // ~15m offset
+          group.forEach((pin, i) => {
+            const angle = (2 * Math.PI * i) / group.length - Math.PI / 2;
+            offsetMap[pin.id] = {
+              lat: pin.lat + offsetDist * Math.sin(angle),
+              lng: pin.lng + offsetDist * Math.cos(angle),
+            };
+          });
+        });
+
         validPins.forEach(pin => {
           const isSelected = selectedPin?.id === pin.id;
           const categoryData = PIN_CATEGORIES[pin.category] || PIN_CATEGORIES.other;
@@ -4930,7 +5039,8 @@
             iconAnchor: [isSelected ? 22 : 18, isSelected ? 22 : 18],
             className: 'category-marker'
           });
-          const marker = L.marker([pin.lat, pin.lng], { icon })
+          const pos = offsetMap[pin.id] || { lat: pin.lat, lng: pin.lng };
+          const marker = L.marker([pos.lat, pos.lng], { icon })
             .on('click', () => onSelectPin(pin))
             .addTo(map);
           markersRef.current.set(pin.id, marker);
