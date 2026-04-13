@@ -3202,67 +3202,85 @@
       if (priceMatch) result.price = priceMatch[0].trim();
 
       // Contact info — collect phone numbers and emails
-      const phones = full.match(/(?:\+?\(?\d{1,4}\)?[-.\s]?\d{1,5}[-.\s]?\d{1,5}[-.\s]?\d{1,5})/g) || [];
+      // Use stricter phone regex: must start with + or ( or have separators, and exclude date-like patterns
+      const phoneMatches = full.match(/(?:\+\d{1,4}[-.\s]?\(?\d{1,5}\)?[-.\s]?\d{1,5}[-.\s]?\d{1,5}|\(\d{3,5}\)[-.\s]?\d[-.\s]?\d{3,5}[-.\s]?\d{3,5})/g) || [];
       const emails = full.match(/[\w.-]+@[\w.-]+\.\w{2,}/g) || [];
       const contacts = [];
-      // Filter out generic/unrelated phone patterns (too short, or just dates)
-      phones.forEach(p => {
+      phoneMatches.forEach(p => {
         const digits = p.replace(/\D/g, '');
-        if (digits.length >= 7 && digits.length <= 15) contacts.push(p.trim());
+        // Must be 7-15 digits and not look like a date (YYYYMMDD pattern)
+        if (digits.length >= 7 && digits.length <= 15 && !/^20\d{6}/.test(digits)) {
+          contacts.push(p.trim());
+        }
       });
       emails.forEach(e => { if (!/noreply|no-reply|mailer/i.test(e)) contacts.push(e); });
       result.contactInfo = contacts.slice(0, 3).join(' | ');
 
-      // Tour operator — look for "Contact operator", email domain, or operator patterns
-      const opMatch = full.match(/(?:operator|provider|company|organized?\s*by)[:\s]+([^\n,]{3,60})/i);
+      // Tour operator — prefer named operator, then email domain
+      // First try explicit "operator/provider/organized by" patterns, but only grab NAME text (not phone/email)
+      const opMatch = full.match(/(?:operator|provider|company|organized?\s*by|supplied\s*by|hosted\s*by)[:\s]+([A-Z][\w\s&'.,-]{2,50}?)(?=[,.\n]|\s{2,}|\s+(?:TEL|tel|Tel|phone|email|contact|http|\+\d|\(\d))/i);
       if (opMatch) {
         result.tourOperator = opMatch[1].trim();
       } else if (emails.length > 0) {
-        // Extract operator name from email domain
-        const opEmail = emails.find(e => !/klook|viator|getyourguide|airbnb|tripadvisor/i.test(e));
+        // Extract operator name from email domain (skip booking site emails)
+        const opEmail = emails.find(e => !/klook|viator|getyourguide|airbnb|tripadvisor|musement|tiqets|civitatis|noreply|no-reply/i.test(e));
         if (opEmail) {
           const domain = opEmail.split('@')[1]?.split('.')[0];
-          if (domain && domain.length > 2) result.tourOperator = domain.charAt(0).toUpperCase() + domain.slice(1);
+          if (domain && domain.length > 2) {
+            // Capitalize and use as operator name
+            result.tourOperator = domain.charAt(0).toUpperCase() + domain.slice(1);
+          }
         }
       }
 
       // Tour name — try activity-specific patterns
       const namePatterns = [
-        // Klook: activity name is usually a prominent line with capitalized words
-        /(?:booking\s+confirmed|your\s+booking)[:\s]*.*?([A-Z][\w\s]+(?:Tour|Experience|Ride|Walk|Cruise|Class|Workshop|Adventure|Excursion|Tasting|Show|Visit|Trip|Pass|Ticket))/i,
-        // Direct match of activity keywords
-        /([\w\s-]{5,80}(?:Tour|Experience|Ride|Walk|Cruise|Class|Workshop|Adventure|Excursion|Tasting|Show|Visit|Trip))/,
+        // Klook-style: "Activity: <name>" or product name lines
+        /(?:activity|product|experience|tour)\s*(?:name)?[:\s]+([^\n]{5,100})/i,
+        // After "booking confirmed" look for the prominent title line
+        /(?:booking\s+confirmed|your\s+booking|order\s+confirmed)[:\s!]*\s*(?:for\s+)?([A-Z][\w\s]+(?:Tour|Experience|Ride|Walk|Cruise|Class|Workshop|Adventure|Excursion|Tasting|Show|Visit|Trip|Pass|Ticket))/i,
+        // Direct match of activity keywords in any line
+        /((?:[A-Z][\w]+\s+){1,8}(?:Tour|Experience|Ride|Walk|Cruise|Class|Workshop|Adventure|Excursion|Tasting|Show|Visit|Trip|Pass|Ticket))/,
       ];
       for (const pat of namePatterns) {
         const m = full.match(pat);
         if (m) {
           let name = m[1].trim();
-          // Clean up leading junk
           name = name.replace(/^(?:the|a|an|your)\s+/i, '');
-          if (name.length >= 5 && name.length <= 100) {
+          // Skip if it's just generic text like "Tour Operator" or "Experience Details"
+          if (name.length >= 5 && name.length <= 100 && !/^(?:tour operator|experience details|activity details)/i.test(name)) {
             result.tourName = name;
             break;
           }
         }
       }
 
-      // Description — what's included
-      const inclMatch = full.match(/what'?s\s+included[:\s]*([\s\S]{10,300}?)(?=what'?s\s+not|not\s+included|how\s+to|before\s+you|itinerary|$)/i);
+      // Description — what's included (capture content between "What's included" and next section header)
+      const inclMatch = text.match(/what'?s\s+included[:\s]*\n([\s\S]{5,500}?)(?=\n\s*(?:what'?s\s+not|not\s+included|how\s+to\s+use|how\s+to\s+get|before\s+you|itinerary|cancel|refund|important|terms|condition|contact|meeting|address|location)\b)/i);
       if (inclMatch) {
-        result.description = inclMatch[1].replace(/\s+/g, ' ').trim();
+        result.description = inclMatch[1].replace(/\n/g, ', ').replace(/,\s*,/g, ',').replace(/\s+/g, ' ').trim();
+      } else {
+        // Fallback: try "includes:" or "included:" patterns
+        const incl2 = full.match(/(?:includes?|what\s+you(?:'ll)?\s+get)[:\s]+([^.]{10,200})/i);
+        if (incl2) result.description = incl2[1].trim();
       }
 
-      // Address / meeting point
+      // Address / meeting point — be strict about what constitutes an address
       const meetPatterns = [
-        /(?:meet(?:ing)?\s*(?:point|up|at|location)|pick[\s-]?up|starting\s+point|getting\s+there)[:\s]+([^\n]{5,150})/i,
-        /(?:meet\s+up\s+at)\s+([^\n]{5,150})/i,
+        /(?:meet(?:ing)?\s*point|pick[\s-]?up\s*(?:point|location|address)|starting\s+point|getting\s+there|location|venue|address)[:\s]+([^\n]{5,150})/i,
+        /(?:meet\s+(?:at|up\s+at))\s+([^\n]{5,150})/i,
       ];
       for (const pat of meetPatterns) {
-        const m = full.match(pat);
+        const m = text.match(pat); // use original text (with newlines) not flattened
         if (m) {
           let addr = m[1].trim();
-          addr = addr.replace(/\s*(?:path|how|what|before|itinerary)\s.*/i, '').trim();
-          if (addr.length >= 5) { result.address = addr; break; }
+          // Stop at section boundaries
+          addr = addr.replace(/\s*(?:what'?s|how\s+to|before|itinerary|cancel|refund|important|terms|please|note:)\s.*/i, '').trim();
+          // Skip if it looks like a section header rather than an address
+          if (addr.length >= 5 && addr.length <= 150 && !/^(?:what|how|before|cancel)/i.test(addr)) {
+            result.address = addr;
+            break;
+          }
         }
       }
 
@@ -3656,8 +3674,14 @@
           setActivityDescription(parsed.description);
           setAddress(parsed.address);
           setPrice(parsed.price);
-          // Geocode the meeting point or tour name for map placement
-          const geoQuery = parsed.address || parsed.tourName;
+          // Geocode the meeting point, or extract a location from the tour name
+          let geoQuery = parsed.address;
+          if (!geoQuery && parsed.tourName) {
+            // Try to extract a city/place name from the tour name (e.g. "Kyoto Arashiyama" from "Kyoto Arashiyama Rickshaw Tour")
+            // Remove activity-type words to get the location part
+            geoQuery = parsed.tourName.replace(/\b(?:tour|experience|ride|walk|cruise|class|workshop|adventure|excursion|tasting|show|visit|trip|pass|ticket|rickshaw|safari|kayak|snorkel|diving|hiking|cooking|cycling|sightseeing|transfer|shuttle|day)\b/gi, '').replace(/\s+/g, ' ').trim();
+            if (geoQuery.length < 3) geoQuery = parsed.tourName;
+          }
           if (geoQuery) geocodeHotelName(geoQuery, parsed.address);
         } else {
           const parsed = parseConfirmationText(text);
@@ -3908,6 +3932,19 @@
                     ))}
                   </div>
 
+                  {/* Location status */}
+                  {resolvedLat && resolvedLng ? (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg text-xs text-green-700 dark:text-green-400">
+                      <span>📍</span>
+                      <span>Location found — map centered on pin</span>
+                    </div>
+                  ) : step === 'review' && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg text-xs text-yellow-700 dark:text-yellow-400">
+                      <span>⚠️</span>
+                      <span>Location not yet found — enter an address to place on map</span>
+                    </div>
+                  )}
+
                   {/* --- HOTEL FORM --- */}
                   {bookingType === 'hotel' && <>
                   {/* Hotel Name with auto-geocode */}
@@ -4026,20 +4063,7 @@
                   {bookingType === 'activity' && <>
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Tour / Activity *</label>
-                    <div className="relative">
-                      <input type="text" value={tourName} onChange={e => { setTourName(e.target.value); if (geocodeTimerRef.current) clearTimeout(geocodeTimerRef.current); geocodeTimerRef.current = setTimeout(() => geocodeHotelName(e.target.value, address), 500); }} placeholder="e.g. Kyoto Arashiyama Rickshaw Tour" className={inputClass} autoFocus autoComplete="off" data-1p-ignore />
-                      {geocodingName && <span className="absolute right-3 top-2.5 text-xs text-gray-400 animate-pulse">Looking up...</span>}
-                    </div>
-                    {addressSuggestions.length > 0 && (
-                      <div className="mt-1 border rounded-lg overflow-hidden dark:border-slate-700 bg-white dark:bg-slate-800">
-                        {addressSuggestions.map((s, i) => (
-                          <button key={i} onClick={() => selectAddressSuggestion(s)} className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-slate-700 border-b last:border-b-0 dark:border-slate-700">
-                            <span className="font-medium dark:text-white">{s.name || tourName}</span>
-                            <span className="text-gray-500 dark:text-gray-400 text-xs block">{s.address}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                    <input type="text" value={tourName} onChange={e => setTourName(e.target.value)} placeholder="e.g. Kyoto Arashiyama Rickshaw Tour" className={inputClass} autoFocus autoComplete="off" data-1p-ignore />
                   </div>
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Tour Operator</label>
@@ -4080,7 +4104,20 @@
                   </div>
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Meeting Point / Address</label>
-                    <input type="text" value={address} onChange={e => { setAddress(e.target.value); setAddressSuggestions([]); }} placeholder="Where to meet for the tour" className={inputClass} autoComplete="off" data-1p-ignore />
+                    <div className="relative">
+                      <input type="text" value={address} onChange={e => { setAddress(e.target.value); setAddressSuggestions([]); if (geocodeTimerRef.current) clearTimeout(geocodeTimerRef.current); geocodeTimerRef.current = setTimeout(() => geocodeHotelName(e.target.value, e.target.value), 500); }} placeholder="Where to meet for the tour" className={inputClass} autoComplete="off" data-1p-ignore />
+                      {geocodingName && <span className="absolute right-3 top-2.5 text-xs text-gray-400 animate-pulse">Looking up...</span>}
+                    </div>
+                    {addressSuggestions.length > 0 && (
+                      <div className="mt-1 border rounded-lg overflow-hidden dark:border-slate-700 bg-white dark:bg-slate-800">
+                        {addressSuggestions.map((s, i) => (
+                          <button key={i} onClick={() => selectAddressSuggestion(s)} className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-slate-700 border-b last:border-b-0 dark:border-slate-700">
+                            <span className="font-medium dark:text-white">{s.name}</span>
+                            <span className="text-gray-500 dark:text-gray-400 text-xs block">{s.address}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Description</label>
