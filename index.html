@@ -1509,6 +1509,25 @@
       );
     };
 
+    // Lightweight markdown renderer — handles ##, **bold**, *italic*, - lists, [links](url)
+    const SimpleMarkdown = ({ text, className }) => {
+      if (!text) return null;
+      const html = text
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') // escape HTML
+        .replace(/^### (.+)$/gm, '<strong class="text-sm block mt-2 mb-0.5">$1</strong>')
+        .replace(/^## (.+)$/gm, '<strong class="text-base block mt-2 mb-0.5">$1</strong>')
+        .replace(/^# (.+)$/gm, '<strong class="text-lg block mt-2 mb-0.5">$1</strong>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" class="text-blue-600 dark:text-blue-400 hover:underline">$1</a>')
+        .replace(/^[-–•] (.+)$/gm, '<span class="block pl-3 relative"><span class="absolute left-0">•</span>$1</span>')
+        .replace(/\n/g, '<br/>');
+      return React.createElement('div', {
+        className: className || '',
+        dangerouslySetInnerHTML: { __html: html }
+      });
+    };
+
     const InlineEditableText = ({ label, value, onSave, placeholder, emptyText, showBorder = true }) => {
       const [editing, setEditing] = useState(false);
       const [draft, setDraft] = useState(value);
@@ -1540,7 +1559,9 @@
               </button>
             </div>
             {value ? (
-              <p className="text-sm text-gray-700 dark:text-gray-300 whitespace-pre-wrap cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800 rounded p-1 -m-1" onClick={() => setEditing(true)}>{value}</p>
+              <div className="text-sm text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800 rounded p-1 -m-1" onClick={() => setEditing(true)}>
+                <SimpleMarkdown text={value} />
+              </div>
             ) : (
               <p className="text-sm text-gray-400 italic cursor-pointer" onClick={() => setEditing(true)}>{emptyText || `No ${label.toLowerCase()} yet — tap to add`}</p>
             )}
@@ -3508,6 +3529,32 @@
       const geocodeTimerRef = useRef(null);
       const fileInputRef = useRef(null);
 
+      // Normalize date string to YYYY-MM-DD for <input type="date">
+      const toISODate = (str) => {
+        if (!str) return '';
+        // Already ISO format
+        if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+        const d = new Date(str);
+        if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+        return str; // fallback to original if unparseable
+      };
+      // Normalize time string to HH:MM for <input type="time">
+      const toISOTime = (str) => {
+        if (!str) return '';
+        // Already 24h format
+        if (/^\d{2}:\d{2}$/.test(str)) return str;
+        const m12 = str.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+        if (m12) {
+          let h = parseInt(m12[1]);
+          if (m12[3].toUpperCase() === 'PM' && h !== 12) h += 12;
+          if (m12[3].toUpperCase() === 'AM' && h === 12) h = 0;
+          return String(h).padStart(2, '0') + ':' + m12[2];
+        }
+        const m24 = str.match(/(\d{1,2}):(\d{2})/);
+        if (m24) return String(parseInt(m24[1])).padStart(2, '0') + ':' + m24[2];
+        return str;
+      };
+
       // When user switches booking type, re-parse the extracted text into the right fields
       const setBookingType = useCallback((newType) => {
         setBookingTypeRaw(newType);
@@ -3518,8 +3565,8 @@
           setTourOperator(parsed.tourOperator);
           setBookingSource(prev => parsed.bookingSite || prev);
           setConfirmationNumber(prev => parsed.confirmationNumber || prev);
-          setActivityDate(parsed.date || checkIn); // fallback: use check-in as activity date
-          setActivityTime(parsed.time || checkInTime);
+          setActivityDate(toISODate(parsed.date || checkIn));
+          setActivityTime(toISOTime(parsed.time || checkInTime));
           setDuration(parsed.duration);
           setContactInfo(parsed.contactInfo);
           setActivityDescription(parsed.description);
@@ -3532,10 +3579,10 @@
           const parsed = parseConfirmationText(extractedText);
           setPropertyName(prev => parsed.propertyName || tourName || prev);
           setAddress(prev => parsed.address || prev);
-          setCheckIn(parsed.checkIn || activityDate);
-          setCheckOut(parsed.checkOut);
-          setCheckInTime(parsed.checkInTime || activityTime);
-          setCheckOutTime(parsed.checkOutTime);
+          setCheckIn(toISODate(parsed.checkIn || activityDate));
+          setCheckOut(toISODate(parsed.checkOut));
+          setCheckInTime(toISOTime(parsed.checkInTime || activityTime));
+          setCheckOutTime(toISOTime(parsed.checkOutTime));
           setConfirmationNumber(prev => parsed.confirmationNumber || prev);
           setPin(parsed.pin);
           setBookingSource(prev => parsed.bookingSource || prev);
@@ -3692,9 +3739,17 @@
         setResolvedLat(suggestion.lat);
         setResolvedLng(suggestion.lng);
         setAddressSuggestions([]);
+        // Update the name field to the full place name if we have one
+        if (suggestion.name) {
+          if (bookingType === 'activity') {
+            // For activities, only update if the name looks like a place (not the tour name)
+          } else {
+            setPropertyName(suggestion.name);
+          }
+        }
         // Show preview pin and center map
         if (suggestion.lat && suggestion.lng) {
-          onPreviewPin?.({ lat: suggestion.lat, lng: suggestion.lng, name: propertyName || suggestion.name });
+          onPreviewPin?.({ lat: suggestion.lat, lng: suggestion.lng, name: suggestion.name || propertyName });
           onMapCenter?.([suggestion.lat, suggestion.lng], 15);
         }
       };
@@ -3790,8 +3845,8 @@
           setTourOperator(parsed.tourOperator);
           setBookingSource(parsed.bookingSite);
           setConfirmationNumber(parsed.confirmationNumber);
-          setActivityDate(parsed.date);
-          setActivityTime(parsed.time);
+          setActivityDate(toISODate(parsed.date));
+          setActivityTime(toISOTime(parsed.time));
           setDuration(parsed.duration);
           setContactInfo(parsed.contactInfo);
           setActivityDescription(parsed.description);
@@ -3800,8 +3855,6 @@
           // Geocode the meeting point, or extract a location from the tour name
           let geoQuery = parsed.address;
           if (!geoQuery && parsed.tourName) {
-            // Try to extract a city/place name from the tour name (e.g. "Kyoto Arashiyama" from "Kyoto Arashiyama Rickshaw Tour")
-            // Remove activity-type words to get the location part
             geoQuery = parsed.tourName.replace(/\b(?:tour|experience|ride|walk|cruise|class|workshop|adventure|excursion|tasting|show|visit|trip|pass|ticket|rickshaw|safari|kayak|snorkel|diving|hiking|cooking|cycling|sightseeing|transfer|shuttle|day)\b/gi, '').replace(/\s+/g, ' ').trim();
             if (geoQuery.length < 3) geoQuery = parsed.tourName;
           }
@@ -3810,10 +3863,10 @@
           const parsed = parseConfirmationText(text);
           setPropertyName(parsed.propertyName);
           setAddress(parsed.address);
-          setCheckIn(parsed.checkIn);
-          setCheckOut(parsed.checkOut);
-          setCheckInTime(parsed.checkInTime);
-          setCheckOutTime(parsed.checkOutTime);
+          setCheckIn(toISODate(parsed.checkIn));
+          setCheckOut(toISODate(parsed.checkOut));
+          setCheckInTime(toISOTime(parsed.checkInTime));
+          setCheckOutTime(toISOTime(parsed.checkOutTime));
           setConfirmationNumber(parsed.confirmationNumber);
           setPin(parsed.pin);
           setBookingSource(parsed.bookingSource);
@@ -4123,11 +4176,11 @@
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Check-in Date</label>
-                      <input type="text" value={checkIn} onChange={e => setCheckIn(e.target.value)} placeholder="e.g. Mar 23, 2026" className={inputClass} autoComplete="off" data-1p-ignore />
+                      <input type="date" value={checkIn} onChange={e => setCheckIn(e.target.value)} className={inputClass} data-1p-ignore />
                     </div>
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Check-in Time</label>
-                      <input type="text" value={checkInTime} onChange={e => setCheckInTime(e.target.value)} placeholder="e.g. 4:00 PM" className={inputClass} autoComplete="off" data-1p-ignore />
+                      <input type="time" value={checkInTime} onChange={e => setCheckInTime(e.target.value)} className={inputClass} data-1p-ignore />
                     </div>
                   </div>
 
@@ -4135,11 +4188,11 @@
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Check-out Date</label>
-                      <input type="text" value={checkOut} onChange={e => setCheckOut(e.target.value)} placeholder="e.g. Apr 28, 2026" className={inputClass} autoComplete="off" data-1p-ignore />
+                      <input type="date" value={checkOut} onChange={e => setCheckOut(e.target.value)} className={inputClass} data-1p-ignore />
                     </div>
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Check-out Time</label>
-                      <input type="text" value={checkOutTime} onChange={e => setCheckOutTime(e.target.value)} placeholder="e.g. 12:00 PM" className={inputClass} autoComplete="off" data-1p-ignore />
+                      <input type="time" value={checkOutTime} onChange={e => setCheckOutTime(e.target.value)} className={inputClass} data-1p-ignore />
                     </div>
                   </div>
 
@@ -4206,11 +4259,11 @@
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Date</label>
-                      <input type="text" value={activityDate} onChange={e => setActivityDate(e.target.value)} placeholder="e.g. 2026-05-08" className={inputClass} autoComplete="off" data-1p-ignore />
+                      <input type="date" value={activityDate} onChange={e => setActivityDate(e.target.value)} className={inputClass} data-1p-ignore />
                     </div>
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Time</label>
-                      <input type="text" value={activityTime} onChange={e => setActivityTime(e.target.value)} placeholder="e.g. 11:00" className={inputClass} autoComplete="off" data-1p-ignore />
+                      <input type="time" value={activityTime} onChange={e => setActivityTime(e.target.value)} className={inputClass} data-1p-ignore />
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
