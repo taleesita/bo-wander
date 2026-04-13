@@ -1775,10 +1775,20 @@
               </div>
             )}
 
-            {/* Reservation Details Card — for hotel pins */}
-            {!editing && pin.reservation_details && pin.category === 'hotel' && (() => {
+            {/* Reservation Details Card — for hotel and activity pins */}
+            {!editing && pin.reservation_details && (pin.category === 'hotel' || pin.category === 'activity') && (() => {
               const rd = pin.reservation_details;
-              const details = [
+              const isActivity = rd.type === 'activity' || pin.category === 'activity';
+              const details = isActivity ? [
+                rd.tour_operator && { label: 'Operator', value: rd.tour_operator },
+                rd.date && { label: 'Date', value: `${rd.date}${rd.time ? ' at ' + rd.time : ''}` },
+                rd.duration && { label: 'Duration', value: rd.duration },
+                rd.confirmation_number && { label: 'Confirmation #', value: rd.confirmation_number },
+                rd.price && { label: 'Price', value: rd.price + (rd.price_usd ? ` (${rd.price_usd} USD)` : '') },
+                rd.contact_info && { label: 'Contact', value: rd.contact_info },
+                rd.address && { label: 'Meeting Point', value: rd.address },
+                rd.booking_source && { label: 'Booked via', value: rd.booking_source },
+              ].filter(Boolean) : [
                 rd.room_type && { label: 'Room', value: rd.room_type },
                 rd.check_in && { label: 'Check-in', value: `${rd.check_in}${rd.check_in_time ? ' at ' + rd.check_in_time : ''}` },
                 rd.check_out && { label: 'Check-out', value: `${rd.check_out}${rd.check_out_time ? ' at ' + rd.check_out_time : ''}` },
@@ -1791,7 +1801,7 @@
               if (details.length === 0) return null;
               return (
                 <div className="bg-blue-50 dark:bg-slate-800 rounded-lg p-3 space-y-1.5">
-                  <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wide">Reservation Details</p>
+                  <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wide">{isActivity ? 'Activity Details' : 'Reservation Details'}</p>
                   {details.map((d, i) => (
                     <div key={i} className="flex justify-between text-sm">
                       <span className="text-gray-500 dark:text-gray-400">{d.label}</span>
@@ -3087,15 +3097,151 @@
       return result;
     };
 
+    // Parse activity/tour booking text
+    const parseActivityText = (text) => {
+      const result = {
+        tourName: '', tourOperator: '', bookingSite: '', confirmationNumber: '',
+        date: '', time: '', duration: '', contactInfo: '', description: '',
+        address: '', price: '',
+      };
+      if (!text) return result;
+      const full = text.replace(/\n/g, ' ');
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+
+      // Booking site detection
+      const sitePatterns = [
+        [/klook/i, 'Klook'], [/viator/i, 'Viator'], [/getyourguide/i, 'GetYourGuide'],
+        [/airbnb\s*experiences/i, 'Airbnb Experiences'], [/tripadvisor/i, 'TripAdvisor'],
+        [/musement/i, 'Musement'], [/tiqets/i, 'Tiqets'], [/civitatis/i, 'Civitatis'],
+        [/veltra/i, 'Veltra'], [/booking\.com/i, 'Booking.com'],
+      ];
+      for (const [pat, name] of sitePatterns) {
+        if (pat.test(full)) { result.bookingSite = name; break; }
+      }
+
+      // Confirmation / booking number
+      const confPatterns = [
+        /booking\s*(?:no|number|#|ref|reference)\.?\s*:?\s*([A-Z0-9][-A-Z0-9]{4,20})/i,
+        /(?:confirmation|reservation|order|reference)\s*(?:#|no|number|code)?\.?\s*:?\s*([A-Z0-9][-A-Z0-9]{4,20})/i,
+      ];
+      for (const pat of confPatterns) {
+        const m = full.match(pat);
+        if (m) { result.confirmationNumber = m[1].trim(); break; }
+      }
+
+      // Date and time — look for ISO-like dates first: "2026-05-08 11:00:00"
+      const isoMatch = full.match(/(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:\((?:local|[A-Z]{2,4})\s*time)?/i);
+      if (isoMatch) {
+        result.date = isoMatch[1];
+        result.time = isoMatch[2].replace(/:\d{2}$/, ''); // strip seconds
+      } else {
+        // Try other date formats
+        const dateMatch = full.match(/(?:date|when|scheduled)[:\s]+([^\n]{6,40})/i);
+        if (dateMatch) {
+          const d = dateMatch[1].match(/(\d{4}[\-\/]\d{2}[\-\/]\d{2}|\w{3,9}\s+\d{1,2},?\s+\d{4}|\d{1,2}[\-\/]\d{1,2}[\-\/]\d{2,4})/);
+          if (d) result.date = d[1];
+          const t = dateMatch[1].match(/(\d{1,2}:\d{2}\s*(?:AM|PM)?)/i);
+          if (t) result.time = t[1];
+        }
+      }
+
+      // Duration — look for "X-minute", "X hour", "X.5 hours" etc.
+      const durMatch = full.match(/(\d+(?:\.\d+)?)\s*[-–]?\s*(?:minute|min|hour|hr)s?\s*(?:tour|ride|experience|activity|trip)?/i);
+      if (durMatch) {
+        const num = parseFloat(durMatch[0]);
+        result.duration = durMatch[0].replace(/\s*(tour|ride|experience|activity|trip)/i, '').trim();
+      }
+
+      // Price
+      const priceMatch = full.match(/(?:US)?\s*\$\s*[\d,]+\.?\d*|€\s*[\d,]+\.?\d*|£\s*[\d,]+\.?\d*|¥\s*[\d,]+|[\d,]+\.?\d*\s*(?:USD|EUR|GBP|JPY)/i);
+      if (priceMatch) result.price = priceMatch[0].trim();
+
+      // Contact info — collect phone numbers and emails
+      const phones = full.match(/(?:\+?\(?\d{1,4}\)?[-.\s]?\d{1,5}[-.\s]?\d{1,5}[-.\s]?\d{1,5})/g) || [];
+      const emails = full.match(/[\w.-]+@[\w.-]+\.\w{2,}/g) || [];
+      const contacts = [];
+      // Filter out generic/unrelated phone patterns (too short, or just dates)
+      phones.forEach(p => {
+        const digits = p.replace(/\D/g, '');
+        if (digits.length >= 7 && digits.length <= 15) contacts.push(p.trim());
+      });
+      emails.forEach(e => { if (!/noreply|no-reply|mailer/i.test(e)) contacts.push(e); });
+      result.contactInfo = contacts.slice(0, 3).join(' | ');
+
+      // Tour operator — look for "Contact operator", email domain, or operator patterns
+      const opMatch = full.match(/(?:operator|provider|company|organized?\s*by)[:\s]+([^\n,]{3,60})/i);
+      if (opMatch) {
+        result.tourOperator = opMatch[1].trim();
+      } else if (emails.length > 0) {
+        // Extract operator name from email domain
+        const opEmail = emails.find(e => !/klook|viator|getyourguide|airbnb|tripadvisor/i.test(e));
+        if (opEmail) {
+          const domain = opEmail.split('@')[1]?.split('.')[0];
+          if (domain && domain.length > 2) result.tourOperator = domain.charAt(0).toUpperCase() + domain.slice(1);
+        }
+      }
+
+      // Tour name — try activity-specific patterns
+      const namePatterns = [
+        // Klook: activity name is usually a prominent line with capitalized words
+        /(?:booking\s+confirmed|your\s+booking)[:\s]*.*?([A-Z][\w\s]+(?:Tour|Experience|Ride|Walk|Cruise|Class|Workshop|Adventure|Excursion|Tasting|Show|Visit|Trip|Pass|Ticket))/i,
+        // Direct match of activity keywords
+        /([\w\s-]{5,80}(?:Tour|Experience|Ride|Walk|Cruise|Class|Workshop|Adventure|Excursion|Tasting|Show|Visit|Trip))/,
+      ];
+      for (const pat of namePatterns) {
+        const m = full.match(pat);
+        if (m) {
+          let name = m[1].trim();
+          // Clean up leading junk
+          name = name.replace(/^(?:the|a|an|your)\s+/i, '');
+          if (name.length >= 5 && name.length <= 100) {
+            result.tourName = name;
+            break;
+          }
+        }
+      }
+
+      // Description — what's included
+      const inclMatch = full.match(/what'?s\s+included[:\s]*([\s\S]{10,300}?)(?=what'?s\s+not|not\s+included|how\s+to|before\s+you|itinerary|$)/i);
+      if (inclMatch) {
+        result.description = inclMatch[1].replace(/\s+/g, ' ').trim();
+      }
+
+      // Address / meeting point
+      const meetPatterns = [
+        /(?:meet(?:ing)?\s*(?:point|up|at|location)|pick[\s-]?up|starting\s+point|getting\s+there)[:\s]+([^\n]{5,150})/i,
+        /(?:meet\s+up\s+at)\s+([^\n]{5,150})/i,
+      ];
+      for (const pat of meetPatterns) {
+        const m = full.match(pat);
+        if (m) {
+          let addr = m[1].trim();
+          addr = addr.replace(/\s*(?:path|how|what|before|itinerary)\s.*/i, '').trim();
+          if (addr.length >= 5) { result.address = addr; break; }
+        }
+      }
+
+      return result;
+    };
+
     const UploadConfirmationModal = ({ onSelect, onClose, isDarkMode, onMapCenter, onPreviewPin }) => {
       const [step, setStep] = useState('upload'); // 'upload' | 'review'
+      const [bookingType, setBookingType] = useState('hotel'); // 'hotel' | 'activity'
       const [dragging, setDragging] = useState(false);
       const [extractedText, setExtractedText] = useState('');
       const [processing, setProcessing] = useState(false);
       const [fileName, setFileName] = useState('');
       const [fileDataUrl, setFileDataUrl] = useState(''); // base64 of uploaded file for storage
       const [fileThumbnail, setFileThumbnail] = useState(''); // thumbnail preview
-      // Review form fields
+      // Activity/tour fields
+      const [tourName, setTourName] = useState('');
+      const [tourOperator, setTourOperator] = useState('');
+      const [activityDate, setActivityDate] = useState('');
+      const [activityTime, setActivityTime] = useState('');
+      const [duration, setDuration] = useState('');
+      const [contactInfo, setContactInfo] = useState('');
+      const [activityDescription, setActivityDescription] = useState('');
+      // Shared + hotel fields
       const [propertyName, setPropertyName] = useState('');
       const [address, setAddress] = useState('');
       const [checkIn, setCheckIn] = useState('');
@@ -3303,22 +3449,44 @@
 
         setExtractedText(text);
 
-        // Parse the text and pre-fill fields
-        const parsed = parseConfirmationText(text);
-        setPropertyName(parsed.propertyName);
-        setAddress(parsed.address);
-        setCheckIn(parsed.checkIn);
-        setCheckOut(parsed.checkOut);
-        setCheckInTime(parsed.checkInTime);
-        setCheckOutTime(parsed.checkOutTime);
-        setConfirmationNumber(parsed.confirmationNumber);
-        setPin(parsed.pin);
-        setBookingSource(parsed.bookingSource);
-        setRoomType(parsed.roomType);
-        setPrice(parsed.price);
-        setIncludesBreakfast(parsed.includesBreakfast);
-        // Auto-geocode the property name
-        if (parsed.propertyName) geocodeHotelName(parsed.propertyName, parsed.address);
+        // Auto-detect booking type based on content
+        const isActivity = /(?:tour|experience|ride|class|workshop|excursion|tasting|cruise|walk|adventure|activity|ticket|admission|voucher|rickshaw)/i.test(text)
+          && !/(?:check[\s-]?in|check[\s-]?out|hotel|suite|room\s*type|breakfast|housekeeping)/i.test(text);
+        const detectedType = isActivity ? 'activity' : 'hotel';
+        setBookingType(detectedType);
+
+        if (detectedType === 'activity') {
+          const parsed = parseActivityText(text);
+          setTourName(parsed.tourName);
+          setTourOperator(parsed.tourOperator);
+          setBookingSource(parsed.bookingSite);
+          setConfirmationNumber(parsed.confirmationNumber);
+          setActivityDate(parsed.date);
+          setActivityTime(parsed.time);
+          setDuration(parsed.duration);
+          setContactInfo(parsed.contactInfo);
+          setActivityDescription(parsed.description);
+          setAddress(parsed.address);
+          setPrice(parsed.price);
+          // Geocode the meeting point or tour name for map placement
+          const geoQuery = parsed.address || parsed.tourName;
+          if (geoQuery) geocodeHotelName(geoQuery, parsed.address);
+        } else {
+          const parsed = parseConfirmationText(text);
+          setPropertyName(parsed.propertyName);
+          setAddress(parsed.address);
+          setCheckIn(parsed.checkIn);
+          setCheckOut(parsed.checkOut);
+          setCheckInTime(parsed.checkInTime);
+          setCheckOutTime(parsed.checkOutTime);
+          setConfirmationNumber(parsed.confirmationNumber);
+          setPin(parsed.pin);
+          setBookingSource(parsed.bookingSource);
+          setRoomType(parsed.roomType);
+          setPrice(parsed.price);
+          setIncludesBreakfast(parsed.includesBreakfast);
+          if (parsed.propertyName) geocodeHotelName(parsed.propertyName, parsed.address);
+        }
 
         setProcessing(false);
         setStep('review');
@@ -3333,46 +3501,81 @@
       const handleDrop = (e) => { e.preventDefault(); e.stopPropagation(); setDragging(false); handleFiles(e.dataTransfer.files); };
 
       const handleSubmit = () => {
-        if (!propertyName.trim()) {
-          alert('Please enter a hotel/property name');
-          return;
+        if (bookingType === 'activity') {
+          if (!tourName.trim()) { alert('Please enter a tour/activity name'); return; }
+          onSelect({
+            name: tourName,
+            address: address,
+            lat: resolvedLat,
+            lng: resolvedLng,
+            description: [
+              activityDescription,
+              duration && `Duration: ${duration}`,
+              contactInfo && `Contact: ${contactInfo}`,
+            ].filter(Boolean).join('\n'),
+            emoji: '🎫',
+            category: 'activity',
+            source_name: bookingSource || 'Booking',
+            reservation_details: {
+              type: 'activity',
+              tour_name: tourName,
+              tour_operator: tourOperator,
+              booking_source: bookingSource,
+              confirmation_number: confirmationNumber,
+              date: activityDate,
+              time: activityTime,
+              duration: duration,
+              contact_info: contactInfo,
+              price: price,
+              price_usd: usdPrice || '',
+              exchange_rate: exchangeRate || null,
+              exchange_rate_date: exchangeRateDate || '',
+              price_currency: priceCurrency || '',
+              description: activityDescription,
+              address: address,
+            },
+            attachment: fileDataUrl ? { name: fileName, data: fileDataUrl, thumbnail: fileThumbnail } : null,
+          });
+        } else {
+          if (!propertyName.trim()) { alert('Please enter a hotel/property name'); return; }
+          onSelect({
+            name: propertyName,
+            address: address,
+            lat: resolvedLat,
+            lng: resolvedLng,
+            description: [
+              roomType && `Room: ${roomType}`,
+              price && `Price: ${price}`,
+              checkIn && `Check-in: ${checkIn}${checkInTime ? ' at ' + checkInTime : ''}`,
+              checkOut && `Check-out: ${checkOut}${checkOutTime ? ' at ' + checkOutTime : ''}`,
+              confirmationNumber && `Confirmation #: ${confirmationNumber}`,
+              pin && `PIN: ${pin}`,
+              includesBreakfast !== 'unknown' && `Breakfast: ${includesBreakfast === 'yes' ? 'Included' : 'Not included'}`,
+              bookingSource && `Booked via: ${bookingSource}`,
+            ].filter(Boolean).join('\n'),
+            emoji: '🏨',
+            category: 'hotel',
+            source_name: bookingSource || 'Booking Confirmation',
+            reservation_details: {
+              type: 'hotel',
+              check_in: checkIn,
+              check_out: checkOut,
+              check_in_time: checkInTime || '16:00',
+              check_out_time: checkOutTime || '12:00',
+              confirmation_number: confirmationNumber,
+              pin: pin,
+              booking_source: bookingSource,
+              room_type: roomType,
+              price: price,
+              price_usd: usdPrice || '',
+              exchange_rate: exchangeRate || null,
+              exchange_rate_date: exchangeRateDate || '',
+              price_currency: priceCurrency || '',
+              includes_breakfast: includesBreakfast,
+            },
+            attachment: fileDataUrl ? { name: fileName, data: fileDataUrl, thumbnail: fileThumbnail } : null,
+          });
         }
-        onSelect({
-          name: propertyName,
-          address: address,
-          lat: resolvedLat,
-          lng: resolvedLng,
-          description: [
-            roomType && `Room: ${roomType}`,
-            price && `Price: ${price}`,
-            checkIn && `Check-in: ${checkIn}${checkInTime ? ' at ' + checkInTime : ''}`,
-            checkOut && `Check-out: ${checkOut}${checkOutTime ? ' at ' + checkOutTime : ''}`,
-            confirmationNumber && `Confirmation #: ${confirmationNumber}`,
-            pin && `PIN: ${pin}`,
-            includesBreakfast !== 'unknown' && `Breakfast: ${includesBreakfast === 'yes' ? 'Included' : 'Not included'}`,
-            bookingSource && `Booked via: ${bookingSource}`,
-          ].filter(Boolean).join('\n'),
-          emoji: '🏨',
-          category: 'hotel',
-          source_name: bookingSource || 'Booking Confirmation',
-          reservation_details: {
-            check_in: checkIn,
-            check_out: checkOut,
-            check_in_time: checkInTime || '16:00',
-            check_out_time: checkOutTime || '12:00',
-            confirmation_number: confirmationNumber,
-            pin: pin,
-            booking_source: bookingSource,
-            room_type: roomType,
-            price: price,
-            price_usd: usdPrice || '',
-            exchange_rate: exchangeRate || null,
-            exchange_rate_date: exchangeRateDate || '',
-            price_currency: priceCurrency || '',
-            includes_breakfast: includesBreakfast,
-          },
-          attachment: fileDataUrl ? { name: fileName, data: fileDataUrl, thumbnail: fileThumbnail } : null,
-        });
       };
 
       // Auto-fetch exchange rate when price or check-in changes
@@ -3500,6 +3703,25 @@
                     </div>
                   )}
 
+                  {/* Booking type toggle */}
+                  <div className="flex rounded-lg overflow-hidden border dark:border-slate-700">
+                    {[['hotel', '🏨 Hotel'], ['activity', '🎟️ Activity / Tour']].map(([val, label]) => (
+                      <button
+                        key={val}
+                        onClick={() => setBookingType(val)}
+                        className={`flex-1 px-3 py-2 text-sm font-medium transition ${
+                          bookingType === val
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-50 dark:bg-slate-800 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* --- HOTEL FORM --- */}
+                  {bookingType === 'hotel' && <>
                   {/* Hotel Name with auto-geocode */}
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Hotel / Property *</label>
@@ -3609,6 +3831,74 @@
                       ))}
                     </div>
                   </div>
+
+                  </>}
+
+                  {/* --- ACTIVITY / TOUR FORM --- */}
+                  {bookingType === 'activity' && <>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Tour / Activity *</label>
+                    <div className="relative">
+                      <input type="text" value={tourName} onChange={e => { setTourName(e.target.value); if (geocodeTimerRef.current) clearTimeout(geocodeTimerRef.current); geocodeTimerRef.current = setTimeout(() => geocodeHotelName(e.target.value, address), 500); }} placeholder="e.g. Kyoto Arashiyama Rickshaw Tour" className={inputClass} autoFocus autoComplete="off" data-1p-ignore />
+                      {geocodingName && <span className="absolute right-3 top-2.5 text-xs text-gray-400 animate-pulse">Looking up...</span>}
+                    </div>
+                    {addressSuggestions.length > 0 && (
+                      <div className="mt-1 border rounded-lg overflow-hidden dark:border-slate-700 bg-white dark:bg-slate-800">
+                        {addressSuggestions.map((s, i) => (
+                          <button key={i} onClick={() => selectAddressSuggestion(s)} className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-slate-700 border-b last:border-b-0 dark:border-slate-700">
+                            <span className="font-medium dark:text-white">{s.name || tourName}</span>
+                            <span className="text-gray-500 dark:text-gray-400 text-xs block">{s.address}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Tour Operator</label>
+                    <input type="text" value={tourOperator} onChange={e => setTourOperator(e.target.value)} placeholder="e.g. Ebisuya" className={inputClass} autoComplete="off" data-1p-ignore />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Booking Site</label>
+                    <input type="text" value={bookingSource} onChange={e => setBookingSource(e.target.value)} placeholder="e.g. Klook, Viator" className={inputClass} autoComplete="off" data-1p-ignore />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Confirmation #</label>
+                    <input type="text" value={confirmationNumber} onChange={e => setConfirmationNumber(e.target.value)} placeholder="e.g. QXV543662" className={inputClass} autoComplete="off" data-1p-ignore />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Date</label>
+                      <input type="text" value={activityDate} onChange={e => setActivityDate(e.target.value)} placeholder="e.g. 2026-05-08" className={inputClass} autoComplete="off" data-1p-ignore />
+                    </div>
+                    <div>
+                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Time</label>
+                      <input type="text" value={activityTime} onChange={e => setActivityTime(e.target.value)} placeholder="e.g. 11:00" className={inputClass} autoComplete="off" data-1p-ignore />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Duration</label>
+                      <input type="text" value={duration} onChange={e => setDuration(e.target.value)} placeholder="e.g. 30 minutes" className={inputClass} autoComplete="off" data-1p-ignore />
+                    </div>
+                    <div>
+                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Price</label>
+                      <input type="text" value={price} onChange={e => setPrice(e.target.value)} placeholder="e.g. US$ 68.90" className={inputClass} autoComplete="off" data-1p-ignore />
+                      {usdPrice && <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">≈ {usdPrice} USD</p>}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Contact # / Email</label>
+                    <input type="text" value={contactInfo} onChange={e => setContactInfo(e.target.value)} placeholder="Phone or email" className={inputClass} autoComplete="off" data-1p-ignore />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Meeting Point / Address</label>
+                    <input type="text" value={address} onChange={e => { setAddress(e.target.value); setAddressSuggestions([]); }} placeholder="Where to meet for the tour" className={inputClass} autoComplete="off" data-1p-ignore />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Description</label>
+                    <textarea value={activityDescription} onChange={e => setActivityDescription(e.target.value)} placeholder="What's included, notes, etc." className={inputClass + " h-20 resize-none"} autoComplete="off" data-1p-ignore />
+                  </div>
+                  </>}
 
                   <div className="flex gap-2 pt-4 border-t dark:border-slate-700">
                     <button
@@ -5730,6 +6020,7 @@
       };
 
       const handleDeletePin = async (pinId, collectionId) => {
+        console.log('[BoWander] handleDeletePin called:', pinId, collectionId);
         if (!pinId) { alert('Cannot delete: no pin ID'); return; }
         // Mark as pending delete so snapshot listener won't re-add it
         pendingDeletesRef.current.add(pinId);
