@@ -1137,10 +1137,25 @@
 
     const isCustomIcon = (emoji) => emoji && (emoji.startsWith('data:') || emoji.startsWith('http'));
     const renderPinHtml = (pin, categoryData, colorClass) => {
-      if (isCustomIcon(pin.emoji)) {
-        return `<div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};"><img src="${pin.emoji}" style="width:20px;height:20px;border-radius:50%;object-fit:cover;" /></div>`;
+      // Build date badge for hotels and activities
+      let dateBadge = '';
+      const rd = pin.reservation_details;
+      if (rd && (pin.category === 'hotel' || pin.category === 'activity')) {
+        const dateStr = rd.check_in || rd.date || '';
+        if (dateStr) {
+          const d = new Date(dateStr);
+          if (!isNaN(d.getTime())) {
+            const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+            const day = d.getDate();
+            dateBadge = `<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:#fff;color:#333;font-size:8px;font-weight:700;line-height:1;padding:1px 3px;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,.3);white-space:nowrap;pointer-events:none;z-index:1;">${mon} ${day}</div>`;
+          }
+        }
       }
-      return `<div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};">${pin.emoji}</div>`;
+      const wrapper = dateBadge ? 'position:relative;' : '';
+      if (isCustomIcon(pin.emoji)) {
+        return `<div style="${wrapper}"><div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};"><img src="${pin.emoji}" style="width:20px;height:20px;border-radius:50%;object-fit:cover;" /></div>${dateBadge}</div>`;
+      }
+      return `<div style="${wrapper}"><div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};">${pin.emoji}</div>${dateBadge}</div>`;
     };
 
     const dayName = (key) => {
@@ -1253,6 +1268,7 @@
       const [search, setSearch] = useState('');
       const [tab, setTab] = useState('curated'); // 'curated' or 'all'
       const [customEmoji, setCustomEmoji] = useState('');
+      const [confirmingDeleteIcon, setConfirmingDeleteIcon] = useState(null);
       const fileInputRef = useRef(null);
 
       const filtered = useMemo(() => {
@@ -1400,13 +1416,28 @@
                           <img src={iconUrl} alt="" className="w-full h-full object-cover" />
                         </button>
                         {onDeleteIcon && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); if (confirm('Remove this custom icon?')) onDeleteIcon(iconUrl); }}
-                            className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition hover:bg-red-600"
-                            title="Remove icon"
-                          >
-                            ×
-                          </button>
+                          confirmingDeleteIcon === iconUrl ? (
+                            <div className="absolute -top-2 -right-2 flex gap-0.5 z-10">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setConfirmingDeleteIcon(null); }}
+                                className="w-5 h-5 bg-gray-400 text-white rounded-full text-xs flex items-center justify-center hover:bg-gray-500"
+                                title="Cancel"
+                              >✕</button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); onDeleteIcon(iconUrl); setConfirmingDeleteIcon(null); }}
+                                className="w-5 h-5 bg-red-600 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-700"
+                                title="Confirm delete"
+                              >✓</button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setConfirmingDeleteIcon(iconUrl); }}
+                              className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition hover:bg-red-600"
+                              title="Remove icon"
+                            >
+                              ×
+                            </button>
+                          )
                         )}
                       </div>
                     ))}
@@ -1552,9 +1583,10 @@
       const [editing, setEditing] = useState(false);
       const [editData, setEditData] = useState({});
       const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+      const [confirmingDelete, setConfirmingDelete] = useState(false);
 
       // Reset editing state when pin changes
-      useEffect(() => { setEditing(false); }, [pin?.id]);
+      useEffect(() => { setEditing(false); setConfirmingDelete(false); }, [pin?.id]);
 
       const startEditing = () => {
         setEditData({
@@ -2264,16 +2296,29 @@
                   >
                     <PencilIcon /> Edit
                   </button>
-                  <button
-                    onClick={() => {
-                      if (confirm('Delete this pin?')) {
-                        onDelete(pin.id, pin.collection_id);
-                      }
-                    }}
-                    className="flex-1 flex items-center justify-center gap-2 bg-red-600 text-white px-3 py-2 rounded-lg text-sm hover:bg-red-700"
-                  >
-                    <TrashIcon /> Delete
-                  </button>
+                  {!confirmingDelete ? (
+                    <button
+                      onClick={() => setConfirmingDelete(true)}
+                      className="flex-1 flex items-center justify-center gap-2 bg-red-600 text-white px-3 py-2 rounded-lg text-sm hover:bg-red-700"
+                    >
+                      <TrashIcon /> Delete
+                    </button>
+                  ) : (
+                    <div className="flex-1 flex gap-1">
+                      <button
+                        onClick={() => setConfirmingDelete(false)}
+                        className="flex-1 px-2 py-2 border border-gray-300 dark:border-slate-600 rounded-lg text-xs text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={() => onDelete(pin.id, pin.collection_id)}
+                        className="flex-1 px-2 py-2 bg-red-700 text-white rounded-lg text-xs font-bold hover:bg-red-800"
+                      >
+                        Confirm
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -3222,6 +3267,101 @@
       }
 
       return result;
+    };
+
+    const DocumentCenter = ({ pins, onClose, isDarkMode, onSelectPin }) => {
+      const docs = useMemo(() => {
+        return pins
+          .filter(p => p.attachment || p.reservation_details)
+          .map(p => {
+            const rd = p.reservation_details || {};
+            const isActivity = rd.type === 'activity' || p.category === 'activity';
+            const dateStr = rd.check_in || rd.date || '';
+            let sortDate = null;
+            if (dateStr) {
+              const d = new Date(dateStr);
+              if (!isNaN(d.getTime())) sortDate = d;
+            }
+            return { pin: p, rd, isActivity, dateStr, sortDate };
+          })
+          .sort((a, b) => {
+            if (a.sortDate && b.sortDate) return a.sortDate - b.sortDate;
+            if (a.sortDate) return -1;
+            if (b.sortDate) return 1;
+            return a.pin.name.localeCompare(b.pin.name);
+          });
+      }, [pins]);
+
+      const formatDate = (str) => {
+        if (!str) return '';
+        const d = new Date(str);
+        if (isNaN(d.getTime())) return str;
+        return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+      };
+
+      return (
+        <div className="fixed inset-0 md:inset-auto md:top-0 md:right-0 md:bottom-0 md:w-96 bg-black bg-opacity-50 md:bg-opacity-0 flex items-end md:items-stretch justify-center md:justify-end" style={{ zIndex: 9999 }} onClick={onClose}>
+          <div className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-t-xl md:rounded-none w-full md:w-96 shadow-2xl md:shadow-xl md:border-l dark:md:border-slate-700`} onClick={e => e.stopPropagation()} style={{ position: 'relative', zIndex: 10000 }}>
+            <div className="max-h-[85vh] md:max-h-full md:h-full overflow-y-auto p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-bold dark:text-white">Documents</h2>
+                <button onClick={onClose} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-gray-500"><CloseIcon /></button>
+              </div>
+              <p className="text-sm text-gray-500 dark:text-gray-400">All uploaded booking confirmations and reservations, sorted by date.</p>
+
+              {docs.length === 0 ? (
+                <div className="text-center py-8 text-gray-400 dark:text-gray-500">
+                  <p className="text-3xl mb-2">📄</p>
+                  <p className="text-sm">No booking documents yet.</p>
+                  <p className="text-xs mt-1">Upload hotel or activity confirmations to see them here.</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {docs.map(({ pin: p, rd, isActivity, dateStr }) => (
+                    <div
+                      key={p.id}
+                      className="flex items-start gap-3 p-3 rounded-lg border dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-800 cursor-pointer transition"
+                      onClick={() => { onSelectPin(p); onClose(); }}
+                    >
+                      <span className="text-2xl flex-shrink-0">{p.emoji || (isActivity ? '🎫' : '🏨')}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold dark:text-white truncate">{p.name}</p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          {dateStr && <span className="text-xs text-blue-600 dark:text-blue-400 font-medium">{formatDate(dateStr)}</span>}
+                          {rd.booking_source && <span className="text-xs text-gray-400">via {rd.booking_source}</span>}
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {rd.confirmation_number && (
+                            <span className="text-xs bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300 px-1.5 py-0.5 rounded">#{rd.confirmation_number}</span>
+                          )}
+                          {rd.price && (
+                            <span className="text-xs bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300 px-1.5 py-0.5 rounded">{rd.price}</span>
+                          )}
+                          {isActivity && rd.time && (
+                            <span className="text-xs bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300 px-1.5 py-0.5 rounded">{rd.time}</span>
+                          )}
+                          {!isActivity && rd.check_out && (
+                            <span className="text-xs bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300 px-1.5 py-0.5 rounded">→ {formatDate(rd.check_out)}</span>
+                          )}
+                        </div>
+                      </div>
+                      {p.attachment && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openDataFile(p.attachment.data, p.attachment.name); }}
+                          className="flex-shrink-0 text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                          title="View file"
+                        >
+                          📎
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
     };
 
     const UploadConfirmationModal = ({ onSelect, onClose, isDarkMode, onMapCenter, onPreviewPin }) => {
@@ -4206,6 +4346,7 @@
       const [showPlaceSearch, setShowPlaceSearch] = useState(!pin.id && !pin.lat);
       const [newCollectionName, setNewCollectionName] = useState('');
       const [showNewCollection, setShowNewCollection] = useState(false);
+      const [confirmingDelete, setConfirmingDelete] = useState(false);
 
       const handleChange = (field, value) => {
         setFormData(prev => ({ ...prev, [field]: value }));
@@ -4450,17 +4591,23 @@
                 </div>
               )}
 
-              {pin.id && (
+              {pin.id && !confirmingDelete && (
                 <button
-                  onClick={() => {
-                    if (confirm('Delete this place? This cannot be undone.')) {
-                      onSave({ ...formData, _delete: true });
-                    }
-                  }}
+                  onClick={() => setConfirmingDelete(true)}
                   className="w-full text-sm text-red-500 hover:text-red-700 text-center py-2"
                 >
                   Delete this place
                 </button>
+              )}
+              {pin.id && confirmingDelete && (
+                <div className="flex gap-2 pt-1">
+                  <button onClick={() => setConfirmingDelete(false)} className="flex-1 text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 py-2">
+                    Cancel
+                  </button>
+                  <button onClick={() => onSave({ ...formData, _delete: true })} className="flex-1 text-sm text-white bg-red-600 hover:bg-red-700 rounded-lg py-2 font-medium">
+                    Yes, delete
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -5764,6 +5911,7 @@
         });
       };
       const [showUploadConfirmation, setShowUploadConfirmation] = useState(false);
+      const [showDocCenter, setShowDocCenter] = useState(false);
       const [mapCenter, setMapCenter] = useState(null); // passive: where the map currently is (for search biasing)
       const [mapPanTarget, setMapPanTarget] = useState(null); // active: where to fly the map to
       const [previewPin, setPreviewPin] = useState(null); // temporary pin shown while adding a place
@@ -6178,6 +6326,13 @@
               >
                 ⬆️
               </button>
+              <button
+                onClick={() => setShowDocCenter(true)}
+                className="p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-sm"
+                title="Document Center"
+              >
+                📄
+              </button>
             </div>
           </div>
 
@@ -6373,6 +6528,16 @@
             />
           )}
 
+          {/* Document Center */}
+          {showDocCenter && (
+            <DocumentCenter
+              pins={pins}
+              onClose={() => setShowDocCenter(false)}
+              isDarkMode={darkMode}
+              onSelectPin={(pin) => { setSelectedPin(pin); setShowDocCenter(false); }}
+            />
+          )}
+
           {/* Floating bottom buttons (Mobile) */}
           {isMobile && view === 'collection' && !selectedPin && !editingPin && (
             <div className="fixed bottom-4 left-0 right-0 flex justify-center gap-3" style={{ zIndex: 500 }}>
@@ -6437,6 +6602,16 @@
               >
                 <span>🎫</span>
                 <span>Upload Confirmation</span>
+              </div>
+              <div
+                className="fam-item"
+                onClick={() => {
+                  setShowDocCenter(true);
+                  setShowAddMenu(false);
+                }}
+              >
+                <span>📄</span>
+                <span>Documents</span>
               </div>
             </div>
           )}
