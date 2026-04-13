@@ -3366,7 +3366,7 @@
 
     const UploadConfirmationModal = ({ onSelect, onClose, isDarkMode, onMapCenter, onPreviewPin }) => {
       const [step, setStep] = useState('upload'); // 'upload' | 'review'
-      const [bookingType, setBookingType] = useState('hotel'); // 'hotel' | 'activity'
+      const [bookingType, setBookingTypeRaw] = useState('hotel'); // 'hotel' | 'activity'
       const [dragging, setDragging] = useState(false);
       const [extractedText, setExtractedText] = useState('');
       const [processing, setProcessing] = useState(false);
@@ -3404,6 +3404,46 @@
       const [priceCurrency, setPriceCurrency] = useState('');
       const geocodeTimerRef = useRef(null);
       const fileInputRef = useRef(null);
+
+      // When user switches booking type, re-parse the extracted text into the right fields
+      const setBookingType = useCallback((newType) => {
+        setBookingTypeRaw(newType);
+        if (!extractedText) return;
+        if (newType === 'activity') {
+          const parsed = parseActivityText(extractedText);
+          setTourName(parsed.tourName || propertyName); // fallback: use hotel name as tour name
+          setTourOperator(parsed.tourOperator);
+          setBookingSource(prev => parsed.bookingSite || prev);
+          setConfirmationNumber(prev => parsed.confirmationNumber || prev);
+          setActivityDate(parsed.date || checkIn); // fallback: use check-in as activity date
+          setActivityTime(parsed.time || checkInTime);
+          setDuration(parsed.duration);
+          setContactInfo(parsed.contactInfo);
+          setActivityDescription(parsed.description);
+          setAddress(prev => parsed.address || prev);
+          setPrice(prev => parsed.price || prev);
+          if (parsed.address || parsed.tourName || propertyName) {
+            geocodeHotelName(parsed.address || parsed.tourName || propertyName, parsed.address || address);
+          }
+        } else {
+          const parsed = parseConfirmationText(extractedText);
+          setPropertyName(prev => parsed.propertyName || tourName || prev);
+          setAddress(prev => parsed.address || prev);
+          setCheckIn(parsed.checkIn || activityDate);
+          setCheckOut(parsed.checkOut);
+          setCheckInTime(parsed.checkInTime || activityTime);
+          setCheckOutTime(parsed.checkOutTime);
+          setConfirmationNumber(prev => parsed.confirmationNumber || prev);
+          setPin(parsed.pin);
+          setBookingSource(prev => parsed.bookingSource || prev);
+          setRoomType(parsed.roomType);
+          setPrice(prev => parsed.price || prev);
+          setIncludesBreakfast(parsed.includesBreakfast);
+          if (parsed.propertyName || tourName) {
+            geocodeHotelName(parsed.propertyName || tourName, parsed.address || address);
+          }
+        }
+      }, [extractedText, propertyName, tourName, checkIn, checkInTime, activityDate, activityTime, address]);
 
       // Detect currency from price string and fetch USD conversion
       const CURRENCY_SYMBOLS = { '$': 'USD', '€': 'EUR', '£': 'GBP', '¥': 'JPY', '₹': 'INR', '₩': 'KRW', '฿': 'THB', '₫': 'VND', '₱': 'PHP', 'R$': 'BRL', 'kr': 'SEK' };
@@ -3590,10 +3630,18 @@
         setExtractedText(text);
 
         // Auto-detect booking type based on content
-        const isActivity = /(?:tour|experience|ride|class|workshop|excursion|tasting|cruise|walk|adventure|activity|ticket|admission|voucher|rickshaw)/i.test(text)
-          && !/(?:check[\s-]?in|check[\s-]?out|hotel|suite|room\s*type|breakfast|housekeeping)/i.test(text);
+        // Activity signals: booking sites known for activities, or activity keywords without strong hotel signals
+        const activityKeywords = /(?:tour|experience|ride|class|workshop|excursion|tasting|cruise|walk(?:ing)|adventure|activity|ticket|admission|voucher|rickshaw|safari|kayak|snorkel|diving|hik(?:e|ing)|cooking|zip\s*line|bungee|paraglid|surf(?:ing)?|cycling|sightseeing|day\s*trip|transfer|shuttle|airport\s*pickup)/i;
+        const activitySites = /(?:klook|viator|getyourguide|musement|tiqets|civitatis|veltra|airbnb\s*experiences)/i;
+        const strongHotelSignals = /(?:check[\s-]?in[\s:]+|check[\s-]?out[\s:]+|room\s*type|suite\s+with|breakfast\s+included|housekeeping|(?:nights?\s*,\s*\d)|hotel\s+(?:reservation|booking|confirmation))/i;
+        const hasActivitySignal = activityKeywords.test(text) || activitySites.test(text);
+        const hasStrongHotelSignal = strongHotelSignals.test(text);
+        // If we have activity signals and no strong hotel signals → activity
+        // If we have an activity booking site → strongly prefer activity even with some hotel-ish words
+        const isActivitySite = activitySites.test(text);
+        const isActivity = isActivitySite ? !hasStrongHotelSignal : (hasActivitySignal && !hasStrongHotelSignal);
         const detectedType = isActivity ? 'activity' : 'hotel';
-        setBookingType(detectedType);
+        setBookingTypeRaw(detectedType);
 
         if (detectedType === 'activity') {
           const parsed = parseActivityText(text);
