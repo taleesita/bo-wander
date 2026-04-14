@@ -994,6 +994,94 @@
         }, err => {
           console.warn('Collections snapshot error:', err);
         });
+      },
+
+      // ===== ITINERARY CRUD =====
+      async saveItinerary(itin) {
+        const data = { ...itin, updated_at: new Date().toISOString() };
+        if (!data.created_at) data.created_at = data.updated_at;
+        await db.collection('itineraries').doc(itin.id).set(data, { merge: true });
+        return data;
+      },
+
+      async loadItineraries(collectionId) {
+        try {
+          const snap = await db.collection('itineraries').where('collection_id', '==', collectionId).get();
+          const items = [];
+          snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+          return items;
+        } catch (e) {
+          console.warn('Failed to load itineraries:', e);
+          return [];
+        }
+      },
+
+      async deleteItinerary(itinId) {
+        // Delete all days and items for this itinerary, then the itinerary itself
+        const daySnap = await db.collection('itinerary_days').where('itinerary_id', '==', itinId).get();
+        const itemSnap = await db.collection('itinerary_items').where('itinerary_id', '==', itinId).get();
+        const batch = db.batch();
+        daySnap.forEach(doc => batch.delete(doc.ref));
+        itemSnap.forEach(doc => batch.delete(doc.ref));
+        batch.delete(db.collection('itineraries').doc(itinId));
+        await batch.commit();
+      },
+
+      async saveDays(days) {
+        const batch = db.batch();
+        days.forEach(day => {
+          const data = { ...day, updated_at: new Date().toISOString() };
+          if (!data.created_at) data.created_at = data.updated_at;
+          batch.set(db.collection('itinerary_days').doc(day.id), data, { merge: true });
+        });
+        await batch.commit();
+      },
+
+      async loadDays(itinId) {
+        try {
+          const snap = await db.collection('itinerary_days').where('itinerary_id', '==', itinId).orderBy('day_number').get();
+          const items = [];
+          snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+          return items;
+        } catch (e) {
+          console.warn('Failed to load days:', e);
+          return [];
+        }
+      },
+
+      async saveItems(items) {
+        const batch = db.batch();
+        items.forEach(item => {
+          const data = { ...item, updated_at: new Date().toISOString() };
+          if (!data.created_at) data.created_at = data.updated_at;
+          batch.set(db.collection('itinerary_items').doc(item.id), data, { merge: true });
+        });
+        await batch.commit();
+      },
+
+      async loadItems(itinId) {
+        try {
+          const snap = await db.collection('itinerary_items').where('itinerary_id', '==', itinId).get();
+          const items = [];
+          snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+          return items;
+        } catch (e) {
+          console.warn('Failed to load itinerary items:', e);
+          return [];
+        }
+      },
+
+      async deleteItem(itemId) {
+        await db.collection('itinerary_items').doc(itemId).delete();
+      },
+
+      async deleteDay(dayId) {
+        // Delete items for this day first
+        const snap = await db.collection('itinerary_items').where('day_id', '==', dayId).get();
+        const batch = db.batch();
+        snap.forEach(doc => batch.delete(doc.ref));
+        batch.delete(db.collection('itinerary_days').doc(dayId));
+        await batch.commit();
       }
     };
 
@@ -1690,7 +1778,7 @@
       );
     };
 
-    const PinDetailSheet = ({ pin, onClose, onEdit, onInlineUpdate, isDarkMode, isDesktop, onDelete, onNavigate, collections, allPins, fetchingRatings, onRetryRatings, ratingFetchStatus, customIcons, onUploadIcon, onDeleteIcon }) => {
+    const PinDetailSheet = ({ pin, onClose, onEdit, onInlineUpdate, isDarkMode, isDesktop, onDelete, onNavigate, collections, allPins, fetchingRatings, onRetryRatings, ratingFetchStatus, customIcons, onUploadIcon, onDeleteIcon, onAddToItinerary }) => {
       const [translated, setTranslated] = useState(null);
       const [translating, setTranslating] = useState(false);
       const [editing, setEditing] = useState(false);
@@ -1843,6 +1931,14 @@
                       <CopyIcon />
                     </button>
                   </div>
+                  {onAddToItinerary && (
+                    <button
+                      onClick={() => onAddToItinerary(pin)}
+                      className="w-full flex items-center justify-center gap-2 px-3 py-2 border border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 rounded-lg text-sm hover:bg-blue-50 dark:hover:bg-blue-900/20 transition"
+                    >
+                      🗓️ Add to Day
+                    </button>
+                  )}
                 </>
               )}
             </div>
@@ -6139,6 +6235,1024 @@
     };
 
     // ==================== MAIN APP ====================
+    // ==================== ITINERARY PLANNER ====================
+
+    const generateId = () => Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+
+    // Format date as "Mon, May 11"
+    const formatDayDate = (dateStr) => {
+      if (!dateStr) return '';
+      const d = new Date(dateStr + 'T12:00:00');
+      return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    };
+
+    // Generate array of dates between start and end (inclusive)
+    const generateDateRange = (start, end) => {
+      const dates = [];
+      const d = new Date(start + 'T12:00:00');
+      const endD = new Date(end + 'T12:00:00');
+      while (d <= endD) {
+        dates.push(d.toISOString().split('T')[0]);
+        d.setDate(d.getDate() + 1);
+      }
+      return dates;
+    };
+
+    // ---- StartingPointPicker ----
+    const StartingPointPicker = ({ pins, currentPoint, onSelect, onClose, isDarkMode }) => {
+      const [search, setSearch] = useState('');
+      const hotelPins = pins.filter(p => p.category === 'hotel' || p.emoji === '🏨');
+      const filtered = search
+        ? pins.filter(p => p.name.toLowerCase().includes(search.toLowerCase()))
+        : hotelPins;
+
+      return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ zIndex: 10001 }} onClick={onClose}>
+          <div className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-xl w-full max-w-sm shadow-2xl`} onClick={e => e.stopPropagation()}>
+            <div className="p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold dark:text-white">Starting Point</h3>
+                <button onClick={onClose} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded"><CloseIcon /></button>
+              </div>
+              <input
+                type="text"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search all pins..."
+                className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
+              />
+              <div className="max-h-60 overflow-y-auto space-y-1">
+                {filtered.length === 0 && <p className="text-sm text-gray-400 text-center py-4">No pins found</p>}
+                {filtered.map(pin => (
+                  <button
+                    key={pin.id}
+                    onClick={() => { onSelect({ pin_id: pin.id, label: pin.name, lat: pin.lat, lng: pin.lng, emoji: pin.emoji }); onClose(); }}
+                    className={`w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-slate-700 ${currentPoint?.pin_id === pin.id ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-400' : ''}`}
+                  >
+                    <span>{pin.emoji || '📌'}</span>
+                    <span className="truncate dark:text-white">{pin.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ---- ItineraryItemForm (add/edit modal) ----
+    const ItineraryItemForm = ({ item, pins, onSave, onClose, isDarkMode }) => {
+      const [type, setType] = useState(item?.type || 'pin');
+      const [selectedPinId, setSelectedPinId] = useState(item?.pin_id || '');
+      const [name, setName] = useState(item?.name || '');
+      const [emoji, setEmoji] = useState(item?.emoji || '📌');
+      const [scheduledTime, setScheduledTime] = useState(item?.scheduled_time || '');
+      const [duration, setDuration] = useState(item?.estimated_duration_minutes || 60);
+      const [description, setDescription] = useState(item?.description || '');
+      const [pinSearch, setPinSearch] = useState('');
+
+      const filteredPins = pinSearch
+        ? pins.filter(p => p.name.toLowerCase().includes(pinSearch.toLowerCase()))
+        : pins.slice(0, 20);
+
+      const handleSave = () => {
+        let lat = item?.lat || 0, lng = item?.lng || 0;
+        let finalName = name;
+        let finalEmoji = emoji;
+        if (type === 'pin' && selectedPinId) {
+          const pin = pins.find(p => p.id === selectedPinId);
+          if (pin) {
+            lat = pin.lat; lng = pin.lng;
+            finalName = finalName || pin.name;
+            finalEmoji = pin.emoji || finalEmoji;
+          }
+        }
+        onSave({
+          ...(item || {}),
+          id: item?.id || generateId(),
+          type, pin_id: type === 'pin' ? selectedPinId : null,
+          name: finalName, emoji: finalEmoji,
+          scheduled_time: scheduledTime,
+          estimated_duration_minutes: parseInt(duration) || 60,
+          description, lat, lng,
+        });
+        onClose();
+      };
+
+      const mealEmojis = ['🍱', '🍜', '🍣', '☕', '🍵', '🍺', '🍦', '🥐'];
+
+      return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ zIndex: 10001 }} onClick={onClose}>
+          <div className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-xl w-full max-w-md shadow-2xl`} onClick={e => e.stopPropagation()}>
+            <div className="p-4 space-y-3 max-h-[85vh] overflow-y-auto">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold dark:text-white">{item?.id ? 'Edit Item' : 'Add to Day'}</h3>
+                <button onClick={onClose} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded"><CloseIcon /></button>
+              </div>
+
+              {/* Type tabs */}
+              <div className="flex gap-1 bg-gray-100 dark:bg-slate-800 rounded-lg p-1">
+                {[['pin', '📌 Pin'], ['meal', '🍽️ Meal'], ['entry', '✏️ Custom']].map(([t, label]) => (
+                  <button key={t} onClick={() => { setType(t); if (t === 'meal' && !name) { setEmoji('🍱'); setName(''); } }}
+                    className={`flex-1 text-sm py-1.5 rounded-md font-medium transition ${type === t ? 'bg-white dark:bg-slate-700 shadow text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Pin selector */}
+              {type === 'pin' && (
+                <div className="space-y-2">
+                  <input
+                    type="text" value={pinSearch} onChange={e => setPinSearch(e.target.value)}
+                    placeholder="Search your pins..."
+                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
+                  />
+                  <div className="max-h-40 overflow-y-auto space-y-1 border rounded-lg dark:border-slate-700 p-1">
+                    {filteredPins.map(pin => (
+                      <button key={pin.id}
+                        onClick={() => { setSelectedPinId(pin.id); setName(pin.name); setEmoji(pin.emoji || '📌'); }}
+                        className={`w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-slate-700 ${selectedPinId === pin.id ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-400' : ''}`}>
+                        <span>{pin.emoji || '📌'}</span>
+                        <span className="truncate dark:text-white">{pin.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Meal emoji picker */}
+              {type === 'meal' && (
+                <div className="space-y-2">
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Meal type</label>
+                  <div className="flex gap-1 flex-wrap">
+                    {mealEmojis.map(e => (
+                      <button key={e} onClick={() => setEmoji(e)}
+                        className={`text-xl p-1.5 rounded-lg transition ${emoji === e ? 'bg-blue-100 dark:bg-blue-900/40 ring-1 ring-blue-400' : 'hover:bg-gray-100 dark:hover:bg-slate-700'}`}>
+                        {e}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Name */}
+              <div>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Name</label>
+                <input type="text" value={name} onChange={e => setName(e.target.value)}
+                  placeholder={type === 'meal' ? 'e.g. Lunch at Tsukiji' : 'Item name'}
+                  className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+              </div>
+
+              {/* Time + Duration */}
+              <div className="flex gap-3">
+                <div className="flex-1">
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Time</label>
+                  <input type="time" value={scheduledTime} onChange={e => setScheduledTime(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                </div>
+                <div className="w-28">
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Duration (min)</label>
+                  <input type="number" value={duration} onChange={e => setDuration(e.target.value)} min="5" step="5"
+                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Notes</label>
+                <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2}
+                  className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white resize-none" />
+              </div>
+
+              <button onClick={handleSave}
+                className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition">
+                {item?.id ? 'Save Changes' : 'Add Item'}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // ---- Single Itinerary Item Row ----
+    const ItineraryItemRow = ({ item, index, isDarkMode, onEdit, onDelete, onDragStart, onDragOver, onDrop, isDragTarget, transitInfo, onFlyTo }) => {
+      const [confirmDelete, setConfirmDelete] = useState(false);
+
+      const timeStr = item.scheduled_time || '';
+      const formatTime = (t) => {
+        if (!t) return '';
+        const [h, m] = t.split(':');
+        const hr = parseInt(h);
+        const ampm = hr >= 12 ? 'PM' : 'AM';
+        return `${hr % 12 || 12}:${m} ${ampm}`;
+      };
+
+      return (
+        <React.Fragment>
+          {/* Transit info between items */}
+          {transitInfo && transitInfo.estimated_time_minutes != null && (
+            <div className="flex items-center gap-1.5 py-1 px-3 text-xs text-gray-400 dark:text-gray-500">
+              <div className="flex-1 border-t dark:border-slate-700 border-dashed"></div>
+              {transitInfo.all_modes && Object.keys(transitInfo.all_modes).length > 1 ? (
+                // Show all available modes as small pills
+                Object.entries(transitInfo.all_modes).map(([mode, data]) => (
+                  <span key={mode} className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full ${mode === transitInfo.mode ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' : ''}`}>
+                    {mode === 'walking' ? '🚶' : mode === 'transit' ? '🚃' : '🚗'}
+                    <span>{data.minutes}m</span>
+                  </span>
+                ))
+              ) : (
+                <>
+                  <span>{transitInfo.mode === 'walking' ? '🚶' : transitInfo.mode === 'transit' ? '🚃' : '🚗'}</span>
+                  <span>{transitInfo.estimated_time_minutes} min</span>
+                </>
+              )}
+              {transitInfo.maps_url && (
+                <a href={transitInfo.maps_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline ml-0.5">↗</a>
+              )}
+              <div className="flex-1 border-t dark:border-slate-700 border-dashed"></div>
+            </div>
+          )}
+
+          {/* Item row */}
+          <div
+            draggable
+            onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; onDragStart(item.id); }}
+            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; onDragOver(index); }}
+            onDrop={(e) => { e.preventDefault(); onDrop(index); }}
+            className={`group flex items-center gap-2 px-2 py-2 rounded-lg cursor-grab active:cursor-grabbing transition ${
+              isDragTarget ? 'bg-blue-50 dark:bg-blue-900/20 ring-1 ring-blue-400 ring-dashed' : 'hover:bg-gray-50 dark:hover:bg-slate-700/50'
+            }`}
+          >
+            {/* Drag handle */}
+            <div className="flex flex-col gap-0.5 opacity-30 group-hover:opacity-60 px-0.5 flex-shrink-0 touch-none" style={{ cursor: 'grab' }}>
+              <div className="w-3 h-0.5 bg-gray-400 rounded"></div>
+              <div className="w-3 h-0.5 bg-gray-400 rounded"></div>
+              <div className="w-3 h-0.5 bg-gray-400 rounded"></div>
+            </div>
+
+            {/* Emoji */}
+            <span className="text-lg flex-shrink-0 cursor-pointer hover:scale-110 transition-transform" onClick={() => item.lat && onFlyTo?.(item.lat, item.lng)}>{item.emoji || '📌'}</span>
+
+            {/* Content */}
+            <div className="flex-1 min-w-0 cursor-pointer" onClick={() => item.lat && onFlyTo?.(item.lat, item.lng)}>
+              <div className="flex items-center gap-2">
+                {timeStr && <span className="text-xs font-mono text-blue-600 dark:text-blue-400 flex-shrink-0">{formatTime(timeStr)}</span>}
+                <span className="text-sm font-medium truncate dark:text-white">{item.name || 'Untitled'}</span>
+              </div>
+              {item.estimated_duration_minutes && (
+                <span className="text-xs text-gray-400">{item.estimated_duration_minutes} min</span>
+              )}
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition flex-shrink-0">
+              <button onClick={() => onEdit(item)} className="p-1 hover:bg-gray-200 dark:hover:bg-slate-600 rounded text-gray-500">
+                <PencilIcon />
+              </button>
+              {!confirmDelete ? (
+                <button onClick={() => setConfirmDelete(true)} className="p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded text-gray-500 hover:text-red-500">
+                  <TrashIcon />
+                </button>
+              ) : (
+                <div className="flex items-center gap-0.5">
+                  <button onClick={() => setConfirmDelete(false)} className="p-1 hover:bg-gray-200 dark:hover:bg-slate-600 rounded text-xs">✕</button>
+                  <button onClick={() => onDelete(item.id)} className="p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded text-xs text-red-500 font-bold">✓</button>
+                </div>
+              )}
+            </div>
+          </div>
+        </React.Fragment>
+      );
+    };
+
+    // ---- DayView (single day card) ----
+    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onDeleteDay, isExpanded, onToggle, onFlyTo }) => {
+      const [dragItemId, setDragItemId] = useState(null);
+      const [dragOverIndex, setDragOverIndex] = useState(null);
+      const [showStartPicker, setShowStartPicker] = useState(false);
+      const [confirmDeleteDay, setConfirmDeleteDay] = useState(false);
+
+      // Separate ordered items (have scheduled_time) and unordered
+      const orderedItems = items.filter(i => i.scheduled_time).sort((a, b) => a.scheduled_time.localeCompare(b.scheduled_time));
+      const unorderedItems = items.filter(i => !i.scheduled_time);
+      const allSorted = [...orderedItems, ...unorderedItems];
+
+      const totalActivityMin = items.reduce((sum, i) => sum + (i.estimated_duration_minutes || 0), 0);
+      const totalTransitMin = items.reduce((sum, i) => sum + (i.transit_info?.estimated_time_minutes || 0), 0);
+      const totalMinutes = totalActivityMin + totalTransitMin;
+      const totalHrs = Math.floor(totalMinutes / 60);
+      const totalMins = totalMinutes % 60;
+
+      const handleDrop = (targetIndex) => {
+        if (dragItemId == null) return;
+        const draggedIdx = allSorted.findIndex(i => i.id === dragItemId);
+        if (draggedIdx === -1 || draggedIdx === targetIndex) { setDragItemId(null); setDragOverIndex(null); return; }
+
+        const reordered = [...allSorted];
+        const [removed] = reordered.splice(draggedIdx, 1);
+        reordered.splice(targetIndex, 0, removed);
+
+        // Reassign times based on order for those that had times, leave unscheduled ones alone
+        onUpdateItems(reordered.map((item, i) => ({
+          ...item,
+          order_in_day: i,
+        })));
+        setDragItemId(null);
+        setDragOverIndex(null);
+      };
+
+      // Drop from external (pin detail sheet adds items via this)
+      const handleExternalDrop = (e) => {
+        e.preventDefault();
+        const pinId = e.dataTransfer.getData('text/pin-id');
+        if (pinId) {
+          const pin = pins.find(p => p.id === pinId);
+          if (pin) {
+            onAddItem({
+              id: generateId(),
+              type: 'pin', pin_id: pin.id,
+              name: pin.name, emoji: pin.emoji || '📌',
+              lat: pin.lat, lng: pin.lng,
+              estimated_duration_minutes: 60,
+              order_in_day: items.length,
+              scheduled_time: '', description: '',
+            });
+          }
+        }
+      };
+
+      return (
+        <div
+          className={`border rounded-xl dark:border-slate-700 overflow-hidden transition-all ${isExpanded ? '' : ''}`}
+          onDragOver={(e) => { if (e.dataTransfer.types.includes('text/pin-id')) e.preventDefault(); }}
+          onDrop={handleExternalDrop}
+        >
+          {/* Day header */}
+          <button
+            onClick={onToggle}
+            className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 dark:bg-slate-800/80 hover:bg-gray-100 dark:hover:bg-slate-700/80 transition text-left"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-gray-400 dark:text-gray-500">D{day.day_number}</span>
+              <span className="text-sm font-semibold dark:text-white">{formatDayDate(day.date)}</span>
+              {day.starting_point?.label && (
+                <span className="text-xs text-gray-400 truncate max-w-[120px]">from {day.starting_point.emoji || '🏨'} {day.starting_point.label}</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-400">{items.length} item{items.length !== 1 ? 's' : ''}{totalMinutes > 0 ? ` · ${totalHrs > 0 ? totalHrs + 'h ' : ''}${totalMins > 0 ? totalMins + 'm' : ''}` : ''}{totalTransitMin > 0 ? ` (${totalTransitMin}m travel)` : ''}</span>
+              <span className={`text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}>▾</span>
+            </div>
+          </button>
+
+          {/* Expanded content */}
+          {isExpanded && (
+            <div className="p-2 space-y-1">
+              {/* Starting point */}
+              <button
+                onClick={() => setShowStartPicker(true)}
+                className="w-full text-left px-2 py-1.5 rounded-lg text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700/50 border border-dashed dark:border-slate-700 flex items-center gap-2"
+              >
+                {day.starting_point?.label ? (
+                  <><span>{day.starting_point.emoji || '🏨'}</span> Start: {day.starting_point.label}</>
+                ) : (
+                  <><span>📍</span> Set starting point (hotel)...</>
+                )}
+              </button>
+
+              {/* Ordered items */}
+              {allSorted.map((item, idx) => (
+                <ItineraryItemRow
+                  key={item.id}
+                  item={item}
+                  index={idx}
+                  isDarkMode={isDarkMode}
+                  onEdit={onEditItem}
+                  onDelete={onDeleteItem}
+                  onDragStart={setDragItemId}
+                  onDragOver={setDragOverIndex}
+                  onDrop={handleDrop}
+                  isDragTarget={dragOverIndex === idx && dragItemId !== item.id}
+                  transitInfo={item.transit_info || null}
+                  onFlyTo={onFlyTo}
+                />
+              ))}
+
+              {/* Unordered bucket label */}
+              {unorderedItems.length > 0 && orderedItems.length > 0 && (
+                <div className="text-xs text-gray-400 dark:text-gray-500 px-2 pt-1 border-t dark:border-slate-700 mt-1">
+                  ↓ Unscheduled — drag up to set order, or set a time
+                </div>
+              )}
+
+              {/* Add item button */}
+              <button
+                onClick={() => onAddItem(null)}
+                className="w-full text-left px-2 py-1.5 rounded-lg text-xs text-gray-400 dark:text-gray-500 hover:bg-gray-50 dark:hover:bg-slate-700/50 border border-dashed dark:border-slate-700 flex items-center gap-1 mt-1"
+              >
+                <span>+</span> Add item
+              </button>
+
+              {/* Day footer actions */}
+              <div className="flex items-center justify-between pt-1 border-t dark:border-slate-700 mt-1">
+                <div className="flex gap-2">
+                  {totalTransitMin > 0 && (
+                    <span className="text-xs text-gray-400 px-2 py-1">
+                      📊 {items.length} stops · {Math.floor(totalActivityMin / 60) > 0 ? Math.floor(totalActivityMin / 60) + 'h ' : ''}{totalActivityMin % 60}m activities + {totalTransitMin}m travel
+                    </span>
+                  )}
+                </div>
+                {!confirmDeleteDay ? (
+                  <button onClick={() => setConfirmDeleteDay(true)} className="text-xs text-red-400 hover:text-red-500 px-2 py-1">Delete day</button>
+                ) : (
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setConfirmDeleteDay(false)} className="text-xs px-2 py-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Cancel</button>
+                    <button onClick={() => onDeleteDay(day.id)} className="text-xs px-2 py-1 text-red-600 font-bold hover:text-red-700">Confirm</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {showStartPicker && (
+            <StartingPointPicker
+              pins={pins}
+              currentPoint={day.starting_point}
+              onSelect={(pt) => onSetStartingPoint(day.id, pt)}
+              onClose={() => setShowStartPicker(false)}
+              isDarkMode={isDarkMode}
+            />
+          )}
+        </div>
+      );
+    };
+
+    // ---- Main ItineraryPlanner ----
+    const ItineraryPlanner = ({ pins, collections, activeCollection, isDarkMode, isMobile, onFlyTo, onClose, pendingAddPin, onClearPendingAdd }) => {
+      const [itineraries, setItineraries] = useState([]);
+      const [activeItinerary, setActiveItinerary] = useState(null);
+      const [days, setDays] = useState([]);
+      const [items, setItems] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [expandedDays, setExpandedDays] = useState({});
+      const [editingItem, setEditingItem] = useState(null);  // null = closed, {} = new item for a day
+      const [addingToDay, setAddingToDay] = useState(null);  // day_id we're adding to
+      const [showNewItinerary, setShowNewItinerary] = useState(false);
+      const [newName, setNewName] = useState('');
+      const [newStartDate, setNewStartDate] = useState('');
+      const [newEndDate, setNewEndDate] = useState('');
+      const [showDayPicker, setShowDayPicker] = useState(null); // pin object to add via day picker
+
+      const collectionPins = pins.filter(p => p.collection_id === activeCollection);
+
+      // Load itineraries for this collection
+      useEffect(() => {
+        setLoading(true);
+        MockFirebase.loadItineraries(activeCollection).then(itins => {
+          setItineraries(itins);
+          if (itins.length > 0) {
+            setActiveItinerary(itins[0]);
+          }
+          setLoading(false);
+        });
+      }, [activeCollection]);
+
+      // Load days + items when active itinerary changes
+      useEffect(() => {
+        if (!activeItinerary) { setDays([]); setItems([]); return; }
+        Promise.all([
+          MockFirebase.loadDays(activeItinerary.id),
+          MockFirebase.loadItems(activeItinerary.id),
+        ]).then(([loadedDays, loadedItems]) => {
+          setDays(loadedDays);
+          setItems(loadedItems);
+          // Auto-expand first day
+          if (loadedDays.length > 0) {
+            setExpandedDays({ [loadedDays[0].id]: true });
+          }
+        });
+      }, [activeItinerary?.id]);
+
+      // Create new itinerary
+      const handleCreateItinerary = async () => {
+        if (!newName || !newStartDate || !newEndDate) return;
+        const id = generateId();
+        const dates = generateDateRange(newStartDate, newEndDate);
+        const itin = {
+          id, collection_id: activeCollection,
+          trip_name: newName, start_date: newStartDate, end_date: newEndDate,
+          timezone: 'Asia/Tokyo', buffer_minutes: 15,
+        };
+
+        const newDays = dates.map((date, i) => ({
+          id: generateId(),
+          itinerary_id: id,
+          day_number: i + 1,
+          date,
+          starting_point: null,
+          item_ids: [],
+        }));
+
+        await MockFirebase.saveItinerary(itin);
+        await MockFirebase.saveDays(newDays);
+
+        setItineraries(prev => [...prev, itin]);
+        setActiveItinerary(itin);
+        setDays(newDays);
+        setItems([]);
+        setExpandedDays({ [newDays[0]?.id]: true });
+        setShowNewItinerary(false);
+        setNewName(''); setNewStartDate(''); setNewEndDate('');
+      };
+
+      // Delete itinerary
+      const handleDeleteItinerary = async (itinId) => {
+        await MockFirebase.deleteItinerary(itinId);
+        setItineraries(prev => prev.filter(i => i.id !== itinId));
+        if (activeItinerary?.id === itinId) {
+          setActiveItinerary(null);
+          setDays([]);
+          setItems([]);
+        }
+      };
+
+      // Add item to a day
+      const handleAddItem = (dayId, newItem) => {
+        if (!newItem) {
+          // Open the form for this day
+          setAddingToDay(dayId);
+          setEditingItem({});
+          return;
+        }
+        const item = {
+          ...newItem,
+          itinerary_id: activeItinerary.id,
+          day_id: dayId,
+          order_in_day: items.filter(i => i.day_id === dayId).length,
+        };
+        setItems(prev => [...prev, item]);
+        MockFirebase.saveItems([item]);
+      };
+
+      // Update items for a day (after reorder)
+      const handleUpdateItems = (dayId, reorderedDayItems) => {
+        setItems(prev => {
+          const otherItems = prev.filter(i => i.day_id !== dayId);
+          return [...otherItems, ...reorderedDayItems];
+        });
+        MockFirebase.saveItems(reorderedDayItems);
+      };
+
+      // Delete item
+      const handleDeleteItem = async (itemId) => {
+        setItems(prev => prev.filter(i => i.id !== itemId));
+        await MockFirebase.deleteItem(itemId);
+      };
+
+      // Save edited item
+      const handleSaveItem = (savedItem) => {
+        if (addingToDay) {
+          // New item
+          handleAddItem(addingToDay, savedItem);
+        } else {
+          // Edit existing
+          setItems(prev => prev.map(i => i.id === savedItem.id ? { ...i, ...savedItem } : i));
+          MockFirebase.saveItems([savedItem]);
+        }
+        setEditingItem(null);
+        setAddingToDay(null);
+      };
+
+      // Set starting point for a day
+      const handleSetStartingPoint = async (dayId, point) => {
+        setDays(prev => prev.map(d => d.id === dayId ? { ...d, starting_point: point } : d));
+        const day = days.find(d => d.id === dayId);
+        if (day) {
+          MockFirebase.saveDays([{ ...day, starting_point: point }]);
+        }
+      };
+
+      // Delete a day
+      const handleDeleteDay = async (dayId) => {
+        setDays(prev => prev.filter(d => d.id !== dayId));
+        setItems(prev => prev.filter(i => i.day_id !== dayId));
+        await MockFirebase.deleteDay(dayId);
+      };
+
+      // Add a day at the end
+      const handleAddDay = async () => {
+        if (!activeItinerary) return;
+        const lastDay = days[days.length - 1];
+        let newDate = '';
+        if (lastDay?.date) {
+          const d = new Date(lastDay.date + 'T12:00:00');
+          d.setDate(d.getDate() + 1);
+          newDate = d.toISOString().split('T')[0];
+        }
+        const newDay = {
+          id: generateId(),
+          itinerary_id: activeItinerary.id,
+          day_number: days.length + 1,
+          date: newDate,
+          starting_point: lastDay?.starting_point || null,
+          item_ids: [],
+        };
+        setDays(prev => [...prev, newDay]);
+        setExpandedDays(prev => ({ ...prev, [newDay.id]: true }));
+        await MockFirebase.saveDays([newDay]);
+      };
+
+      const toggleDay = (dayId) => {
+        setExpandedDays(prev => ({ ...prev, [dayId]: !prev[dayId] }));
+      };
+
+      // ---- Transit calculation (Google Directions API) ----
+      const transitCacheRef = useRef({});
+      const transitDebounceRef = useRef(null);
+
+      const fetchTransitForPair = async (origin, destination) => {
+        if (!origin?.lat || !destination?.lat) return null;
+        const cacheKey = `${origin.lat.toFixed(5)},${origin.lng.toFixed(5)}->${destination.lat.toFixed(5)},${destination.lng.toFixed(5)}`;
+        if (transitCacheRef.current[cacheKey]) return transitCacheRef.current[cacheKey];
+
+        const apiKey = getGoogleApiKey();
+        if (!apiKey) return null;
+
+        try {
+          // Fetch driving and transit in parallel
+          const modes = ['driving', 'transit', 'walking'];
+          const results = await Promise.all(modes.map(async (mode) => {
+            try {
+              const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.lat},${origin.lng}&destination=${destination.lat},${destination.lng}&mode=${mode}&key=${apiKey}`;
+              // CORS: Google Directions API doesn't support browser calls directly
+              // Use the Routes API (v2) which supports CORS
+              const resp = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-Goog-Api-Key': apiKey,
+                  'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters',
+                },
+                body: JSON.stringify({
+                  origin: { location: { latLng: { latitude: origin.lat, longitude: origin.lng } } },
+                  destination: { location: { latLng: { latitude: destination.lat, longitude: destination.lng } } },
+                  travelMode: mode === 'driving' ? 'DRIVE' : mode === 'transit' ? 'TRANSIT' : 'WALK',
+                }),
+              });
+              const data = await resp.json();
+              const route = data.routes?.[0];
+              if (!route) return { mode, minutes: null };
+              const seconds = parseInt(route.duration?.replace('s', '') || '0');
+              return { mode, minutes: Math.round(seconds / 60), meters: route.distanceMeters };
+            } catch { return { mode, minutes: null }; }
+          }));
+
+          const transit = {};
+          results.forEach(r => {
+            if (r.minutes != null) transit[r.mode] = { minutes: r.minutes, meters: r.meters };
+          });
+
+          // Pick best mode: prefer transit, then driving, then walking
+          const best = transit.transit || transit.driving || transit.walking;
+          const bestMode = transit.transit ? 'transit' : transit.driving ? 'driving' : 'walking';
+
+          const mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${origin.lat},${origin.lng}&destination=${destination.lat},${destination.lng}&travelmode=${bestMode === 'driving' ? 'driving' : bestMode === 'transit' ? 'transit' : 'walking'}`;
+
+          const result = {
+            mode: bestMode,
+            estimated_time_minutes: best?.minutes || null,
+            all_modes: transit,
+            maps_url: mapsUrl,
+          };
+
+          transitCacheRef.current[cacheKey] = result;
+          return result;
+        } catch (err) {
+          console.warn('Transit calc failed:', err);
+          return null;
+        }
+      };
+
+      const calculateTransitForDay = useCallback(async (dayId) => {
+        const dayObj = days.find(d => d.id === dayId);
+        if (!dayObj) return;
+        const dayItems = items.filter(i => i.day_id === dayId).sort((a, b) => (a.order_in_day || 0) - (b.order_in_day || 0));
+        if (dayItems.length === 0) return;
+
+        // Build sequence: starting_point -> item1 -> item2 -> ...
+        const points = [];
+        if (dayObj.starting_point?.lat) {
+          points.push({ lat: dayObj.starting_point.lat, lng: dayObj.starting_point.lng, id: '__start__' });
+        }
+        dayItems.forEach(item => {
+          if (item.lat && item.lng) points.push({ lat: item.lat, lng: item.lng, id: item.id });
+        });
+
+        if (points.length < 2) return;
+
+        const updates = [];
+        for (let i = 1; i < points.length; i++) {
+          const result = await fetchTransitForPair(points[i - 1], points[i]);
+          if (result && points[i].id !== '__start__') {
+            updates.push({ id: points[i].id, transit_info: result });
+          }
+        }
+
+        if (updates.length > 0) {
+          setItems(prev => prev.map(item => {
+            const update = updates.find(u => u.id === item.id);
+            return update ? { ...item, transit_info: update.transit_info } : item;
+          }));
+          // Persist transit info
+          const toSave = updates.map(u => {
+            const item = items.find(i => i.id === u.id);
+            return item ? { ...item, transit_info: u.transit_info } : null;
+          }).filter(Boolean);
+          if (toSave.length > 0) MockFirebase.saveItems(toSave);
+        }
+      }, [days, items]);
+
+      // Debounced transit recalculation when items change
+      useEffect(() => {
+        if (!activeItinerary) return;
+        if (transitDebounceRef.current) clearTimeout(transitDebounceRef.current);
+        transitDebounceRef.current = setTimeout(() => {
+          // Calculate for all expanded days
+          Object.keys(expandedDays).forEach(dayId => {
+            if (expandedDays[dayId]) calculateTransitForDay(dayId);
+          });
+        }, 1500); // 1.5s debounce
+        return () => { if (transitDebounceRef.current) clearTimeout(transitDebounceRef.current); };
+      }, [items.length, expandedDays, activeItinerary?.id]);
+
+      // Handle pending add from PinDetailSheet
+      useEffect(() => {
+        if (!pendingAddPin || loading) return;
+        if (!activeItinerary) {
+          // No itinerary — auto-create one, then show day picker
+          setShowNewItinerary(true);
+          return;
+        }
+        setShowDayPicker(pendingAddPin);
+        onClearPendingAdd?.();
+      }, [pendingAddPin, loading, activeItinerary]);
+
+      // Quick-add pin to a specific day
+      const handleQuickAddToDay = (dayId, pin) => {
+        const item = {
+          id: generateId(),
+          itinerary_id: activeItinerary.id,
+          day_id: dayId,
+          type: 'pin',
+          pin_id: pin.id,
+          name: pin.name,
+          emoji: pin.emoji || '📌',
+          lat: pin.lat,
+          lng: pin.lng,
+          scheduled_time: '',
+          estimated_duration_minutes: 60,
+          description: '',
+          order_in_day: items.filter(i => i.day_id === dayId).length,
+        };
+        setItems(prev => [...prev, item]);
+        MockFirebase.saveItems([item]);
+        setExpandedDays(prev => ({ ...prev, [dayId]: true }));
+        setShowDayPicker(null);
+      };
+
+      // After creating itinerary, if we had a pending pin, show day picker
+      const handleCreateItineraryWithPending = async () => {
+        await handleCreateItinerary();
+        if (pendingAddPin) {
+          // Days are set by handleCreateItinerary — show day picker on next tick
+          setTimeout(() => {
+            setShowDayPicker(pendingAddPin);
+            onClearPendingAdd?.();
+          }, 100);
+        }
+      };
+
+      // Panel content
+      const panelContent = (
+        <div className="h-full flex flex-col bg-white dark:bg-slate-900">
+          {/* Header */}
+          <div className="px-4 py-3 border-b dark:border-slate-700 flex items-center justify-between flex-shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">🗓️</span>
+              <h2 className="font-bold dark:text-white text-base">Itinerary</h2>
+            </div>
+            <div className="flex items-center gap-1">
+              {itineraries.length > 0 && !showNewItinerary && (
+                <button
+                  onClick={() => setShowNewItinerary(true)}
+                  className="text-xs px-2 py-1 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded"
+                >
+                  + New
+                </button>
+              )}
+              <button onClick={onClose} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded">
+                <CloseIcon />
+              </button>
+            </div>
+          </div>
+
+          {/* Loading */}
+          {loading && (
+            <div className="flex-1 flex items-center justify-center">
+              <span className="text-sm text-gray-400 animate-pulse">Loading...</span>
+            </div>
+          )}
+
+          {/* No itinerary yet */}
+          {!loading && itineraries.length === 0 && !showNewItinerary && (
+            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+              <span className="text-4xl mb-3">🗓️</span>
+              <h3 className="font-semibold dark:text-white mb-1">Plan Your Days</h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">Create an itinerary to organize your pins into a day-by-day plan.</p>
+              <button
+                onClick={() => setShowNewItinerary(true)}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition"
+              >
+                Create Itinerary
+              </button>
+            </div>
+          )}
+
+          {/* New itinerary form */}
+          {showNewItinerary && (
+            <div className="p-4 border-b dark:border-slate-700 space-y-3 bg-blue-50/50 dark:bg-blue-900/10">
+              <input type="text" value={newName} onChange={e => setNewName(e.target.value)}
+                placeholder="Trip name (e.g. Japan 2026)"
+                className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label className="text-xs text-gray-500 dark:text-gray-400">Start</label>
+                  <input type="date" value={newStartDate} onChange={e => setNewStartDate(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                </div>
+                <div className="flex-1">
+                  <label className="text-xs text-gray-500 dark:text-gray-400">End</label>
+                  <input type="date" value={newEndDate} onChange={e => setNewEndDate(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => setShowNewItinerary(false)}
+                  className="flex-1 px-3 py-2 border dark:border-slate-600 rounded-lg text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700">Cancel</button>
+                <button onClick={pendingAddPin ? handleCreateItineraryWithPending : handleCreateItinerary} disabled={!newName || !newStartDate || !newEndDate}
+                  className="flex-1 px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition">Create</button>
+              </div>
+            </div>
+          )}
+
+          {/* Itinerary selector (if multiple) */}
+          {itineraries.length > 1 && (
+            <div className="px-4 py-2 border-b dark:border-slate-700 flex items-center gap-2 flex-shrink-0">
+              <select
+                value={activeItinerary?.id || ''}
+                onChange={e => setActiveItinerary(itineraries.find(i => i.id === e.target.value))}
+                className="flex-1 text-sm px-2 py-1 border rounded dark:bg-slate-800 dark:border-slate-700 dark:text-white"
+              >
+                {itineraries.map(itin => (
+                  <option key={itin.id} value={itin.id}>{itin.trip_name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Itinerary summary bar */}
+          {activeItinerary && days.length > 0 && (
+            <div className="px-4 py-2 border-b dark:border-slate-700 flex-shrink-0">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm font-semibold dark:text-white">{activeItinerary.trip_name}</span>
+                  <span className="text-xs text-gray-400 ml-2">{days.length} days · {items.length} items</span>
+                </div>
+                <span className="text-xs text-gray-400">{formatDayDate(activeItinerary.start_date)} – {formatDayDate(activeItinerary.end_date)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Days list */}
+          {activeItinerary && (
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {/* Expand/collapse all */}
+              {days.length > 1 && (
+                <div className="flex justify-end gap-2 pb-1">
+                  <button
+                    onClick={() => { const all = {}; days.forEach(d => all[d.id] = true); setExpandedDays(all); }}
+                    className="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400"
+                  >Expand all</button>
+                  <button
+                    onClick={() => setExpandedDays({})}
+                    className="text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400"
+                  >Collapse all</button>
+                </div>
+              )}
+              {days.map(day => (
+                <DayView
+                  key={day.id}
+                  day={day}
+                  items={items.filter(i => i.day_id === day.id).sort((a, b) => (a.order_in_day || 0) - (b.order_in_day || 0))}
+                  pins={collectionPins}
+                  isDarkMode={isDarkMode}
+                  onUpdateItems={(reordered) => handleUpdateItems(day.id, reordered)}
+                  onDeleteItem={handleDeleteItem}
+                  onAddItem={(newItem) => handleAddItem(day.id, newItem)}
+                  onEditItem={(item) => { setEditingItem(item); setAddingToDay(null); }}
+                  onSetStartingPoint={handleSetStartingPoint}
+                  onDeleteDay={handleDeleteDay}
+                  isExpanded={!!expandedDays[day.id]}
+                  onToggle={() => toggleDay(day.id)}
+                  onFlyTo={onFlyTo}
+                />
+              ))}
+
+              {/* Add day button */}
+              <button
+                onClick={handleAddDay}
+                className="w-full py-2 border-2 border-dashed rounded-xl text-sm text-gray-400 dark:text-gray-500 dark:border-slate-700 hover:border-blue-400 hover:text-blue-500 transition"
+              >
+                + Add Day
+              </button>
+            </div>
+          )}
+
+          {/* Item form modal */}
+          {editingItem && (
+            <ItineraryItemForm
+              item={editingItem.id ? editingItem : null}
+              pins={collectionPins}
+              onSave={handleSaveItem}
+              onClose={() => { setEditingItem(null); setAddingToDay(null); }}
+              isDarkMode={isDarkMode}
+            />
+          )}
+
+          {/* Day picker for quick-add from pin detail */}
+          {showDayPicker && days.length > 0 && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ zIndex: 10002 }} onClick={() => setShowDayPicker(null)}>
+              <div className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-xl w-full max-w-sm shadow-2xl`} onClick={e => e.stopPropagation()}>
+                <div className="p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-bold dark:text-white">Add to Day</h3>
+                    <button onClick={() => setShowDayPicker(null)} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded"><CloseIcon /></button>
+                  </div>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    Adding <span className="font-medium dark:text-white">{showDayPicker.emoji} {showDayPicker.name}</span> — pick a day:
+                  </p>
+                  <div className="max-h-60 overflow-y-auto space-y-1">
+                    {days.map(day => {
+                      const dayItems = items.filter(i => i.day_id === day.id);
+                      return (
+                        <button
+                          key={day.id}
+                          onClick={() => handleQuickAddToDay(day.id, showDayPicker)}
+                          className="w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center justify-between hover:bg-gray-100 dark:hover:bg-slate-700 transition"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-gray-400 w-6">D{day.day_number}</span>
+                            <span className="dark:text-white">{formatDayDate(day.date)}</span>
+                          </div>
+                          <span className="text-xs text-gray-400">{dayItems.length} item{dayItems.length !== 1 ? 's' : ''}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+
+      // Desktop: side panel. Mobile: bottom sheet.
+      if (isMobile) {
+        return (
+          <div className="fixed inset-0" style={{ zIndex: 9500 }}>
+            <div className="absolute inset-0 bg-black bg-opacity-30" onClick={onClose}></div>
+            <div className="absolute bottom-0 left-0 right-0 bg-white dark:bg-slate-900 rounded-t-2xl shadow-2xl" style={{ maxHeight: '85vh' }}>
+              {/* Drag handle */}
+              <div className="flex justify-center py-2">
+                <div className="w-10 h-1 bg-gray-300 dark:bg-slate-600 rounded-full"></div>
+              </div>
+              <div style={{ height: 'calc(85vh - 24px)' }}>
+                {panelContent}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="fixed top-16 right-0 bg-white dark:bg-slate-900 border-l dark:border-slate-700 shadow-xl" style={{ width: '380px', zIndex: 9000, height: 'calc(100vh - 4rem)' }}>
+          {panelContent}
+        </div>
+      );
+    };
+
     function BoWanderApp() {
       const [user, setUser] = useState(MockFirebase.currentUser);
       const [authorized, setAuthorized] = useState(
@@ -6201,6 +7315,8 @@
       };
       const [showUploadConfirmation, setShowUploadConfirmation] = useState(false);
       const [showDocCenter, setShowDocCenter] = useState(false);
+      const [showItinerary, setShowItinerary] = useState(false);
+      const [pendingItineraryPin, setPendingItineraryPin] = useState(null);
       const [mapCenter, setMapCenter] = useState(null); // passive: where the map currently is (for search biasing)
       const [mapPanTarget, setMapPanTarget] = useState(null); // active: where to fly the map to
       const [previewPin, setPreviewPin] = useState(null); // temporary pin shown while adding a place
@@ -6482,6 +7598,11 @@
         }
       };
 
+      const handleAddToItinerary = (pin) => {
+        setPendingItineraryPin(pin);
+        setShowItinerary(true);
+      };
+
       const handleAddCollection = (newCol) => {
         const { _update, ...colData } = newCol;
         setCollections(prev => {
@@ -6622,6 +7743,13 @@
               >
                 📄
               </button>
+              <button
+                onClick={() => setShowItinerary(!showItinerary)}
+                className={`p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-sm ${showItinerary ? 'bg-blue-100 dark:bg-blue-900/30' : ''}`}
+                title="Itinerary Planner"
+              >
+                🗓️
+              </button>
             </div>
           </div>
 
@@ -6693,6 +7821,7 @@
               customIcons={customIcons}
               onUploadIcon={handleUploadIcon}
               onDeleteIcon={handleDeleteIcon}
+              onAddToItinerary={handleAddToItinerary}
             />
           )}
 
@@ -6714,6 +7843,7 @@
               customIcons={customIcons}
               onUploadIcon={handleUploadIcon}
               onDeleteIcon={handleDeleteIcon}
+              onAddToItinerary={handleAddToItinerary}
             />
           )}
 
@@ -6827,6 +7957,21 @@
             />
           )}
 
+          {/* Itinerary Planner */}
+          {showItinerary && (
+            <ItineraryPlanner
+              pins={pins}
+              collections={collections}
+              activeCollection={activeCollection}
+              isDarkMode={darkMode}
+              isMobile={isMobile}
+              onFlyTo={(lat, lng) => setMapPanTarget({ lat, lng, _t: Date.now() })}
+              onClose={() => setShowItinerary(false)}
+              pendingAddPin={pendingItineraryPin}
+              onClearPendingAdd={() => setPendingItineraryPin(null)}
+            />
+          )}
+
           {/* Floating bottom buttons (Mobile) */}
           {isMobile && view === 'collection' && !selectedPin && !editingPin && (
             <div className="fixed bottom-4 left-0 right-0 flex justify-center gap-3" style={{ zIndex: 500 }}>
@@ -6901,6 +8046,16 @@
               >
                 <span>📄</span>
                 <span>Documents</span>
+              </div>
+              <div
+                className="fam-item"
+                onClick={() => {
+                  setShowItinerary(true);
+                  setShowAddMenu(false);
+                }}
+              >
+                <span>🗓️</span>
+                <span>Itinerary</span>
               </div>
             </div>
           )}
