@@ -8169,6 +8169,27 @@
             />
 
             <div className="flex items-center gap-1 flex-shrink-0">
+              {/* Map / List toggle — visible on desktop */}
+              {!isMobile && (
+                <div className="flex bg-gray-100 dark:bg-slate-700 rounded-lg p-0.5 mr-1">
+                  <button
+                    onClick={() => setShowList(false)}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition ${
+                      !showList ? 'bg-white dark:bg-slate-600 shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
+                    }`}
+                  >
+                    <MapIcon /> Map
+                  </button>
+                  <button
+                    onClick={() => setShowList(true)}
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition ${
+                      showList ? 'bg-white dark:bg-slate-600 shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
+                    }`}
+                  >
+                    <ListIcon /> List
+                  </button>
+                </div>
+              )}
               <button
                 onClick={() => setShowAddFromLink(true)}
                 className="p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-sm"
