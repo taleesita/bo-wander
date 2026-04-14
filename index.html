@@ -2922,71 +2922,186 @@
           const pathParts = urlObj.pathname.split('/').filter(Boolean);
           let guessedName = '';
 
-          // Try common URL patterns: /place/place-name, /restaurant/name, etc.
-          const lastPart = pathParts[pathParts.length - 1] || '';
-          guessedName = lastPart
+          // Find the best slug from URL path — skip numeric-only segments, pick the most name-like one
+          const slugToName = (slug) => slug
             .replace(/[-_]/g, ' ')
             .replace(/\.(html|php|aspx)$/i, '')
-            // Remove date patterns, common article words, location/city names at end
             .replace(/^\d{4}\s+\d{2}\s+\d{2}\s+/, '')
             .replace(/\s+(restaurant|bar|cafe|hotel|nyc|opening|review|first look|new|best|top|guide|where to eat|where to stay)\b.*/i, '')
             .replace(/\b(nyc|la|sf|london|paris|tokyo)\b\s*/ig, '')
             .trim()
             .replace(/\b\w/g, c => c.toUpperCase());
 
+          // Pick best path segment: skip purely numeric, skip common prefixes like 'biz', 'place', etc
+          const skipParts = new Set(['biz', 'www', 'place', 'places', 'points-of-interest', 'poi', 'attraction', 'attractions', 'hotel', 'hotels', 'restaurant', 'restaurants', 'things-to-do', 'review', 'reviews', 'en', 'ja', 'fr', 'de', 'es']);
+          let bestSlug = '';
+          for (let i = pathParts.length - 1; i >= 0; i--) {
+            const part = pathParts[i];
+            if (/^\d+$/.test(part)) continue; // skip pure numbers like "396249"
+            if (skipParts.has(part.toLowerCase())) continue;
+            if (part.length < 2) continue;
+            bestSlug = part;
+            break;
+          }
+          guessedName = slugToName(bestSlug || pathParts[pathParts.length - 1] || '');
+
           // Source-specific name extraction
           if (domainName.includes('yelp.com')) {
-            guessedName = pathParts.find(p => !['biz', 'www'].includes(p))?.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || guessedName;
+            guessedName = slugToName(pathParts.find(p => !['biz', 'www'].includes(p)) || '') || guessedName;
           } else if (domainName.includes('tripadvisor')) {
-            guessedName = lastPart.replace(/-.*Reviews-/, '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            const lastPart = pathParts[pathParts.length - 1] || '';
+            guessedName = slugToName(lastPart.replace(/-.*Reviews-/, '')) || guessedName;
           } else if (domainName.includes('google.com/maps')) {
             const placeMatch = url.match(/place\/([^/]+)/);
             if (placeMatch) guessedName = decodeURIComponent(placeMatch[1]).replace(/\+/g, ' ');
+          } else if (domainName.includes('lonelyplanet.com')) {
+            // LP pattern: /points-of-interest/ghibli-museum/396249 or /japan/tokyo/attractions/ghibli-museum
+            const namePart = pathParts.find(p => !skipParts.has(p.toLowerCase()) && !/^\d+$/.test(p) && p.length > 2);
+            if (namePart) guessedName = slugToName(namePart);
+          } else if (domainName.includes('klook.com') || domainName.includes('viator.com') || domainName.includes('getyourguide.com')) {
+            // Activity sites: usually last non-numeric part is the slug
+            const namePart = pathParts.filter(p => !/^\d+$/.test(p) && p.length > 3).pop();
+            if (namePart) guessedName = slugToName(namePart);
           }
 
-          // Try to fetch page title via allorigins CORS proxy
+          // Fetch page contents via CORS proxy and extract name + description
           let fetchedTitle = '';
+          let fetchedDescription = '';
+          const htmlDecode = (s) => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(n));
           try {
             const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-            const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(5000) });
+            const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
             const data = await resp.json();
             if (data.contents) {
-              const titleMatch = data.contents.match(/<title[^>]*>([^<]+)<\/title>/i);
-              if (titleMatch) {
-                fetchedTitle = titleMatch[1]
-                  .replace(/\s*[|\-–—]\s*(Yelp|TripAdvisor|Google Maps|Lonely Planet|Eater|Booking\.com|Airbnb|Hotels\.com).*$/i, '')
-                  .trim();
-                // For blog/article URLs, try to extract the actual place name
-                // Common patterns: "Place Name: Rest of article title", "Place Name - Description"
-                // Also handle slug-based titles with location keywords
-                if (fetchedTitle) {
-                  // Remove common article prefixes
-                  fetchedTitle = fetchedTitle
-                    .replace(/^(review|first look|just opened|now open|new opening)[:\s-]*/i, '')
-                    .replace(/\s*(restaurant|bar|cafe|hotel|opens?|opening|review|first look|in\s+\w+|\d{4})\s*$/i, '')
-                    .trim();
-                  // If title has a colon or dash separator, take the first meaningful part
-                  const separatorMatch = fetchedTitle.match(/^([^:–—|]+?)\s*[:–—|]\s*/);
-                  if (separatorMatch && separatorMatch[1].length >= 3) {
-                    fetchedTitle = separatorMatch[1].trim();
+              const html = data.contents;
+
+              // Strategy 1: JSON-LD structured data (most reliable)
+              const jsonLdMatches = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi) || [];
+              for (const block of jsonLdMatches) {
+                try {
+                  const jsonStr = block.replace(/<\/?script[^>]*>/gi, '');
+                  const ld = JSON.parse(jsonStr);
+                  const items = Array.isArray(ld) ? ld : ld['@graph'] ? ld['@graph'] : [ld];
+                  for (const item of items) {
+                    if (item['@type'] && /Place|TouristAttraction|Museum|Restaurant|Hotel|LocalBusiness|LandmarksOrHistoricalBuildings|FoodEstablishment|LodgingBusiness|CivicStructure/i.test(item['@type'])) {
+                      if (item.name && !fetchedTitle) fetchedTitle = htmlDecode(item.name);
+                      if (item.description && !fetchedDescription) fetchedDescription = htmlDecode(item.description).substring(0, 600);
+                      break;
+                    }
                   }
+                } catch {}
+              }
+
+              // Strategy 2: og:title (usually the clean place name)
+              if (!fetchedTitle) {
+                const ogTitle = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i)
+                  || html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:title["']/i);
+                if (ogTitle) {
+                  fetchedTitle = htmlDecode(ogTitle[1])
+                    .replace(/\s*[|\-–—]\s*(Yelp|TripAdvisor|Google Maps|Lonely Planet|Eater|Booking\.com|Airbnb|Hotels\.com|Klook|Viator|GetYourGuide|Atlas Obscura|Time Out|Culture Trip|Japan Guide).*$/i, '')
+                    .trim();
                 }
               }
-              // Try to get meta description
-              const descMatch = data.contents.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i);
-              if (descMatch) {
-                preview?.description || setPreview(prev => prev ? { ...prev, description: descMatch[1] } : null);
+
+              // Strategy 3: <h1> tag (usually the main heading)
+              if (!fetchedTitle) {
+                const h1Match = html.match(/<h1[^>]*>([^<]{3,120})<\/h1>/i)
+                  || html.match(/<h1[^>]*>\s*<[^>]+>([^<]{3,120})<\/[^>]+>\s*<\/h1>/i);
+                if (h1Match) {
+                  fetchedTitle = htmlDecode(h1Match[1]).trim();
+                }
+              }
+
+              // Strategy 4: <title> tag (fallback, often includes site name)
+              if (!fetchedTitle) {
+                const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+                if (titleMatch) {
+                  fetchedTitle = htmlDecode(titleMatch[1])
+                    .replace(/\s*[|\-–—]\s*(Yelp|TripAdvisor|Google Maps|Lonely Planet|Eater|Booking\.com|Airbnb|Hotels\.com|Klook|Viator|GetYourGuide|Atlas Obscura|Time Out|Culture Trip|Japan Guide).*$/i, '')
+                    .trim();
+                }
+              }
+
+              // Clean up the title
+              if (fetchedTitle) {
+                fetchedTitle = fetchedTitle
+                  .replace(/^(review|first look|just opened|now open|new opening)[:\s-]*/i, '')
+                  .trim();
+                // If title is way too long, it's probably an article — take first segment
+                if (fetchedTitle.length > 80) {
+                  const sep = fetchedTitle.match(/^([^:–—|]{3,60}?)\s*[:–—|]\s*/);
+                  if (sep) fetchedTitle = sep[1].trim();
+                }
+              }
+
+              // Get description from meta tags if we don't have one from JSON-LD
+              if (!fetchedDescription) {
+                const descMatch = html.match(/<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']+)["']/i)
+                  || html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i);
+                if (descMatch) {
+                  fetchedDescription = htmlDecode(descMatch[1]).trim().substring(0, 600);
+                }
+              }
+
+              // Lonely Planet: extract body text if no description found
+              if (domainName.includes('lonelyplanet.com') && !fetchedDescription) {
+                const lpDesc = html.match(/<div[^>]*class="[^"]*(?:article-body|readMore|poi-description)[^"]*"[^>]*>([\s\S]{20,1000}?)<\/div>/i);
+                if (lpDesc) {
+                  fetchedDescription = lpDesc[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 500);
+                }
               }
             }
           } catch {}
 
           const finalName = fetchedTitle || guessedName || '';
+
+          // Auto-search Google Places to get coordinates, address, rating
+          let placeData = null;
+          if (finalName) {
+            const apiKey = getGoogleApiKey();
+            if (apiKey) {
+              try {
+                const placesResp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'X-Goog-Api-Key': apiKey,
+                    'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours,places.websiteUri'
+                  },
+                  body: JSON.stringify({ textQuery: finalName, maxResultCount: 1 })
+                });
+                const placesData = await placesResp.json();
+                const place = placesData.places?.[0];
+                if (place) {
+                  placeData = {
+                    lat: place.location?.latitude || 0,
+                    lng: place.location?.longitude || 0,
+                    address: place.formattedAddress || '',
+                    rating: place.rating || null,
+                    types: place.types || [],
+                    website: place.websiteUri || '',
+                    opening_hours: {},
+                  };
+                  // Parse opening hours if available
+                  if (place.regularOpeningHours?.weekdayDescriptions) {
+                    place.regularOpeningHours.weekdayDescriptions.forEach(desc => {
+                      const match = desc.match(/^(\w+):\s*(.+)/);
+                      if (match) placeData.opening_hours[match[1].toLowerCase()] = match[2];
+                    });
+                  }
+                }
+              } catch {}
+            }
+          }
+
           setPreview({
             name: finalName,
-            description: '',
+            description: fetchedDescription,
             source_name: domainName,
             source_url: url,
-            emoji: guessEmojiAndCategory(finalName, '').emoji
+            emoji: guessEmojiAndCategory(finalName, '').emoji,
+            // Attach place data for use when adding
+            ...(placeData || {}),
           });
         } catch (e) {
           setError('Invalid URL — make sure it starts with https://');
@@ -3046,6 +3161,14 @@
                       autoFocus
                     />
                   </div>
+                  {/* Show Google Places data if found */}
+                  {preview.address && (
+                    <div className="bg-green-50 dark:bg-green-900/10 border border-green-200 dark:border-green-800 rounded-lg p-2.5 text-xs space-y-0.5">
+                      <p className="text-green-700 dark:text-green-400">✓ Found on Google Maps</p>
+                      <p className="text-gray-600 dark:text-gray-400">{preview.address}</p>
+                      {preview.rating && <p className="text-gray-600 dark:text-gray-400">⭐ {preview.rating}/5</p>}
+                    </div>
+                  )}
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Description</label>
                     <textarea
@@ -3053,7 +3176,7 @@
                       onChange={e => setPreview(p => ({ ...p, description: e.target.value }))}
                       placeholder="Add details about this place"
                       className="w-full px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm"
-                      rows={2}
+                      rows={3}
                     />
                   </div>
                   <div className="flex gap-2 pt-2">
@@ -6700,7 +6823,8 @@
       const [editingItem, setEditingItem] = useState(null);  // null = closed, {} = new item for a day
       const [addingToDay, setAddingToDay] = useState(null);  // day_id we're adding to
       const [showNewItinerary, setShowNewItinerary] = useState(false);
-      const [newName, setNewName] = useState('');
+      const collectionName = collections.find(c => c.id === activeCollection)?.name || '';
+      const [newName, setNewName] = useState(collectionName);
       const [newStartDate, setNewStartDate] = useState('');
       const [newEndDate, setNewEndDate] = useState('');
       const [showDayPicker, setShowDayPicker] = useState(null); // pin object to add via day picker
@@ -6764,7 +6888,7 @@
         setItems([]);
         setExpandedDays({ [newDays[0]?.id]: true });
         setShowNewItinerary(false);
-        setNewName(''); setNewStartDate(''); setNewEndDate('');
+        setNewName(collectionName); setNewStartDate(''); setNewEndDate('');
       };
 
       // Delete itinerary
@@ -7881,19 +8005,27 @@
             <AddFromLinkModal
               onSelect={(data) => {
                 const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
+                const lat = data.lat || 0;
+                const lng = data.lng || 0;
                 const newPin = {
                   name: data.name,
-                  address: '',
+                  address: data.address || '',
                   description: data.description,
                   emoji: data.emoji,
+                  category: guessEmojiAndCategory(data.name, '').category,
                   source_name: data.source_name,
                   source_url: data.source_url,
                   collection_id: defaultCollection,
                   photos: [],
-                  opening_hours: {},
-                  lat: 0,
-                  lng: 0
+                  opening_hours: data.opening_hours || {},
+                  lat, lng,
+                  rating: data.rating || null,
                 };
+                // Pan map and preview if we have coords
+                if (lat && lng) {
+                  setMapPanTarget({ lat, lng, _t: Date.now() });
+                  setPreviewPin({ lat, lng, name: data.name, emoji: data.emoji });
+                }
                 setEditingPin(newPin);
                 setShowAddFromLink(false);
               }}
