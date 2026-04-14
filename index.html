@@ -102,11 +102,18 @@
       left: 0;
       right: 0;
       background: white;
-      border-radius: 16px 16px 0 0;
+      border-radius: 24px 24px 0 0;
       max-height: 85vh;
       overflow-y: auto;
       z-index: 1100;
-      box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.15);
+      box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.18);
+      animation: bw-slide-up 280ms cubic-bezier(0.32, 0.72, 0, 1);
+      transform-origin: bottom center;
+    }
+
+    @keyframes bw-slide-up {
+      from { transform: translateY(100%); opacity: 0.4; }
+      to   { transform: translateY(0); opacity: 1; }
     }
 
     .bottom-sheet-handle {
@@ -114,14 +121,16 @@
       height: 4px;
       background: #d1d5db;
       border-radius: 2px;
-      margin: 8px auto;
+      margin: 10px auto 6px;
       display: block;
+      cursor: grab;
     }
+    .dark-mode .bottom-sheet-handle { background: #4b5563; }
 
     .side-panel {
       position: fixed;
       right: 0;
-      top: 64px;
+      top: 0;
       bottom: 0;
       width: 380px;
       background: white;
@@ -129,6 +138,7 @@
       overflow-y: auto;
       z-index: 1000;
       box-shadow: -4px 0 20px rgba(0, 0, 0, 0.1);
+      padding-top: 16px;
     }
 
     .dark-mode {
@@ -378,7 +388,48 @@
         months.forEach(m => { pruned[m] = all[m]; });
         localStorage.setItem('boWanderApiUsage', JSON.stringify(pruned));
       } catch {}
+      scheduleUsageFlush(kind, count);
     };
+
+    // Firestore-backed global usage counter (debounced flush)
+    let pendingUsageFlush = {};
+    let usageFlushTimer = null;
+    const scheduleUsageFlush = (kind, count) => {
+      pendingUsageFlush[kind] = (pendingUsageFlush[kind] || 0) + count;
+      clearTimeout(usageFlushTimer);
+      usageFlushTimer = setTimeout(flushUsageToFirestore, 4000);
+    };
+    const flushUsageToFirestore = async () => {
+      const pending = pendingUsageFlush; pendingUsageFlush = {};
+      try {
+        if (typeof db === 'undefined' || !window.firebase) return;
+        const uid = MockFirebase?.currentUser?.uid;
+        if (!uid) return;
+        const month = currentMonthKey();
+        const updates = {};
+        Object.entries(pending).forEach(([k, v]) => {
+          updates[k] = firebase.firestore.FieldValue.increment(v);
+        });
+        updates.updated_at = new Date().toISOString();
+        await db.collection('apiUsage').doc(`${uid}_${month}`).set(updates, { merge: true });
+      } catch (e) {
+        // Re-queue on failure (simple recovery)
+        Object.entries(pending).forEach(([k, v]) => { pendingUsageFlush[k] = (pendingUsageFlush[k] || 0) + v; });
+      }
+    };
+    const fetchUsageFromFirestore = async (month) => {
+      try {
+        if (typeof db === 'undefined' || !MockFirebase?.currentUser?.uid) return null;
+        const doc = await db.collection('apiUsage').doc(`${MockFirebase.currentUser.uid}_${month || currentMonthKey()}`).get();
+        return doc.exists ? doc.data() : {};
+      } catch { return null; }
+    };
+    // Flush on tab hide / page unload to avoid losing recent calls
+    if (!window.__bwUsageFlushHooked) {
+      window.addEventListener('beforeunload', () => { try { if (Object.keys(pendingUsageFlush).length) flushUsageToFirestore(); } catch {} });
+      document.addEventListener('visibilitychange', () => { if (document.hidden && Object.keys(pendingUsageFlush).length) flushUsageToFirestore(); });
+      window.__bwUsageFlushHooked = true;
+    }
     // Wrapped fetch that auto-detects the endpoint and increments the counter.
     // Uses window.__bwFetch if already patched (idempotent).
     if (!window.__bwFetchWrapped) {
@@ -1162,16 +1213,132 @@
       </svg>
     );
 
+    // Global Sources manager — shown in home Settings panel
+    const GlobalSourcesPanel = ({ allPins }) => {
+      const defaultSources = ['Lonely Planet', 'Eater', 'Google Maps', 'Yelp', 'Friend recommendation'];
+      const [hiddenSources, setHiddenSources] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('boWanderHiddenSources') || '[]'); } catch { return []; }
+      });
+      const [deletedSources, setDeletedSources] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('boWanderDeletedSources') || '[]'); } catch { return []; }
+      });
+      const [confirmDelete, setConfirmDelete] = useState(null);
+      const [customAdd, setCustomAdd] = useState('');
+      const [customSources, setCustomSources] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('boWanderCustomSources') || '[]'); } catch { return []; }
+      });
+
+      // Sources actually used by pins (extracted from sources[] array OR legacy source_name)
+      const usedSources = [...new Set(
+        allPins.flatMap(p => {
+          const fromArr = Array.isArray(p.sources) ? p.sources.map(s => s.label || s.name).filter(Boolean) : [];
+          return fromArr.length ? fromArr : (p.source_name ? [p.source_name] : []);
+        })
+      )];
+      const allKnown = [...new Set([...defaultSources, ...customSources, ...usedSources])].sort();
+
+      const persistHidden = (next) => { setHiddenSources(next); localStorage.setItem('boWanderHiddenSources', JSON.stringify(next)); };
+      const persistDeleted = (next) => { setDeletedSources(next); localStorage.setItem('boWanderDeletedSources', JSON.stringify(next)); };
+      const persistCustom = (next) => { setCustomSources(next); localStorage.setItem('boWanderCustomSources', JSON.stringify(next)); };
+
+      return (
+        <div className="border-t dark:border-slate-700 pt-3">
+          <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-2">
+            Sources <span className="text-gray-400 font-normal">(global — applies to all maps)</span>
+          </label>
+          <div className="space-y-1 max-h-48 overflow-y-auto">
+            {allKnown.map(src => {
+              const isHidden = hiddenSources.includes(src);
+              const isDeleted = deletedSources.includes(src);
+              if (isDeleted) return null;
+              const usageCount = usedSources.includes(src) ? allPins.filter(p => {
+                const fromArr = Array.isArray(p.sources) ? p.sources.map(s => s.label || s.name).filter(Boolean) : [];
+                return (fromArr.length ? fromArr : [p.source_name]).includes(src);
+              }).length : 0;
+              return (
+                <div key={src} className="flex items-center justify-between gap-2 py-1 px-2 rounded text-xs bg-gray-50 dark:bg-slate-700/50">
+                  <span className={`flex-1 truncate ${isHidden ? 'line-through text-gray-400' : 'text-gray-700 dark:text-gray-200'}`}>
+                    {src} {usageCount > 0 && <span className="text-gray-400">({usageCount})</span>}
+                  </span>
+                  <button
+                    onClick={() => persistHidden(isHidden ? hiddenSources.filter(s => s !== src) : [...hiddenSources, src])}
+                    className="text-blue-500 hover:underline"
+                    title={isHidden ? 'Show in dropdown' : 'Hide from dropdown'}
+                  >
+                    {isHidden ? 'Show' : 'Hide'}
+                  </button>
+                  {confirmDelete === src ? (
+                    <button onClick={() => { persistDeleted([...deletedSources, src]); persistCustom(customSources.filter(s => s !== src)); setConfirmDelete(null); }} className="text-red-500 hover:underline">Confirm</button>
+                  ) : (
+                    <button onClick={() => setConfirmDelete(src)} className="text-red-500 hover:underline" title="Delete permanently">Delete</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {/* Add custom */}
+          <div className="flex gap-1 mt-2">
+            <input
+              value={customAdd}
+              onChange={e => setCustomAdd(e.target.value)}
+              placeholder="Add custom source name..."
+              className="flex-1 px-2 py-1 text-xs border rounded dark:bg-slate-800 dark:border-slate-600 dark:text-white"
+              onKeyDown={e => {
+                if (e.key === 'Enter' && customAdd.trim()) {
+                  if (!customSources.includes(customAdd.trim())) persistCustom([...customSources, customAdd.trim()]);
+                  setCustomAdd('');
+                }
+              }}
+            />
+            <button
+              onClick={() => {
+                if (customAdd.trim() && !customSources.includes(customAdd.trim())) persistCustom([...customSources, customAdd.trim()]);
+                setCustomAdd('');
+              }}
+              className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+            >+</button>
+          </div>
+          {/* Restore deleted */}
+          {deletedSources.length > 0 && (
+            <details className="mt-2">
+              <summary className="text-xs text-gray-400 cursor-pointer">Deleted ({deletedSources.length}) — click to restore</summary>
+              <div className="mt-1 space-y-1">
+                {deletedSources.map(src => (
+                  <div key={src} className="flex items-center justify-between text-xs px-2 py-1 bg-red-50 dark:bg-red-900/10 rounded">
+                    <span className="line-through text-gray-500">{src}</span>
+                    <button onClick={() => persistDeleted(deletedSources.filter(s => s !== src))} className="text-blue-500 hover:underline">Restore</button>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      );
+    };
+
     // API Usage display — shows current month's call counts + cost estimate vs $200 free credit
     const ApiUsagePanel = () => {
       const [usage, setUsage] = useState(() => getApiUsage());
-      const [tick, setTick] = useState(0);
-      // Re-read usage when panel opens or when user navigates
+      const [remoteCounts, setRemoteCounts] = useState(null); // null = unknown, {} = checked & empty
+      const [synced, setSynced] = useState(false);
+      // Periodically refresh local + remote counts
       React.useEffect(() => {
-        const id = setInterval(() => setUsage(getApiUsage()), 2000);
-        return () => clearInterval(id);
+        let cancelled = false;
+        const refresh = async () => {
+          if (cancelled) return;
+          setUsage(getApiUsage());
+          const remote = await fetchUsageFromFirestore();
+          if (cancelled) return;
+          if (remote !== null) { setRemoteCounts(remote); setSynced(true); }
+        };
+        refresh();
+        const id = setInterval(refresh, 5000);
+        return () => { cancelled = true; clearInterval(id); };
       }, []);
-      const c = usage.counts;
+      // Merge: prefer remote (global) when available, fall back to local
+      const c = remoteCounts && Object.keys(remoteCounts).length > 0
+        ? { ...usage.counts, ...Object.fromEntries(Object.entries(remoteCounts).filter(([k, v]) => typeof v === 'number')) }
+        : usage.counts;
       const placesCalls = (c.placesTextSearch || 0) + (c.placesDetails || 0);
       const routesCalls = c.routes || 0;
       const corsCalls = c.corsProxy || 0;
@@ -1179,7 +1346,10 @@
         + (c.placesDetails || 0) * API_PRICING.placesDetails
         + (c.routes || 0) * API_PRICING.routes;
       const pctOfFree = Math.min(100, (cost / 200) * 100);
-      const prettyMonth = new Date(usage.month + '-01').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      // Parse as LOCAL date, not UTC (new Date('2026-04-01') is UTC midnight,
+      // which displays as March 31 in negative-UTC timezones)
+      const [yr, mo] = usage.month.split('-').map(Number);
+      const prettyMonth = new Date(yr, mo - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
       return (
         <div className="border-t dark:border-slate-700 pt-3">
           <div className="flex items-center justify-between mb-2">
@@ -1235,7 +1405,16 @@
               </div>
             </div>
             <p className="text-[11px] text-gray-400 leading-relaxed">
-              Costs are estimates based on published Google Maps Platform pricing. You won't be charged until you exceed $200/month. Text Search ≈ $0.034/call · Routes ≈ $0.005/call.
+              {synced ? '🌐 Synced across devices via Firestore.' : '📱 Local-only count (sign in to sync globally).'} Costs are estimates from Google Maps Platform pricing — actual billing may differ.
+              {' '}
+              <a
+                href="https://console.cloud.google.com/billing"
+                target="_blank"
+                rel="noopener"
+                className="text-blue-500 hover:underline"
+              >
+                View real billing in Google Cloud Console →
+              </a>
             </p>
           </div>
         </div>
@@ -1350,6 +1529,18 @@
     };
 
     const isAscii = (str) => /^[\x00-\x7F]*$/.test(str);
+
+    // Normalize pin sources — supports new sources[] array AND legacy source_name/source_url
+    const getPinSources = (pin) => {
+      if (!pin) return [];
+      if (Array.isArray(pin.sources) && pin.sources.length) {
+        return pin.sources.filter(s => s && (s.label || s.url)).map(s => ({ label: s.label || '', url: s.url || '' }));
+      }
+      if (pin.source_name || pin.source_url) {
+        return [{ label: pin.source_name || '', url: pin.source_url || '' }];
+      }
+      return [];
+    };
 
     const truncate = (str, len) => {
       return str && str.length > len ? str.substring(0, len) + '...' : str;
@@ -1850,16 +2041,23 @@
         );
       }
 
+      // Auto-grow textarea to fit content
+      const autoGrow = (el) => {
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = Math.min(Math.max(el.scrollHeight, 80), 480) + 'px';
+      };
+      useEffect(() => { if (editing) autoGrow(textareaRef.current); }, [editing, draft]);
       return (
         <div className={`space-y-2 ${showBorder ? 'border-t dark:border-slate-700 pt-2' : ''}`}>
           <label className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</label>
           <textarea
             ref={textareaRef}
             value={draft}
-            onChange={e => setDraft(e.target.value)}
-            className="w-full px-3 py-2 border rounded dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm focus:ring-2 focus:ring-blue-500"
+            onChange={e => { setDraft(e.target.value); autoGrow(e.target); }}
+            className="w-full px-3 py-2 border rounded dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 resize-none overflow-hidden"
             placeholder={placeholder || `Add ${label.toLowerCase()}...`}
-            rows={3}
+            style={{ minHeight: 80 }}
           />
           <div className="flex gap-2">
             <button
@@ -2192,7 +2390,7 @@
       };
 
       const openStatus = getOpenStatus(pin.opening_hours || {});
-      const showTranslate = !isAscii(pin.name + (pin.description || ''));
+      const showTranslate = !isAscii((pin.name || '') + (pin.description || '') + (pin.address || ''));
 
       const handleTranslate = async () => {
         setTranslating(true);
@@ -2263,11 +2461,25 @@
                           </span>
                         );
                       })()}
-                      {pin.source_name && (
-                        <span className="inline-block bg-gray-600 text-white px-1.5 py-px rounded-full" style={{ fontSize: '10px' }}>
-                          {pin.source_name}
-                        </span>
-                      )}
+                      {getPinSources(pin).map((s, i) => (
+                        s.url ? (
+                          <a
+                            key={i}
+                            href={s.url}
+                            target="_blank"
+                            rel="noopener"
+                            className="inline-block bg-gray-600 hover:bg-gray-700 text-white px-1.5 py-px rounded-full"
+                            style={{ fontSize: '10px' }}
+                            title={s.url}
+                          >
+                            {s.label || (() => { try { return new URL(s.url).hostname.replace('www.',''); } catch { return s.url; } })()} ↗
+                          </a>
+                        ) : (
+                          <span key={i} className="inline-block bg-gray-600 text-white px-1.5 py-px rounded-full" style={{ fontSize: '10px' }}>
+                            {s.label}
+                          </span>
+                        )
+                      ))}
                     </div>
                   )}
                 </div>
@@ -2868,9 +3080,10 @@
                     <button
                       onClick={handleTranslate}
                       disabled={translating}
-                      className="flex items-center justify-center gap-1 bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-200 px-2.5 py-1.5 rounded-lg text-xs hover:bg-gray-300 dark:hover:bg-slate-600 disabled:opacity-50"
+                      title="Translate to English"
+                      className="flex items-center justify-center bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-200 w-9 px-0 py-1.5 rounded-lg text-base hover:bg-gray-300 dark:hover:bg-slate-600 disabled:opacity-50 flex-shrink-0"
                     >
-                      💬 {translating ? '...' : 'Translate'}
+                      {translating ? '...' : '🌐'}
                     </button>
                   )}
                   <button
@@ -3169,17 +3382,17 @@
       ) : null;
 
       return (
-        <div className="flex-1 flex justify-center px-4" ref={containerRef}>
-          <div className="relative w-full max-w-lg" ref={inputWrapRef}>
-            <div className="relative flex items-center">
-              <span className="absolute left-3 text-gray-400 text-sm"><SearchIcon /></span>
+        <div className="w-full" ref={containerRef}>
+          <div className="relative w-full" ref={inputWrapRef}>
+            <div className="relative flex items-center bg-white dark:bg-slate-800 shadow-lg rounded-full">
+              <span className="absolute left-3 text-gray-400 text-sm pointer-events-none"><SearchIcon /></span>
               <input
                 type="text"
-                placeholder="Search your places or find new ones..."
+                placeholder="Search places..."
                 value={query}
                 onChange={e => handleInput(e.target.value)}
                 onFocus={() => setIsFocused(true)}
-                className={`w-full px-3 py-2 pl-9 pr-8 border text-sm dark:bg-slate-700 dark:border-slate-600 dark:text-white focus:ring-2 focus:ring-blue-500 ${showDropdown ? 'rounded-t-lg border-b-0' : 'rounded-lg'}`}
+                className={`w-full px-3 py-2.5 pl-9 pr-8 border-0 text-sm bg-transparent dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${showDropdown ? 'rounded-t-2xl' : 'rounded-full'}`}
               />
               {query && (
                 <button onClick={() => { setQuery(''); setPlaceResults([]); }} className="absolute right-3 text-gray-400 hover:text-gray-600 text-xs">✕</button>
@@ -3320,6 +3533,79 @@
       const [pasteMode, setPasteMode] = useState(false);
       const [pasteText, setPasteText] = useState('');
       const [pasteSourceUrl, setPasteSourceUrl] = useState('');
+      // Per-row Name-as-search state (only tracks the currently expanded row)
+      const [nameSearchResults, setNameSearchResults] = useState([]);
+      const [searchingName, setSearchingName] = useState(false);
+      const nameSearchTimerRef = useRef(null);
+
+      // Location hint derived from source URL or bulkSource — used to bias searches
+      const bulkLocationHint = React.useMemo(() => {
+        const src = (bulkSource?.source_url || '') + ' ' + (bulkSource?.source_name || '');
+        const m = src.toLowerCase().match(/\b(tokyo|kyoto|osaka|paris|london|rome|new york|los angeles|chicago|seattle|boston|miami|berlin|barcelona|madrid|amsterdam|sydney|melbourne|hong kong|singapore|bangkok|seoul|taipei|japan|france|italy|spain|germany|thailand|vietnam|korea)\b/);
+        return m ? m[1] : '';
+      }, [bulkSource]);
+
+      // Debounced Google Places search for Name-as-search
+      const doNameSearch = async (q, rowIdx) => {
+        if (!q || q.trim().length < 2) { setNameSearchResults([]); return; }
+        const apiKey = getGoogleApiKey();
+        if (!apiKey) return;
+        setSearchingName(true);
+        try {
+          const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Goog-Api-Key': apiKey,
+              'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
+            },
+            body: JSON.stringify({ textQuery: q.trim() + (bulkLocationHint ? ' ' + bulkLocationHint : ''), maxResultCount: 5 })
+          });
+          const data = await resp.json();
+          const results = (data.places || []).map(gp => {
+            const hours = {};
+            if (gp.regularOpeningHours?.weekdayDescriptions) {
+              const dayAbbrev = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun' };
+              gp.regularOpeningHours.weekdayDescriptions.forEach(desc => {
+                const m = desc.match(/^(\w+):\s*(.+)/);
+                if (m) hours[dayAbbrev[m[1].toLowerCase()] || m[1].toLowerCase().substring(0, 3)] = m[2].trim();
+              });
+            }
+            return {
+              displayName: gp.displayName?.text || '',
+              address: gp.formattedAddress || '',
+              lat: gp.location?.latitude || 0,
+              lng: gp.location?.longitude || 0,
+              rating: gp.rating || null,
+              types: gp.types || [],
+              opening_hours: hours,
+            };
+          }).filter(r => r.displayName);
+          setNameSearchResults(results);
+        } catch { setNameSearchResults([]); }
+        setSearchingName(false);
+      };
+
+      const applyNameSearchResult = (idx, result) => {
+        setBulkPlaces(prev => prev.map((p, i) => i === idx ? {
+          ...p,
+          name: result.displayName,
+          placeData: {
+            lat: result.lat, lng: result.lng,
+            address: result.address, rating: result.rating,
+            types: result.types, displayName: result.displayName,
+            opening_hours: result.opening_hours || {},
+          },
+        } : p));
+        setNameSearchResults([]);
+      };
+
+      // Clear search results when switching rows
+      React.useEffect(() => {
+        setNameSearchResults([]);
+        setSearchingName(false);
+        if (nameSearchTimerRef.current) clearTimeout(nameSearchTimerRef.current);
+      }, [bulkExpandedIdx]);
 
       // Kick off Google Places background lookups for a set of bulk places
       const kickOffBulkLookups = (places, locationHint = '') => {
@@ -4053,18 +4339,44 @@
                           </div>
                           {isExpanded && (
                             <div className="px-3 pb-3 pt-1 space-y-2 border-t border-blue-100 dark:border-slate-700" onClick={e => e.stopPropagation()}>
-                              <div>
-                                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Name</label>
+                              <div className="relative">
+                                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                                  Name <span className="font-normal text-gray-400">(type to search Google Maps)</span>
+                                </label>
                                 <input
                                   type="text"
                                   value={place.placeData?.displayName || place.name}
-                                  onChange={e => setBulkPlaces(prev => prev.map((p, i) => i === idx ? {
-                                    ...p,
-                                    name: e.target.value,
-                                    placeData: p.placeData ? { ...p.placeData, displayName: e.target.value } : null
-                                  } : p))}
+                                  autoFocus={place._isNew}
+                                  onChange={e => {
+                                    const val = e.target.value;
+                                    setBulkPlaces(prev => prev.map((p, i) => i === idx ? {
+                                      ...p,
+                                      name: val,
+                                      placeData: p.placeData ? { ...p.placeData, displayName: val } : p.placeData,
+                                    } : p));
+                                    if (nameSearchTimerRef.current) clearTimeout(nameSearchTimerRef.current);
+                                    if (!val || val.trim().length < 2) { setNameSearchResults([]); return; }
+                                    nameSearchTimerRef.current = setTimeout(() => doNameSearch(val, idx), 400);
+                                  }}
                                   className="w-full px-2 py-1.5 border rounded text-sm dark:bg-slate-800 dark:border-slate-600 dark:text-white"
                                 />
+                                {searchingName && (
+                                  <p className="text-[10px] text-gray-400 mt-0.5">Searching...</p>
+                                )}
+                                {nameSearchResults.length > 0 && (
+                                  <div className="mt-1 border rounded-lg overflow-hidden divide-y dark:divide-slate-700 dark:border-slate-600 bg-white dark:bg-slate-800">
+                                    {nameSearchResults.map((r, ri) => (
+                                      <button
+                                        key={ri}
+                                        onClick={() => applyNameSearchResult(idx, r)}
+                                        className="w-full text-left px-2 py-1.5 hover:bg-blue-50 dark:hover:bg-slate-700 text-xs"
+                                      >
+                                        <div className="font-medium dark:text-white truncate">📍 {r.displayName}</div>
+                                        <div className="text-gray-500 dark:text-gray-400 truncate">{r.address}{r.rating ? ` · ⭐ ${r.rating}` : ''}</div>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
                               <div>
                                 <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Category</label>
@@ -4096,17 +4408,14 @@
                               <div>
                                 <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Location</label>
                                 {place.placeData?.address ? (
-                                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">📍 {place.placeData.address}</p>
+                                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">📍 {place.placeData.address}{place.placeData.rating ? ` · ⭐ ${place.placeData.rating}` : ''}</p>
                                 ) : (
-                                  <p className="text-xs text-orange-500 mb-1">No location set</p>
+                                  <p className="text-xs text-orange-500 mt-0.5">⚠️ No location — type in Name above to search Google Maps</p>
                                 )}
-                                <div className="flex gap-1">
+                                {false && <div style={{display:'none'}}>
                                   <input
                                     type="text"
-                                    value={place._searchOverride || ''}
-                                    onChange={e => setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, _searchOverride: e.target.value } : p))}
-                                    placeholder="Try a better search (e.g. 'Coffee County Tokyo Shibuya')"
-                                    className="flex-1 min-w-0 px-2 py-1.5 border rounded text-xs dark:bg-slate-800 dark:border-slate-600 dark:text-white"
+                                    defaultValue=""
                                     onKeyDown={async (e) => {
                                       if (e.key !== 'Enter') return;
                                       e.preventDefault();
@@ -4208,7 +4517,7 @@
                                   >
                                     {place.loading ? '...' : '🔍'}
                                   </button>
-                                </div>
+                                </div>}
                               </div>
                               <div>
                                 <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Hours</label>
@@ -4236,6 +4545,26 @@
                         </div>
                       );
                     })}
+                    {/* Manual add row — for places the parser missed */}
+                    <button
+                      onClick={() => {
+                        setBulkPlaces(prev => {
+                          const newIdx = prev.length;
+                          setTimeout(() => setBulkExpandedIdx(newIdx), 0);
+                          return [...prev, {
+                            name: '',
+                            description: '',
+                            checked: true,
+                            loading: false,
+                            placeData: null,
+                            _isNew: true,
+                          }];
+                        });
+                      }}
+                      className="w-full mt-1 px-3 py-2 border border-dashed border-blue-300 dark:border-blue-700 rounded-lg text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-xs font-medium transition"
+                    >
+                      + Add a place manually
+                    </button>
                   </div>
                   <div className="flex gap-2 pt-2">
                     <button
@@ -7526,6 +7855,9 @@
                     </p>
                   </div>
 
+                  {/* Global Sources Manager */}
+                  <GlobalSourcesPanel allPins={pins || []} />
+
                   {/* API Usage */}
                   <ApiUsagePanel />
                 </div>
@@ -8659,23 +8991,31 @@
               <input type="text" value={newName} onChange={e => setNewName(e.target.value)}
                 placeholder="Trip name (e.g. Japan 2026)"
                 className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <label className="text-xs text-gray-500 dark:text-gray-400">Start</label>
-                  <input type="date" value={newStartDate} onChange={e => setNewStartDate(e.target.value)}
-                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+              <div className="grid grid-cols-2 gap-2">
+                <div className="min-w-0">
+                  <label className="text-xs text-gray-500 dark:text-gray-400 block mb-0.5">Start</label>
+                  <input type="date" value={newStartDate} onChange={e => {
+                      setNewStartDate(e.target.value);
+                      if (newEndDate && e.target.value > newEndDate) setNewEndDate('');
+                    }}
+                    className="w-full min-w-0 px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
                 </div>
-                <div className="flex-1">
-                  <label className="text-xs text-gray-500 dark:text-gray-400">End</label>
-                  <input type="date" value={newEndDate} onChange={e => setNewEndDate(e.target.value)}
-                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                <div className="min-w-0">
+                  <label className="text-xs text-gray-500 dark:text-gray-400 block mb-0.5">End</label>
+                  <input type="date" value={newEndDate} min={newStartDate || undefined} onChange={e => setNewEndDate(e.target.value)}
+                    className="w-full min-w-0 px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
                 </div>
               </div>
+              {(!newName || !newStartDate || !newEndDate) && (
+                <p className="text-xs text-gray-400 dark:text-gray-500">
+                  {!newName ? 'Enter a trip name' : (!newStartDate ? 'Pick a start date' : 'Pick an end date')} to continue.
+                </p>
+              )}
               <div className="flex gap-2">
                 <button onClick={() => setShowNewItinerary(false)}
                   className="flex-1 px-3 py-2 border dark:border-slate-600 rounded-lg text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700">Cancel</button>
                 <button onClick={pendingAddPin ? handleCreateItineraryWithPending : handleCreateItinerary} disabled={!newName || !newStartDate || !newEndDate}
-                  className="flex-1 px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition">Create</button>
+                  className="flex-1 px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition">Create</button>
               </div>
             </div>
           )}
@@ -9273,20 +9613,26 @@
       // Collection view (map + list)
       return (
         <div className={`${darkMode ? 'dark' : ''} h-screen w-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-white overflow-hidden`}>
-          {/* Top Navigation */}
-          <div className="h-16 bg-white dark:bg-slate-800 border-b dark:border-slate-700 px-4 flex items-center justify-between sticky top-0" style={{ zIndex: 9001 }}>
-            <div className="flex items-center gap-4">
-              <button
-                onClick={() => setView('home')}
-                className="p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-lg"
-              >
-                ←
-              </button>
-              <h1 className="text-xl font-bold">{collections.find(c => c.id === activeCollection)?.name || 'Collection'}</h1>
-            </div>
+          {/* Floating top controls (Google Maps style) — overlay on map, no fixed bar */}
+          <div className="absolute top-0 left-0 right-0 pointer-events-none" style={{ zIndex: 9001 }}>
+            <div className="flex items-start gap-2 p-3 sm:p-4">
+              {/* Back + title chip (left) */}
+              <div className="pointer-events-auto flex items-center gap-1 bg-white dark:bg-slate-800 rounded-full shadow-lg px-1 py-1 max-w-[40%] flex-shrink-0">
+                <button
+                  onClick={() => setView('home')}
+                  className="w-9 h-9 flex items-center justify-center hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full text-lg flex-shrink-0"
+                  title="Back to maps"
+                >
+                  ←
+                </button>
+                <span className="text-sm font-semibold dark:text-white truncate pr-2 hidden sm:inline" title={collections.find(c => c.id === activeCollection)?.name}>
+                  {collections.find(c => c.id === activeCollection)?.name || ''}
+                </span>
+              </div>
 
-            {/* Unified Search Bar */}
-            <UnifiedSearchBar
+              {/* Search (center, takes remaining space) */}
+              <div className="pointer-events-auto flex-1 min-w-0">
+                <UnifiedSearchBar
               pins={pins}
               isDarkMode={darkMode}
               isMobile={isMobile}
@@ -9320,24 +9666,26 @@
               }}
               onAddFromLink={() => setShowAddFromLink(true)}
               onUploadConfirmation={() => setShowUploadConfirmation(true)}
-            />
+                />
+              </div>
+            </div>
 
-            <div className="flex items-center gap-1 flex-shrink-0">
-              {/* Map / List toggle — desktop only (mobile uses floating button) */}
+            {/* Floating action icons (right side, vertical column on mobile) */}
+            <div className="absolute right-3 sm:right-4 top-16 sm:top-20 flex flex-col gap-2 pointer-events-auto">
               {!isMobile && (
-                <div className="flex bg-gray-100 dark:bg-slate-700 rounded-lg p-0.5 mr-1">
+                <div className="flex bg-white dark:bg-slate-800 rounded-full shadow-lg p-1">
                   <button
                     onClick={() => setShowList(false)}
-                    className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition ${
-                      !showList ? 'bg-white dark:bg-slate-600 shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition ${
+                      !showList ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
                     }`}
                   >
                     🗺️ Map
                   </button>
                   <button
                     onClick={() => setShowList(true)}
-                    className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition ${
-                      showList ? 'bg-white dark:bg-slate-600 shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition ${
+                      showList ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
                     }`}
                   >
                     📋 List
@@ -9346,28 +9694,28 @@
               )}
               <button
                 onClick={() => setShowAddFromLink(true)}
-                className="p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-sm"
+                className="w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-base transition"
                 title="Add from URL"
               >
                 🔗
               </button>
               <button
                 onClick={() => setShowUploadConfirmation(true)}
-                className="p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-sm"
+                className="w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-base transition"
                 title="Upload confirmation"
               >
                 ⬆️
               </button>
               <button
                 onClick={() => setShowDocCenter(true)}
-                className="p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-sm"
+                className="w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-base transition"
                 title="Document Center"
               >
                 📄
               </button>
               <button
                 onClick={() => setShowItinerary(!showItinerary)}
-                className={`p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-sm ${showItinerary ? 'bg-blue-100 dark:bg-blue-900/30' : ''}`}
+                className={`w-10 h-10 flex items-center justify-center rounded-full shadow-lg text-base transition ${showItinerary ? 'bg-blue-600 text-white' : 'bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
                 title="Itinerary Planner"
               >
                 🗓️
@@ -9375,8 +9723,8 @@
             </div>
           </div>
 
-          {/* Main Content */}
-          <div className="overflow-hidden" style={{ height: 'calc(100vh - 4rem)' }}>
+          {/* Main Content (full viewport now that toolbar floats) */}
+          <div className="overflow-hidden" style={{ height: '100vh' }}>
             <div className="h-full flex">
               {/* Desktop Sidebar */}
               {!isMobile && showList && (
@@ -9529,6 +9877,7 @@
                   category: guessEmojiAndCategory(data.name, '').category,
                   source_name: data.source_name,
                   source_url: data.source_url,
+                  sources: data.source_url || data.source_name ? [{ label: data.source_name || '', url: data.source_url || '' }] : [],
                   collection_id: defaultCollection,
                   photos: [],
                   opening_hours: data.opening_hours || {},
