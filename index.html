@@ -3177,10 +3177,12 @@
       );
     };
 
-    const AddFromLinkModal = ({ onSelect, onClose, isDarkMode }) => {
+    const AddFromLinkModal = ({ onSelect, onBulkSelect, onClose, isDarkMode }) => {
       const [url, setUrl] = useState('');
       const [fetching, setFetching] = useState(false);
       const [preview, setPreview] = useState(null); // { name, description, source_name, source_url }
+      const [bulkPlaces, setBulkPlaces] = useState(null); // [{ name, description, checked, loading, placeData }]
+      const [bulkSource, setBulkSource] = useState(null); // { source_name, source_url }
       const [error, setError] = useState('');
 
       const handleFetch = async () => {
@@ -3264,6 +3266,111 @@
             const data = { contents: html };
             if (data.contents) {
               const html = data.contents;
+
+              // Extract page title early for article location hints
+              const earlyTitle = (() => {
+                const og = html.match(/<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i);
+                if (og) return htmlDecode(og[1]);
+                const t = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+                return t ? htmlDecode(t[1]) : '';
+              })();
+              // Try to extract a location hint like "Tokyo Japan" from the title
+              const locationHint = (() => {
+                const m = earlyTitle.match(/\b(?:in|of|to|around|near)\s+([A-Z][^|–—\-\n]{2,40})/i);
+                return m ? m[1].trim() : '';
+              })();
+
+              // === ARTICLE DETECTION: check for multi-place articles ===
+              const isArticleDomain = !/yelp\.com|tripadvisor\.|google\.com\/maps|booking\.com|airbnb\.com|klook\.com|viator\.com|getyourguide\.com/.test(domainName);
+              if (isArticleDomain) {
+                // Extract headings (h2, h3) that could be place names
+                const headingRegex = /<h[23][^>]*>([\s\S]*?)<\/h[23]>/gi;
+                const rawHeadings = [];
+                let hMatch;
+                while ((hMatch = headingRegex.exec(html)) !== null) {
+                  let text = htmlDecode(hMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')).trim();
+                  // Strip leading numbers like "1.", "01.", "#1", "1)"
+                  text = text.replace(/^[\s#]*\d{1,2}[\.\)\-–—:\s]+\s*/, '').trim();
+                  rawHeadings.push(text);
+                }
+                // Filter out generic/navigation headings
+                const skipHeadings = /^(introduction|getting there|getting around|how to get|tips|map|related|about|author|comment|share|conclusion|summary|faq|where to stay|where to eat|when to visit|final thoughts|more|other|the bottom line|pin this|you may also|read more|subscribe|newsletter|what to|why|our|my|the best|a guide|welcome|table of contents|contents|overview|highlights|navigation|menu|sidebar|footer|header|contact|resources|disclosure|disclaimer|affiliate)/i;
+                const placeHeadings = rawHeadings.filter(h =>
+                  h.length >= 3 && h.length <= 120 &&
+                  !skipHeadings.test(h) &&
+                  !/^\d+$/.test(h) &&
+                  !h.includes('©')
+                );
+
+                if (placeHeadings.length >= 3) {
+                  // This looks like a list article! Extract descriptions for each place
+                  const places = placeHeadings.map(name => {
+                    // Try to find a paragraph after this heading
+                    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const descRegex = new RegExp(escapedName + '[\\s\\S]*?<\\/h[23]>[\\s]*(?:<[^>]*>\\s*)*<p[^>]*>([\\s\\S]*?)<\\/p>', 'i');
+                    const descMatch = html.match(descRegex);
+                    let desc = '';
+                    if (descMatch) {
+                      desc = htmlDecode(descMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')).trim().substring(0, 300);
+                    }
+                    return { name, description: desc, checked: true, loading: false, placeData: null };
+                  });
+
+                  setBulkPlaces(places);
+                  setBulkSource({ source_name: sourceName, source_url: url });
+                  setFetching(false);
+
+                  // Kick off Google Places lookups in background
+                  const apiKey = getGoogleApiKey();
+                  if (apiKey) {
+                    places.forEach((place, idx) => {
+                      setTimeout(async () => {
+                        try {
+                          const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+                            method: 'POST',
+                            headers: {
+                              'Content-Type': 'application/json',
+                              'X-Goog-Api-Key': apiKey,
+                              'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
+                            },
+                            body: JSON.stringify({ textQuery: place.name + (locationHint ? ' ' + locationHint : ''), maxResultCount: 1 })
+                          });
+                          const pData = await resp.json();
+                          const gp = pData.places?.[0];
+                          if (gp) {
+                            const hours = {};
+                            if (gp.regularOpeningHours?.weekdayDescriptions) {
+                              gp.regularOpeningHours.weekdayDescriptions.forEach(d => {
+                                const m = d.match(/^(\w+):\s*(.+)/);
+                                if (m) hours[m[1].toLowerCase()] = m[2];
+                              });
+                            }
+                            setBulkPlaces(prev => prev.map((p, i) => i === idx ? {
+                              ...p,
+                              loading: false,
+                              placeData: {
+                                lat: gp.location?.latitude || 0,
+                                lng: gp.location?.longitude || 0,
+                                address: gp.formattedAddress || '',
+                                rating: gp.rating || null,
+                                types: gp.types || [],
+                                opening_hours: hours,
+                                displayName: gp.displayName?.text || ''
+                              }
+                            } : p));
+                          } else {
+                            setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, loading: false } : p));
+                          }
+                        } catch {
+                          setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, loading: false } : p));
+                        }
+                      }, idx * 200); // Stagger requests
+                    });
+                    setBulkPlaces(prev => prev.map(p => ({ ...p, loading: true })));
+                  }
+                  return;
+                }
+              }
 
               // Strategy 1: JSON-LD structured data (most reliable)
               const jsonLdMatches = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi) || [];
@@ -3448,9 +3555,98 @@
                 </button>
               </div>
 
-              {!preview ? (
+              {bulkPlaces ? (
                 <div className="space-y-3">
-                  <p className="text-sm text-gray-600 dark:text-gray-400">Paste a link from Yelp, Google Maps, TripAdvisor, or any travel site</p>
+                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3">
+                    <p className="text-xs text-blue-600 dark:text-blue-400 truncate">🔗 {bulkSource?.source_url}</p>
+                    <p className="text-xs text-blue-500 mt-0.5">Source: {bulkSource?.source_name} · {bulkPlaces.length} places found</p>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <button
+                      onClick={() => setBulkPlaces(prev => prev.map(p => ({ ...p, checked: !prev.every(pp => pp.checked) })))}
+                      className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      {bulkPlaces.every(p => p.checked) ? 'Deselect all' : 'Select all'}
+                    </button>
+                    <span className="text-xs text-gray-500">{bulkPlaces.filter(p => p.checked).length} selected</span>
+                  </div>
+                  <div className="max-h-[50vh] overflow-y-auto space-y-1 -mx-1 px-1">
+                    {bulkPlaces.map((place, idx) => {
+                      const cat = guessEmojiAndCategory(place.name, place.placeData?.types?.join(',') || '');
+                      return (
+                        <div
+                          key={idx}
+                          className={`flex items-start gap-2 p-2 rounded-lg transition cursor-pointer ${
+                            place.checked
+                              ? 'bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800'
+                              : 'bg-gray-50 dark:bg-slate-800 border border-transparent opacity-60'
+                          }`}
+                          onClick={() => setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, checked: !p.checked } : p))}
+                        >
+                          <div className="mt-0.5">
+                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center text-xs ${
+                              place.checked ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-300 dark:border-slate-600'
+                            }`}>
+                              {place.checked && '✓'}
+                            </div>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-sm">{cat.emoji}</span>
+                              <span className="font-medium text-sm dark:text-white truncate">{place.name}</span>
+                            </div>
+                            {place.loading && <p className="text-xs text-gray-400 mt-0.5">Looking up on Google Maps...</p>}
+                            {place.placeData?.address && (
+                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{place.placeData.address}</p>
+                            )}
+                            {place.placeData?.rating && (
+                              <span className="text-xs text-gray-400">⭐ {place.placeData.rating}</span>
+                            )}
+                            {!place.loading && !place.placeData && (
+                              <p className="text-xs text-orange-500 mt-0.5">Not found on Google Maps</p>
+                            )}
+                            {place.description && (
+                              <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5 line-clamp-2">{place.description}</p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      onClick={() => { setBulkPlaces(null); setBulkSource(null); }}
+                      className="flex-1 px-4 py-2 border rounded-lg text-gray-700 dark:text-gray-300 dark:border-slate-600 hover:bg-gray-100 dark:hover:bg-slate-700 font-medium text-sm"
+                    >
+                      ← Back
+                    </button>
+                    <button
+                      onClick={() => {
+                        const selected = bulkPlaces.filter(p => p.checked).map(p => ({
+                          name: p.placeData?.displayName || p.name,
+                          description: p.description,
+                          source_name: bulkSource.source_name,
+                          source_url: bulkSource.source_url,
+                          emoji: guessEmojiAndCategory(p.name, p.placeData?.types?.join(',') || '').emoji,
+                          lat: p.placeData?.lat || 0,
+                          lng: p.placeData?.lng || 0,
+                          address: p.placeData?.address || '',
+                          rating: p.placeData?.rating || null,
+                          opening_hours: p.placeData?.opening_hours || {},
+                        }));
+                        if (selected.length === 0) return;
+                        onBulkSelect(selected);
+                      }}
+                      disabled={bulkPlaces.filter(p => p.checked).length === 0 || bulkPlaces.some(p => p.loading)}
+                      className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium text-sm disabled:opacity-50"
+                    >
+                      {bulkPlaces.some(p => p.loading) ? 'Looking up...' : `Add ${bulkPlaces.filter(p => p.checked).length} Places`}
+                    </button>
+                  </div>
+                </div>
+              ) : !preview ? (
+                <div className="space-y-3">
+                  <p className="text-sm text-gray-600 dark:text-gray-400">Paste a link — a single place or an article with recommendations</p>
                   <input
                     type="url"
                     value={url}
@@ -5513,6 +5709,45 @@
       const userLocationRef = useRef(null);
       const userAccuracyRef = useRef(null);
       const previewMarkerRef = useRef(null);
+      const pendingFlyRef = useRef(null);
+
+      // Safe wrapper: checks map has valid dimensions before Leaflet fly/pan operations
+      const safeFlyTo = useCallback((map, latLng, zoom, opts = {}) => {
+        if (!map) return;
+        const lat = parseFloat(Array.isArray(latLng) ? latLng[0] : latLng.lat);
+        const lng = parseFloat(Array.isArray(latLng) ? latLng[1] : latLng.lng);
+        if (isNaN(lat) || isNaN(lng)) { console.warn('[Map] safeFlyTo: invalid coords', latLng); return; }
+        const doFly = () => {
+          try {
+            const size = map.getSize();
+            if (!size || size.x === 0 || size.y === 0) {
+              map.invalidateSize();
+              const retrySize = map.getSize();
+              if (!retrySize || retrySize.x === 0 || retrySize.y === 0) {
+                console.warn('[Map] safeFlyTo: zero-size container, deferring');
+                pendingFlyRef.current = { lat, lng, zoom, opts };
+                return;
+              }
+            }
+            map.flyTo([lat, lng], zoom, { duration: 0.5, ...opts });
+          } catch (e) {
+            console.warn('[Map] safeFlyTo error, trying setView:', e.message);
+            try { map.setView([lat, lng], zoom, { animate: false }); } catch (e2) { console.warn('[Map] setView fallback failed:', e2.message); }
+          }
+        };
+        doFly();
+      }, []);
+
+      const safeFitBounds = useCallback((map, bounds, opts = {}) => {
+        if (!map) return;
+        try {
+          const size = map.getSize();
+          if (!size || size.x === 0 || size.y === 0) {
+            map.invalidateSize();
+          }
+          map.fitBounds(bounds, { padding: [60, 60], maxZoom: 15, animate: true, ...opts });
+        } catch (e) { console.warn('[Map] safeFitBounds error:', e.message); }
+      }, []);
 
       // Initialize map once
       useEffect(() => {
@@ -5537,9 +5772,9 @@
         setTimeout(reportCenter, 600);
 
         // Force Leaflet to recalculate container size after render
-        setTimeout(() => map.invalidateSize(), 100);
-        setTimeout(() => map.invalidateSize(), 200);
-        setTimeout(() => map.invalidateSize(), 500);
+        setTimeout(() => { map.invalidateSize(); if (pendingFlyRef.current) { const { lat, lng, zoom, opts } = pendingFlyRef.current; pendingFlyRef.current = null; safeFlyTo(map, [lat, lng], zoom, opts); } }, 100);
+        setTimeout(() => { map.invalidateSize(); if (pendingFlyRef.current) { const { lat, lng, zoom, opts } = pendingFlyRef.current; pendingFlyRef.current = null; safeFlyTo(map, [lat, lng], zoom, opts); } }, 300);
+        setTimeout(() => { map.invalidateSize(); if (pendingFlyRef.current) { const { lat, lng, zoom, opts } = pendingFlyRef.current; pendingFlyRef.current = null; safeFlyTo(map, [lat, lng], zoom, opts); } }, 600);
 
         // Request user location and show blue dot
         if ('geolocation' in navigator) {
@@ -5574,9 +5809,14 @@
           );
         }
 
-        // Handle window resize
+        // Handle window resize + retry pending fly
         const handleResize = () => {
           map.invalidateSize();
+          if (pendingFlyRef.current) {
+            const { lat, lng, zoom, opts } = pendingFlyRef.current;
+            pendingFlyRef.current = null;
+            setTimeout(() => safeFlyTo(map, [lat, lng], zoom, opts), 50);
+          }
         };
         window.addEventListener('resize', handleResize);
 
@@ -5601,20 +5841,7 @@
         const map = mapInstanceRef.current;
         console.log('[BoWander Map] panTo effect:', panTo, 'map exists:', !!map);
         if (!map || !panTo) return;
-        const lat = parseFloat(panTo.lat);
-        const lng = parseFloat(panTo.lng);
-        if (isNaN(lat) || isNaN(lng)) return;
-        console.log('[BoWander Map] Flying to:', lat, lng);
-        try {
-          map.invalidateSize();
-          setTimeout(() => {
-            try { map.flyTo([lat, lng], panTo.zoom || 15, { duration: 0.8 }); }
-            catch (e) {
-              console.warn('[BoWander Map] flyTo failed, using setView:', e);
-              try { map.setView([lat, lng], panTo.zoom || 15); } catch (e2) { console.warn('[BoWander Map] setView also failed:', e2); }
-            }
-          }, 100);
-        } catch (e) { console.warn('[BoWander Map] panTo error:', e); }
+        safeFlyTo(map, [panTo.lat, panTo.lng], panTo.zoom || 15, { duration: 0.8 });
       }, [panTo]);
 
       // Show/hide preview pin (temporary marker while adding a place)
@@ -5810,17 +6037,11 @@
           prevCollectionKey.current = collectionKey;
           const smartCenter = findSmartCenter();
           if (smartCenter) {
-            map.invalidateSize();
-            setTimeout(() => {
-              try { map.flyTo([smartCenter.lat, smartCenter.lng], smartCenter.zoom, { duration: 0.5 }); } catch(e) {}
-            }, 50);
+            safeFlyTo(map, [smartCenter.lat, smartCenter.lng], smartCenter.zoom);
           } else {
             try {
               const bounds = L.latLngBounds(validPins.map(p => [p.lat, p.lng]));
-              map.invalidateSize();
-              setTimeout(() => {
-                try { map.fitBounds(bounds, { padding: [60, 60], maxZoom: 15, animate: true }); } catch(e) { console.warn('fitBounds error:', e); }
-              }, 50);
+              safeFitBounds(map, bounds);
             } catch(e) { console.warn('bounds error:', e); }
           }
         } else if (validPins.length === 0 && collectionKey !== prevCollectionKey.current) {
@@ -5833,7 +6054,7 @@
                 const f = data.features?.[0];
                 if (f && f.geometry?.coordinates) {
                   const [lng, lat] = f.geometry.coordinates;
-                  try { map.flyTo([lat, lng], 12, { duration: 0.5 }); } catch(e) {}
+                  safeFlyTo(map, [lat, lng], 12);
                 }
               })
               .catch(() => {});
@@ -5866,13 +6087,21 @@
             // Offset the center so the pin appears in the visible map area (left of sidebar)
             const targetZoom = Math.max(map.getZoom(), 14);
             if (sidebarWidth > 0) {
-              const targetPoint = map.project([sLat, sLng], targetZoom);
-              // Shift center to the right by half the sidebar width so pin lands in visible area
-              const offsetPoint = L.point(targetPoint.x + sidebarWidth / 2, targetPoint.y);
-              const offsetLatLng = map.unproject(offsetPoint, targetZoom);
-              map.flyTo(offsetLatLng, targetZoom, { duration: 0.4 });
+              try {
+                const size = map.getSize();
+                if (size && size.x > 0 && size.y > 0) {
+                  const targetPoint = map.project([sLat, sLng], targetZoom);
+                  const offsetPoint = L.point(targetPoint.x + sidebarWidth / 2, targetPoint.y);
+                  const offsetLatLng = map.unproject(offsetPoint, targetZoom);
+                  safeFlyTo(map, offsetLatLng, targetZoom, { duration: 0.4 });
+                } else {
+                  safeFlyTo(map, [sLat, sLng], targetZoom, { duration: 0.4 });
+                }
+              } catch (e) {
+                safeFlyTo(map, [sLat, sLng], targetZoom, { duration: 0.4 });
+              }
             } else {
-              map.flyTo([sLat, sLng], targetZoom, { duration: 0.4 });
+              safeFlyTo(map, [sLat, sLng], targetZoom, { duration: 0.4 });
             }
           } catch (e) { console.warn('MapView flyTo error:', e); }
         }
@@ -6273,7 +6502,7 @@
             const userLng = pos.coords.longitude;
             L.circleMarker([userLat, userLng], { radius: 8, fillColor: '#4285F4', color: '#fff', weight: 2, fillOpacity: 1 }).addTo(map);
             L.polyline([[userLat, userLng], [pin.lat, pin.lng]], { color: '#4285F4', weight: 4, opacity: 0.7, dashArray: '8 8' }).addTo(map);
-            map.fitBounds([[userLat, userLng], [pin.lat, pin.lng]], { padding: [50, 50] });
+            try { map.fitBounds([[userLat, userLng], [pin.lat, pin.lng]], { padding: [50, 50] }); } catch(e) {}
           }, () => {});
         }
 
@@ -8614,6 +8843,48 @@
                 }
                 setEditingPin(newPin);
                 setShowAddFromLink(false);
+              }}
+              onBulkSelect={(places) => {
+                const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
+                let addedCount = 0;
+                places.forEach((data, idx) => {
+                  const lat = data.lat || 0;
+                  const lng = data.lng || 0;
+                  let desc = data.description || '';
+                  if (data.source_url && data.source_name) {
+                    const sourceLink = `[${data.source_name}](${data.source_url})`;
+                    desc = desc ? `${desc}\n\nSource: ${sourceLink}` : `Source: ${sourceLink}`;
+                  }
+                  const cat = guessEmojiAndCategory(data.name, '');
+                  const newPin = {
+                    id: (Date.now() + idx).toString(),
+                    name: data.name,
+                    address: data.address || '',
+                    description: desc,
+                    emoji: data.emoji || cat.emoji,
+                    category: cat.category,
+                    source_name: data.source_name,
+                    source_url: data.source_url,
+                    collection_id: defaultCollection,
+                    photos: [],
+                    opening_hours: data.opening_hours || {},
+                    lat, lng,
+                    google_rating: data.rating || null,
+                    created_at: new Date().toISOString(),
+                  };
+                  MockFirebase.savePin(newPin);
+                  setPins(prev => [...prev, newPin]);
+                  addedCount++;
+                  // Fetch ratings in background
+                  setTimeout(() => fetchRatingsForPin(newPin), 500 + idx * 300);
+                });
+                setShowAddFromLink(false);
+                // Show a brief confirmation
+                if (addedCount > 0) {
+                  setSelectedPin(null);
+                  // Show notification-style feedback (re-use existing UI patterns)
+                  alert(`Added ${addedCount} places from article!`);
+                }
               }}
               onClose={() => setShowAddFromLink(false)}
               isDarkMode={darkMode}
