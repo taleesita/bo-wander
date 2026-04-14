@@ -2123,7 +2123,11 @@
             {/* Co-located pins tab bar */}
             {hasGroup && !editing && (
               <div className="flex gap-1 bg-gray-100 dark:bg-slate-800 rounded-lg p-1">
-                {coLocatedPins.map((p, i) => {
+                {[...coLocatedPins].sort((a, b) => {
+                  const da = a.reservation_details?.check_in ? new Date(a.reservation_details.check_in) : new Date(9999, 0);
+                  const db = b.reservation_details?.check_in ? new Date(b.reservation_details.check_in) : new Date(9999, 0);
+                  return da - db;
+                }).map((p, i) => {
                   const isActive = p.id === pin.id;
                   const rd = p.reservation_details;
                   const dateLabel = formatPinDate(rd);
@@ -5696,7 +5700,38 @@
             }
           }
           if (nearestHotel) return { lat: nearestHotel.lat, lng: nearestHotel.lng, zoom: 13, reason: 'upcoming' };
-          // 3. No matching hotel — fit all pins (return null to use fitBounds)
+          // 3. No matching hotel — find the densest cluster of pins
+          // Use a simple grid-based density approach
+          const gridSize = 0.05; // ~5km grid cells
+          const cells = {};
+          validPins.forEach(p => {
+            const key = `${Math.round(p.lat / gridSize)},${Math.round(p.lng / gridSize)}`;
+            if (!cells[key]) cells[key] = { pins: [], sumLat: 0, sumLng: 0 };
+            cells[key].pins.push(p);
+            cells[key].sumLat += p.lat;
+            cells[key].sumLng += p.lng;
+          });
+          // Find the cell with the most pins
+          let bestCell = null;
+          let bestCount = 0;
+          Object.values(cells).forEach(cell => {
+            if (cell.pins.length > bestCount) {
+              bestCount = cell.pins.length;
+              bestCell = cell;
+            }
+          });
+          if (bestCell && bestCount >= 2) {
+            const cLat = bestCell.sumLat / bestCell.pins.length;
+            const cLng = bestCell.sumLng / bestCell.pins.length;
+            return { lat: cLat, lng: cLng, zoom: 13, reason: 'cluster' };
+          }
+          // 4. Only 1 pin or all spread out — center on first hotel, or first pin
+          if (hotelPins.length > 0) {
+            return { lat: hotelPins[0].lat, lng: hotelPins[0].lng, zoom: 13, reason: 'first-hotel' };
+          }
+          if (validPins.length > 0) {
+            return { lat: validPins[0].lat, lng: validPins[0].lng, zoom: 13, reason: 'first-pin' };
+          }
           return null;
         };
 
@@ -5848,9 +5883,33 @@
             break;
         }
 
+        // Merge co-located pins (same coordinates) into groups
+        const coordGroupMap = {};
+        result.forEach(pin => {
+          const key = `${parseFloat(pin.lat).toFixed(4)},${parseFloat(pin.lng).toFixed(4)}`;
+          if (!coordGroupMap[key]) coordGroupMap[key] = [];
+          coordGroupMap[key].push(pin);
+        });
+        // Keep only the first pin per co-located group, attach group info
+        const seen = new Set();
+        const deduped = [];
+        result.forEach(pin => {
+          const key = `${parseFloat(pin.lat).toFixed(4)},${parseFloat(pin.lng).toFixed(4)}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          const group = coordGroupMap[key];
+          // Sort group chronologically
+          group.sort((a, b) => {
+            const da = a.reservation_details?.check_in ? new Date(a.reservation_details.check_in) : new Date(9999, 0);
+            const db = b.reservation_details?.check_in ? new Date(b.reservation_details.check_in) : new Date(9999, 0);
+            return da - db;
+          });
+          deduped.push({ ...group[0], _coLocatedGroup: group.length > 1 ? group : null });
+        });
+
         // Group by category
         const groups = {};
-        result.forEach(pin => {
+        deduped.forEach(pin => {
           const catId = pin.category || 'other';
           if (!groups[catId]) {
             groups[catId] = [];
@@ -6058,11 +6117,15 @@
                     <div className="divide-y dark:divide-slate-700">
                       {grouped[cat.id].map(pin => {
                         const openStatus = getOpenStatus(pin.opening_hours || {});
+                        const coGroup = pin._coLocatedGroup;
+                        const dates = coGroup
+                          ? coGroup.map(p => formatPinDate(p.reservation_details)).filter(Boolean)
+                          : [];
                         return (
                           <div
                             key={pin.id}
                             className="px-4 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800 transition flex items-center gap-2"
-                            onClick={() => onSelectPin(pin)}
+                            onClick={() => onSelectPin(pin, coGroup)}
                           >
                             <div
                               className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 text-xs overflow-hidden"
@@ -6074,8 +6137,18 @@
                             </div>
                             <div className="flex-1 min-w-0">
                               <span className="font-medium dark:text-white text-sm">{pin.name}</span>
+                              {dates.length > 0 && (
+                                <span className="ml-1.5 text-xs text-gray-400 dark:text-gray-500">
+                                  {dates.join(' · ')}
+                                </span>
+                              )}
                             </div>
                             <div className="flex items-center gap-1.5 flex-shrink-0">
+                              {coGroup && (
+                                <span className="text-xs text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-slate-700 px-1.5 py-0.5 rounded-full">
+                                  {coGroup.length}×
+                                </span>
+                              )}
                               {pin.google_rating && (
                                 <span className="text-xs text-gray-500 dark:text-gray-400">
                                   ★ {pin.google_rating.toFixed(1)}
@@ -8313,7 +8386,10 @@
                   <ListView
                     pins={filteredPins}
                     collections={collections}
-                    onSelectPin={setSelectedPin}
+                    onSelectPin={(pin, group) => {
+                      setSelectedPin(pin);
+                      setCoLocatedPins(group && group.length > 1 ? group : []);
+                    }}
                     isDarkMode={darkMode}
                     onEdit={setEditingPin}
                     onDelete={handleDeletePin}
@@ -8346,7 +8422,7 @@
                   <ListView
                     pins={filteredPins}
                     collections={collections}
-                    onSelectPin={(pin) => { setSelectedPin(pin); setShowList(false); }}
+                    onSelectPin={(pin, group) => { setSelectedPin(pin); setCoLocatedPins(group && group.length > 1 ? group : []); setShowList(false); }}
                     isDarkMode={darkMode}
                     onEdit={setEditingPin}
                     onDelete={handleDeletePin}
