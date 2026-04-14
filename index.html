@@ -1778,6 +1778,189 @@
       );
     };
 
+    // ---- Info Photo Section (upload guidebook pages, OCR, append to description) ----
+    const InfoPhotoSection = ({ pin, onUpdate, isDarkMode }) => {
+      const [processing, setProcessing] = useState(false);
+      const [expanded, setExpanded] = useState(false);
+      const [viewingPhoto, setViewingPhoto] = useState(null);
+      const [confirmRemove, setConfirmRemove] = useState(null);
+      const fileInputRef = useRef(null);
+
+      const infoPhotos = pin.info_photos || [];
+
+      const handleFileSelect = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setProcessing(true);
+
+        try {
+          // Read file as data URL for storage
+          const dataUrl = await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.readAsDataURL(file);
+          });
+
+          // Create thumbnail (resize to max 300px for storage efficiency)
+          const thumb = await new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+              const maxDim = 300;
+              const scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
+              const canvas = document.createElement('canvas');
+              canvas.width = img.width * scale;
+              canvas.height = img.height * scale;
+              canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+              resolve(canvas.toDataURL('image/jpeg', 0.7));
+            };
+            img.src = dataUrl;
+          });
+
+          // OCR the image
+          let ocrText = '';
+          try {
+            const result = await Tesseract.recognize(file, 'eng+jpn', {
+              logger: () => {}, // suppress progress logs
+            });
+            ocrText = result.data?.text?.trim() || '';
+          } catch (err) {
+            console.warn('OCR failed:', err);
+          }
+
+          // Build the new info photo entry
+          const newPhoto = {
+            id: Math.random().toString(36).substr(2, 9),
+            thumbnail: thumb,
+            full: dataUrl,
+            name: file.name,
+            ocr_text: ocrText,
+            added_at: new Date().toISOString(),
+          };
+
+          // Append OCR text to description
+          let newDescription = pin.description || '';
+          if (ocrText) {
+            const divider = newDescription ? '\n\n---\n' : '';
+            const label = `📷 From ${file.name}:`;
+            newDescription = `${newDescription}${divider}${label}\n${ocrText}`;
+          }
+
+          const updatedPin = {
+            ...pin,
+            description: newDescription,
+            info_photos: [...infoPhotos, newPhoto],
+          };
+          onUpdate(updatedPin);
+        } catch (err) {
+          console.error('Info photo processing failed:', err);
+        }
+        setProcessing(false);
+        // Reset input so the same file can be re-selected
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      };
+
+      const handleRemovePhoto = (photoId) => {
+        const photo = infoPhotos.find(p => p.id === photoId);
+        const updatedPhotos = infoPhotos.filter(p => p.id !== photoId);
+        // Also remove the OCR text this photo added to description
+        let newDescription = pin.description || '';
+        if (photo?.ocr_text) {
+          // Try to remove the block that was added
+          const label = `📷 From ${photo.name}:`;
+          const block = `\n\n---\n${label}\n${photo.ocr_text}`;
+          newDescription = newDescription.replace(block, '');
+          // Also try without leading divider (if it was the first block)
+          const blockAlt = `${label}\n${photo.ocr_text}`;
+          newDescription = newDescription.replace(blockAlt, '');
+        }
+        onUpdate({ ...pin, description: newDescription.trim(), info_photos: updatedPhotos });
+        setConfirmRemove(null);
+      };
+
+      return (
+        <div className="space-y-2">
+          {/* Upload button */}
+          <div className="flex items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={processing}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-dashed rounded-lg text-gray-500 dark:text-gray-400 dark:border-slate-600 hover:border-blue-400 hover:text-blue-500 dark:hover:border-blue-500 transition disabled:opacity-50"
+            >
+              {processing ? (
+                <><span className="animate-spin">⏳</span> OCR processing...</>
+              ) : (
+                <><span>📷</span> Add info from photo</>
+              )}
+            </button>
+            {infoPhotos.length > 0 && (
+              <span className="text-xs text-gray-400">{infoPhotos.length} photo{infoPhotos.length !== 1 ? 's' : ''}</span>
+            )}
+          </div>
+
+          {/* Photo thumbnails */}
+          {infoPhotos.length > 0 && (
+            <div className="flex gap-2 flex-wrap">
+              {(expanded ? infoPhotos : infoPhotos.slice(0, 3)).map(photo => (
+                <div key={photo.id} className="relative group">
+                  <img
+                    src={photo.thumbnail}
+                    alt={photo.name}
+                    className="w-16 h-16 rounded-lg object-cover cursor-pointer border dark:border-slate-700 hover:opacity-80 transition"
+                    onClick={() => setViewingPhoto(photo)}
+                  />
+                  {/* Remove button */}
+                  {confirmRemove === photo.id ? (
+                    <div className="absolute -top-1 -right-1 flex gap-0.5">
+                      <button onClick={() => setConfirmRemove(null)} className="w-5 h-5 bg-gray-600 text-white rounded-full text-xs flex items-center justify-center">✕</button>
+                      <button onClick={() => handleRemovePhoto(photo.id)} className="w-5 h-5 bg-red-600 text-white rounded-full text-xs flex items-center justify-center">✓</button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmRemove(photo.id)}
+                      className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition flex items-center justify-center"
+                    >×</button>
+                  )}
+                </div>
+              ))}
+              {!expanded && infoPhotos.length > 3 && (
+                <button
+                  onClick={() => setExpanded(true)}
+                  className="w-16 h-16 rounded-lg border dark:border-slate-700 flex items-center justify-center text-xs text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700"
+                >
+                  +{infoPhotos.length - 3}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Full-size photo viewer */}
+          {viewingPhoto && (
+            <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center p-4" style={{ zIndex: 10005 }} onClick={() => setViewingPhoto(null)}>
+              <div className="relative max-w-2xl max-h-[90vh]" onClick={e => e.stopPropagation()}>
+                <img src={viewingPhoto.full} alt={viewingPhoto.name} className="max-w-full max-h-[85vh] rounded-lg object-contain" />
+                <button
+                  onClick={() => setViewingPhoto(null)}
+                  className="absolute top-2 right-2 w-8 h-8 bg-black bg-opacity-60 text-white rounded-full flex items-center justify-center hover:bg-opacity-80"
+                >✕</button>
+                <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-60 text-white text-xs p-2 rounded-b-lg">
+                  {viewingPhoto.name} · {viewingPhoto.added_at?.split('T')[0]}
+                  {viewingPhoto.ocr_text && <span className="ml-2 text-gray-300">· {viewingPhoto.ocr_text.length} chars extracted</span>}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
     const PinDetailSheet = ({ pin, onClose, onEdit, onInlineUpdate, isDarkMode, isDesktop, onDelete, onNavigate, collections, allPins, fetchingRatings, onRetryRatings, ratingFetchStatus, customIcons, onUploadIcon, onDeleteIcon, onAddToItinerary }) => {
       const [translated, setTranslated] = useState(null);
       const [translating, setTranslating] = useState(false);
@@ -1987,6 +2170,15 @@
               <p className="text-sm text-gray-600 dark:text-gray-400 italic border-l-2 border-blue-400 pl-3">
                 {translated}
               </p>
+            )}
+
+            {/* Info Photos — uploaded guidebook pages, screenshots, etc. */}
+            {!editing && (
+              <InfoPhotoSection
+                pin={pin}
+                onUpdate={(updatedPin) => onInlineUpdate?.(updatedPin)}
+                isDarkMode={isDarkMode}
+              />
             )}
 
             {/* Attachment / Booking file */}
@@ -2964,14 +3156,30 @@
             if (namePart) guessedName = slugToName(namePart);
           }
 
-          // Fetch page contents via CORS proxy and extract name + description
+          // Fetch page contents via CORS proxy (try multiple proxies)
           let fetchedTitle = '';
           let fetchedDescription = '';
           const htmlDecode = (s) => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(n));
+          let html = '';
+          const proxies = [
+            (u) => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
+            (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+          ];
+          for (const makeUrl of proxies) {
+            if (html) break;
+            try {
+              const resp = await fetch(makeUrl(url), { signal: AbortSignal.timeout(6000) });
+              const ct = resp.headers.get('content-type') || '';
+              if (ct.includes('json')) {
+                const data = await resp.json();
+                html = data.contents || '';
+              } else {
+                html = await resp.text();
+              }
+            } catch {}
+          }
           try {
-            const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-            const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
-            const data = await resp.json();
+            const data = { contents: html };
             if (data.contents) {
               const html = data.contents;
 
@@ -3082,7 +3290,6 @@
                     website: place.websiteUri || '',
                     opening_hours: {},
                   };
-                  // Parse opening hours if available
                   if (place.regularOpeningHours?.weekdayDescriptions) {
                     place.regularOpeningHours.weekdayDescriptions.forEach(desc => {
                       const match = desc.match(/^(\w+):\s*(.+)/);
@@ -3094,15 +3301,24 @@
             }
           }
 
-          setPreview({
+          const result = {
             name: finalName,
             description: fetchedDescription,
             source_name: domainName,
             source_url: url,
             emoji: guessEmojiAndCategory(finalName, '').emoji,
-            // Attach place data for use when adding
             ...(placeData || {}),
-          });
+          };
+
+          // If we got Google Places data (has coordinates), go straight to edit form
+          if (placeData?.lat) {
+            setFetching(false);
+            onSelect(result);
+            return;
+          }
+
+          // Otherwise show the preview for manual editing
+          setPreview(result);
         } catch (e) {
           setError('Invalid URL — make sure it starts with https://');
         }
@@ -8007,10 +8223,16 @@
                 const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
                 const lat = data.lat || 0;
                 const lng = data.lng || 0;
+                // Build description: scraped text + source link
+                let desc = data.description || '';
+                if (data.source_url && data.source_name) {
+                  const sourceLink = `[${data.source_name}](${data.source_url})`;
+                  desc = desc ? `${desc}\n\nSource: ${sourceLink}` : `Source: ${sourceLink}`;
+                }
                 const newPin = {
                   name: data.name,
                   address: data.address || '',
-                  description: data.description,
+                  description: desc,
                   emoji: data.emoji,
                   category: guessEmojiAndCategory(data.name, '').category,
                   source_name: data.source_name,
