@@ -3261,6 +3261,33 @@
             }
           } catch {}
 
+          // Filter out error page titles
+          const errorTitles = /^(403|404|500|502|503)\s*(error|forbidden|not found|page not found|access denied|server error)?$/i;
+          const junkTitles = /^(error|access denied|forbidden|page not found|not found|just a moment|attention required|please wait|cloudflare|captcha|robot|bot check)/i;
+          if (fetchedTitle && (errorTitles.test(fetchedTitle.trim()) || junkTitles.test(fetchedTitle.trim()))) {
+            fetchedTitle = ''; // discard, fall back to URL slug
+          }
+
+          // Map known domains to proper source names
+          const DOMAIN_SOURCE_MAP = {
+            'lonelyplanet.com': 'Lonely Planet',
+            'tripadvisor.com': 'TripAdvisor',
+            'yelp.com': 'Yelp',
+            'timeout.com': 'Time Out',
+            'atlasobscura.com': 'Atlas Obscura',
+            'eater.com': 'Eater',
+            'theinfatuation.com': 'The Infatuation',
+            'michelin.com': 'Michelin',
+            'japantravel.com': 'Japan Travel',
+            'japan-guide.com': 'Japan Guide',
+            'klook.com': 'Klook',
+            'viator.com': 'Viator',
+            'getyourguide.com': 'GetYourGuide',
+            'booking.com': 'Booking.com',
+            'airbnb.com': 'Airbnb',
+          };
+          const sourceName = DOMAIN_SOURCE_MAP[domainName] || DOMAIN_SOURCE_MAP[domainName.replace(/^www\./, '')] || domainName;
+
           const finalName = fetchedTitle || guessedName || '';
 
           // Auto-search Google Places to get coordinates, address, rating
@@ -3304,7 +3331,7 @@
           const result = {
             name: finalName,
             description: fetchedDescription,
-            source_name: domainName,
+            source_name: sourceName,
             source_url: url,
             emoji: guessEmojiAndCategory(finalName, '').emoji,
             ...(placeData || {}),
@@ -5448,6 +5475,8 @@
           map.removeLayer(previewMarkerRef.current);
           previewMarkerRef.current = null;
         }
+        // Guard against invalid coordinates
+        if (previewPin && (isNaN(previewPin.lat) || isNaN(previewPin.lng) || !previewPin.lat || !previewPin.lng)) return;
         // Add new preview marker if we have one
         if (previewPin && previewPin.lat && previewPin.lng) {
           const icon = L.divIcon({
@@ -5495,7 +5524,7 @@
         markersRef.current.clear();
 
         // Add new markers — offset pins that share the same coordinates
-        const validPins = pins.filter(p => p.lat && p.lng);
+        const validPins = pins.filter(p => typeof p.lat === 'number' && typeof p.lng === 'number' && !isNaN(p.lat) && !isNaN(p.lng) && p.lat !== 0 && p.lng !== 0);
         // Group pins by rounded coords to detect overlaps (within ~10m)
         const coordGroups = {};
         validPins.forEach(pin => {
@@ -7881,9 +7910,12 @@
           handleDeletePin(pin.id, pin.collection_id);
           return;
         }
-        const isExisting = !!pin.id;
-        // Generate ID upfront for new pins so all references use the same ID
-        const savedPin = isExisting ? pin : { ...pin, id: Date.now().toString(), created_at: new Date().toISOString() };
+        // Ensure lat/lng are valid numbers
+        const lat = parseFloat(pin.lat);
+        const lng = parseFloat(pin.lng);
+        const cleanPin = { ...pin, lat: isNaN(lat) ? 0 : lat, lng: isNaN(lng) ? 0 : lng };
+        const isExisting = !!cleanPin.id;
+        const savedPin = isExisting ? cleanPin : { ...cleanPin, id: Date.now().toString(), created_at: new Date().toISOString() };
         MockFirebase.savePin(savedPin);
         setPins(prev => {
           const idx = prev.findIndex(p => p.id === savedPin.id);
@@ -7903,6 +7935,10 @@
 
       // Inline update: save pin data directly without opening edit form (for ratings, notes)
       const handleInlineUpdate = (updatedPin) => {
+        // Ensure lat/lng stay as valid numbers
+        const lat = parseFloat(updatedPin.lat);
+        const lng = parseFloat(updatedPin.lng);
+        updatedPin = { ...updatedPin, lat: isNaN(lat) ? 0 : lat, lng: isNaN(lng) ? 0 : lng };
         MockFirebase.savePin(updatedPin);
         setPins(prev => {
           const idx = prev.findIndex(p => p.id === updatedPin.id);
