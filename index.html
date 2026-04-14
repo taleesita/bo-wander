@@ -3183,6 +3183,7 @@
       const [preview, setPreview] = useState(null); // { name, description, source_name, source_url }
       const [bulkPlaces, setBulkPlaces] = useState(null); // [{ name, description, checked, loading, placeData }]
       const [bulkSource, setBulkSource] = useState(null); // { source_name, source_url }
+      const [bulkExpandedIdx, setBulkExpandedIdx] = useState(null);
       const [error, setError] = useState('');
 
       const handleFetch = async () => {
@@ -3280,32 +3281,63 @@
                 return m ? m[1].trim() : '';
               })();
 
+              // Map known domains to proper source names (moved here so article detection can use it)
+              const DOMAIN_SOURCE_MAP = {
+                'lonelyplanet.com': 'Lonely Planet', 'tripadvisor.com': 'TripAdvisor',
+                'yelp.com': 'Yelp', 'timeout.com': 'Time Out', 'atlasobscura.com': 'Atlas Obscura',
+                'eater.com': 'Eater', 'theinfatuation.com': 'The Infatuation', 'michelin.com': 'Michelin',
+                'japantravel.com': 'Japan Travel', 'japan-guide.com': 'Japan Guide',
+                'klook.com': 'Klook', 'viator.com': 'Viator', 'getyourguide.com': 'GetYourGuide',
+                'booking.com': 'Booking.com', 'airbnb.com': 'Airbnb',
+              };
+              const sourceName = DOMAIN_SOURCE_MAP[domainName] || DOMAIN_SOURCE_MAP[domainName.replace(/^www\./, '')] || domainName;
+
               // === ARTICLE DETECTION: check for multi-place articles ===
               const isArticleDomain = !/yelp\.com|tripadvisor\.|google\.com\/maps|booking\.com|airbnb\.com|klook\.com|viator\.com|getyourguide\.com/.test(domainName);
               if (isArticleDomain) {
-                // Extract headings (h2, h3) that could be place names
+                // Try to narrow to article content area first
+                let articleHtml = html;
+                const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i)
+                  || html.match(/<div[^>]*class="[^"]*(?:entry-content|post-content|article-body|article-content|main-content|blog-content|single-content)[^"]*"[^>]*>([\s\S]*?)<\/div>\s*(?:<\/div>|<div[^>]*class="[^"]*(?:comment|related|sidebar|footer|widget|share|social))/i);
+                if (articleMatch) {
+                  articleHtml = articleMatch[1] || articleMatch[0];
+                }
+
+                // Extract headings (h2, h3) from article content
                 const headingRegex = /<h[23][^>]*>([\s\S]*?)<\/h[23]>/gi;
                 const rawHeadings = [];
                 let hMatch;
-                while ((hMatch = headingRegex.exec(html)) !== null) {
+                while ((hMatch = headingRegex.exec(articleHtml)) !== null) {
                   let text = htmlDecode(hMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')).trim();
-                  // Strip leading numbers like "1.", "01.", "#1", "1)"
                   text = text.replace(/^[\s#]*\d{1,2}[\.\)\-–—:\s]+\s*/, '').trim();
-                  rawHeadings.push(text);
+                  if (text) rawHeadings.push(text);
                 }
-                // Filter out generic/navigation headings
-                const skipHeadings = /^(introduction|getting there|getting around|how to get|tips|map|related|about|author|comment|share|conclusion|summary|faq|where to stay|where to eat|when to visit|final thoughts|more|other|the bottom line|pin this|you may also|read more|subscribe|newsletter|what to|why|our|my|the best|a guide|welcome|table of contents|contents|overview|highlights|navigation|menu|sidebar|footer|header|contact|resources|disclosure|disclaimer|affiliate)/i;
-                const placeHeadings = rawHeadings.filter(h =>
-                  h.length >= 3 && h.length <= 120 &&
-                  !skipHeadings.test(h) &&
-                  !/^\d+$/.test(h) &&
-                  !h.includes('©')
-                );
 
-                if (placeHeadings.length >= 3) {
+                // Aggressive filtering for junk headings
+                const skipPatterns = /^(introduction|getting there|getting around|how to get|tips|map|related|about|author|comment|share|conclusion|summary|faq|where to stay|where to eat|when to visit|final thoughts|more|other|the bottom line|pin this|you may also|read more|subscribe|newsletter|what to|why|the best|a guide|welcome|table of contents|contents|overview|highlights|navigation|menu|sidebar|footer|header|contact|resources|disclosure|disclaimer|affiliate|write a comment|cancel reply|leave a reply|save my name|planning a trip|are you booking|book your|use my|ps\s*[—–\-]|related posts|popular posts|recent posts|you might also|join our|sign up|follow us|connect with)/i;
+                const junkContent = /\b(comment|reply|subscribe|booking|itinerary|newsletter|save my name|browser|affiliate|disclosure|cancel|write a)\b/i;
+                const articleTitleLike = /\b(guide to|itinerary|ultimate|top \d+|best of|things to do|where to|how to|planning|tips for)\b/i;
+
+                const placeHeadings = rawHeadings.filter(h => {
+                  if (h.length < 3 || h.length > 60) return false;
+                  if (skipPatterns.test(h)) return false;
+                  if (junkContent.test(h)) return false;
+                  if (articleTitleLike.test(h)) return false;
+                  if (/^\d+$/.test(h)) return false;
+                  if (h.includes('©') || h.includes('?')) return false;
+                  // Skip if it looks like a full sentence (too many words)
+                  if (h.split(/\s+/).length > 8) return false;
+                  // Skip if it exactly matches or closely matches the page title
+                  if (earlyTitle && h.length > 10 && earlyTitle.toLowerCase().includes(h.toLowerCase())) return false;
+                  return true;
+                });
+
+                // Deduplicate (some blogs repeat headings)
+                const uniqueHeadings = [...new Set(placeHeadings)];
+
+                if (uniqueHeadings.length >= 3) {
                   // This looks like a list article! Extract descriptions for each place
-                  const places = placeHeadings.map(name => {
-                    // Try to find a paragraph after this heading
+                  const places = uniqueHeadings.map(name => {
                     const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                     const descRegex = new RegExp(escapedName + '[\\s\\S]*?<\\/h[23]>[\\s]*(?:<[^>]*>\\s*)*<p[^>]*>([\\s\\S]*?)<\\/p>', 'i');
                     const descMatch = html.match(descRegex);
@@ -3320,7 +3352,7 @@
                   setBulkSource({ source_name: sourceName, source_url: url });
                   setFetching(false);
 
-                  // Kick off Google Places lookups in background
+                  // Kick off Google Places lookups in background (skip hours — fetch later per-pin)
                   const apiKey = getGoogleApiKey();
                   if (apiKey) {
                     places.forEach((place, idx) => {
@@ -3331,20 +3363,13 @@
                             headers: {
                               'Content-Type': 'application/json',
                               'X-Goog-Api-Key': apiKey,
-                              'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
+                              'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating'
                             },
                             body: JSON.stringify({ textQuery: place.name + (locationHint ? ' ' + locationHint : ''), maxResultCount: 1 })
                           });
                           const pData = await resp.json();
                           const gp = pData.places?.[0];
                           if (gp) {
-                            const hours = {};
-                            if (gp.regularOpeningHours?.weekdayDescriptions) {
-                              gp.regularOpeningHours.weekdayDescriptions.forEach(d => {
-                                const m = d.match(/^(\w+):\s*(.+)/);
-                                if (m) hours[m[1].toLowerCase()] = m[2];
-                              });
-                            }
                             setBulkPlaces(prev => prev.map((p, i) => i === idx ? {
                               ...p,
                               loading: false,
@@ -3354,7 +3379,6 @@
                                 address: gp.formattedAddress || '',
                                 rating: gp.rating || null,
                                 types: gp.types || [],
-                                opening_hours: hours,
                                 displayName: gp.displayName?.text || ''
                               }
                             } : p));
@@ -3364,7 +3388,7 @@
                         } catch {
                           setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, loading: false } : p));
                         }
-                      }, idx * 200); // Stagger requests
+                      }, idx * 200);
                     });
                     setBulkPlaces(prev => prev.map(p => ({ ...p, loading: true })));
                   }
@@ -3457,25 +3481,7 @@
             fetchedTitle = ''; // discard, fall back to URL slug
           }
 
-          // Map known domains to proper source names
-          const DOMAIN_SOURCE_MAP = {
-            'lonelyplanet.com': 'Lonely Planet',
-            'tripadvisor.com': 'TripAdvisor',
-            'yelp.com': 'Yelp',
-            'timeout.com': 'Time Out',
-            'atlasobscura.com': 'Atlas Obscura',
-            'eater.com': 'Eater',
-            'theinfatuation.com': 'The Infatuation',
-            'michelin.com': 'Michelin',
-            'japantravel.com': 'Japan Travel',
-            'japan-guide.com': 'Japan Guide',
-            'klook.com': 'Klook',
-            'viator.com': 'Viator',
-            'getyourguide.com': 'GetYourGuide',
-            'booking.com': 'Booking.com',
-            'airbnb.com': 'Airbnb',
-          };
-          const sourceName = DOMAIN_SOURCE_MAP[domainName] || DOMAIN_SOURCE_MAP[domainName.replace(/^www\./, '')] || domainName;
+          // sourceName + DOMAIN_SOURCE_MAP already defined above (before article detection)
 
           const finalName = fetchedTitle || guessedName || '';
 
@@ -3572,43 +3578,95 @@
                   </div>
                   <div className="max-h-[50vh] overflow-y-auto space-y-1 -mx-1 px-1">
                     {bulkPlaces.map((place, idx) => {
-                      const cat = guessEmojiAndCategory(place.name, place.placeData?.types?.join(',') || '');
+                      const cat = guessEmojiAndCategory(place.placeData?.displayName || place.name, place.placeData?.types?.join(',') || '');
+                      const isExpanded = bulkExpandedIdx === idx;
                       return (
                         <div
                           key={idx}
-                          className={`flex items-start gap-2 p-2 rounded-lg transition cursor-pointer ${
+                          className={`rounded-lg transition border ${
                             place.checked
-                              ? 'bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800'
-                              : 'bg-gray-50 dark:bg-slate-800 border border-transparent opacity-60'
+                              ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800'
+                              : 'bg-gray-50 dark:bg-slate-800 border-transparent opacity-60'
                           }`}
-                          onClick={() => setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, checked: !p.checked } : p))}
                         >
-                          <div className="mt-0.5">
-                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center text-xs ${
-                              place.checked ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-300 dark:border-slate-600'
-                            }`}>
-                              {place.checked && '✓'}
+                          <div className="flex items-start gap-2 p-2 cursor-pointer"
+                            onClick={() => setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, checked: !p.checked } : p))}
+                          >
+                            <div className="mt-0.5">
+                              <div className={`w-5 h-5 rounded border-2 flex items-center justify-center text-xs ${
+                                place.checked ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-300 dark:border-slate-600'
+                              }`}>
+                                {place.checked && '✓'}
+                              </div>
                             </div>
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-sm">{cat.emoji}</span>
-                              <span className="font-medium text-sm dark:text-white truncate">{place.name}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-sm">{cat.emoji}</span>
+                                <span className="font-medium text-sm dark:text-white truncate">{place.placeData?.displayName || place.name}</span>
+                              </div>
+                              {place.loading && <p className="text-xs text-gray-400 mt-0.5">Looking up...</p>}
+                              {!place.loading && place.placeData?.address && (
+                                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{place.placeData.address}{place.placeData.rating ? ` · ⭐ ${place.placeData.rating}` : ''}</p>
+                              )}
+                              {!place.loading && !place.placeData && (
+                                <p className="text-xs text-orange-500 mt-0.5">Not found on Google Maps</p>
+                              )}
                             </div>
-                            {place.loading && <p className="text-xs text-gray-400 mt-0.5">Looking up on Google Maps...</p>}
-                            {place.placeData?.address && (
-                              <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{place.placeData.address}</p>
-                            )}
-                            {place.placeData?.rating && (
-                              <span className="text-xs text-gray-400">⭐ {place.placeData.rating}</span>
-                            )}
-                            {!place.loading && !place.placeData && (
-                              <p className="text-xs text-orange-500 mt-0.5">Not found on Google Maps</p>
-                            )}
-                            {place.description && (
-                              <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5 line-clamp-2">{place.description}</p>
-                            )}
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setExpandedIdx(isExpanded ? null : idx); }}
+                              className="text-xs text-gray-400 hover:text-blue-500 px-1 mt-0.5 flex-shrink-0"
+                              title="Edit details"
+                            >
+                              {isExpanded ? '▲' : '✏️'}
+                            </button>
                           </div>
+                          {isExpanded && (
+                            <div className="px-3 pb-3 pt-1 space-y-2 border-t border-blue-100 dark:border-slate-700" onClick={e => e.stopPropagation()}>
+                              <div>
+                                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Name</label>
+                                <input
+                                  type="text"
+                                  value={place.placeData?.displayName || place.name}
+                                  onChange={e => setBulkPlaces(prev => prev.map((p, i) => i === idx ? {
+                                    ...p,
+                                    name: e.target.value,
+                                    placeData: p.placeData ? { ...p.placeData, displayName: e.target.value } : null
+                                  } : p))}
+                                  className="w-full px-2 py-1.5 border rounded text-sm dark:bg-slate-800 dark:border-slate-600 dark:text-white"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Category</label>
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {Object.entries(PIN_CATEGORIES).slice(0, 12).map(([id, c]) => (
+                                    <button key={id}
+                                      onClick={() => setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, _category: id } : p))}
+                                      className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-xs transition ${
+                                        (place._category || cat.category) === id
+                                          ? 'ring-1 ring-blue-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300'
+                                      }`}
+                                      style={(place._category || cat.category) === id ? { backgroundColor: c.color } : {}}
+                                    >
+                                      <span>{c.icon}</span> {c.label}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              <div>
+                                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Description</label>
+                                <textarea
+                                  value={place.description}
+                                  onChange={e => setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, description: e.target.value } : p))}
+                                  className="w-full px-2 py-1.5 border rounded text-xs dark:bg-slate-800 dark:border-slate-600 dark:text-white"
+                                  rows={2}
+                                  placeholder="Add notes..."
+                                />
+                              </div>
+                              {place.placeData?.address && (
+                                <p className="text-xs text-gray-400">📍 {place.placeData.address}</p>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -3622,18 +3680,22 @@
                     </button>
                     <button
                       onClick={() => {
-                        const selected = bulkPlaces.filter(p => p.checked).map(p => ({
-                          name: p.placeData?.displayName || p.name,
-                          description: p.description,
-                          source_name: bulkSource.source_name,
-                          source_url: bulkSource.source_url,
-                          emoji: guessEmojiAndCategory(p.name, p.placeData?.types?.join(',') || '').emoji,
-                          lat: p.placeData?.lat || 0,
-                          lng: p.placeData?.lng || 0,
-                          address: p.placeData?.address || '',
-                          rating: p.placeData?.rating || null,
-                          opening_hours: p.placeData?.opening_hours || {},
-                        }));
+                        const selected = bulkPlaces.filter(p => p.checked).map(p => {
+                          const c = guessEmojiAndCategory(p.placeData?.displayName || p.name, p.placeData?.types?.join(',') || '');
+                          return {
+                            name: p.placeData?.displayName || p.name,
+                            description: p.description,
+                            source_name: bulkSource.source_name,
+                            source_url: bulkSource.source_url,
+                            emoji: (PIN_CATEGORIES[p._category] || {}).icon || c.emoji,
+                            category: p._category || c.category,
+                            lat: p.placeData?.lat || 0,
+                            lng: p.placeData?.lng || 0,
+                            address: p.placeData?.address || '',
+                            rating: p.placeData?.rating || null,
+                            opening_hours: {},
+                          };
+                        });
                         if (selected.length === 0) return;
                         onBulkSelect(selected);
                       }}
@@ -8187,6 +8249,11 @@
       const [navigationPin, setNavigationPin] = useState(null);
       const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
       const [showAddFromLink, setShowAddFromLink] = useState(false);
+      const [toast, setToast] = useState(null); // { message, type }
+      const showToast = (message, type = 'success') => {
+        setToast({ message, type });
+        setTimeout(() => setToast(null), 3000);
+      };
       // Custom uploaded icons stored in localStorage
       const [customIcons, setCustomIcons] = useState(() => {
         try { return JSON.parse(localStorage.getItem('bo_custom_icons') || '[]'); } catch { return []; }
@@ -8624,27 +8691,25 @@
             />
 
             <div className="flex items-center gap-1 flex-shrink-0">
-              {/* Map / List toggle — visible on desktop */}
-              {!isMobile && (
-                <div className="flex bg-gray-100 dark:bg-slate-700 rounded-lg p-0.5 mr-1">
-                  <button
-                    onClick={() => setShowList(false)}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition ${
-                      !showList ? 'bg-white dark:bg-slate-600 shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
-                    }`}
-                  >
-                    🗺️ Map
-                  </button>
-                  <button
-                    onClick={() => setShowList(true)}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition ${
-                      showList ? 'bg-white dark:bg-slate-600 shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
-                    }`}
-                  >
-                    📋 List
-                  </button>
-                </div>
-              )}
+              {/* Map / List toggle — always visible */}
+              <div className="flex bg-gray-100 dark:bg-slate-700 rounded-lg p-0.5 mr-1">
+                <button
+                  onClick={() => setShowList(false)}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition ${
+                    !showList ? 'bg-white dark:bg-slate-600 shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
+                  }`}
+                >
+                  🗺️<span className="hidden sm:inline"> Map</span>
+                </button>
+                <button
+                  onClick={() => setShowList(true)}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition ${
+                    showList ? 'bg-white dark:bg-slate-600 shadow-sm text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700'
+                  }`}
+                >
+                  📋<span className="hidden sm:inline"> List</span>
+                </button>
+              </div>
               <button
                 onClick={() => setShowAddFromLink(true)}
                 className="p-2 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-sm"
@@ -8862,7 +8927,7 @@
                     address: data.address || '',
                     description: desc,
                     emoji: data.emoji || cat.emoji,
-                    category: cat.category,
+                    category: data.category || cat.category,
                     source_name: data.source_name,
                     source_url: data.source_url,
                     collection_id: defaultCollection,
@@ -8882,13 +8947,24 @@
                 // Show a brief confirmation
                 if (addedCount > 0) {
                   setSelectedPin(null);
-                  // Show notification-style feedback (re-use existing UI patterns)
-                  alert(`Added ${addedCount} places from article!`);
+                  showToast(`Added ${addedCount} places from article`);
                 }
               }}
               onClose={() => setShowAddFromLink(false)}
               isDarkMode={darkMode}
             />
+          )}
+
+          {/* Toast Notification */}
+          {toast && (
+            <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[10000] animate-bounce-in">
+              <div className={`px-4 py-2.5 rounded-xl shadow-lg font-medium text-sm flex items-center gap-2 ${
+                toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'
+              }`}>
+                <span>{toast.type === 'success' ? '✓' : '✗'}</span>
+                {toast.message}
+              </div>
+            </div>
           )}
 
           {/* Upload Confirmation Modal */}
