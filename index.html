@@ -344,6 +344,58 @@
     const getGoogleApiKey = () => localStorage.getItem('boWanderGoogleApiKey') || GOOGLE_PLACES_API_KEY;
     const setGoogleApiKey = (key) => localStorage.setItem('boWanderGoogleApiKey', key);
 
+    // API Usage Tracker — tracks calls per month in localStorage so user can
+    // monitor their Google Maps Platform $200/month free credit + CORS proxy calls.
+    // Pricing (approximate, as of 2026): Places Text Search (New) ~$0.034/call,
+    // Compute Routes (Basic) ~$0.005/call. $200 free credit covers ~5,880 text
+    // searches OR ~40,000 routes per month.
+    const API_PRICING = {
+      placesTextSearch: 0.034,
+      placesDetails: 0.017,
+      routes: 0.005,
+      corsProxy: 0, // free but rate-limited
+    };
+    const currentMonthKey = () => {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    };
+    const getApiUsage = () => {
+      try {
+        const raw = localStorage.getItem('boWanderApiUsage') || '{}';
+        const all = JSON.parse(raw);
+        const month = currentMonthKey();
+        return { month, counts: all[month] || {}, all };
+      } catch { return { month: currentMonthKey(), counts: {}, all: {} }; }
+    };
+    const trackApiCall = (kind, count = 1) => {
+      try {
+        const { month, all } = getApiUsage();
+        if (!all[month]) all[month] = {};
+        all[month][kind] = (all[month][kind] || 0) + count;
+        // Prune old months (keep last 6)
+        const months = Object.keys(all).sort().reverse().slice(0, 6);
+        const pruned = {};
+        months.forEach(m => { pruned[m] = all[m]; });
+        localStorage.setItem('boWanderApiUsage', JSON.stringify(pruned));
+      } catch {}
+    };
+    // Wrapped fetch that auto-detects the endpoint and increments the counter.
+    // Uses window.__bwFetch if already patched (idempotent).
+    if (!window.__bwFetchWrapped) {
+      const origFetch = window.fetch.bind(window);
+      window.fetch = function (input, init) {
+        try {
+          const url = typeof input === 'string' ? input : (input?.url || '');
+          if (url.includes('places.googleapis.com/v1/places:searchText')) trackApiCall('placesTextSearch');
+          else if (url.includes('places.googleapis.com/v1/places/')) trackApiCall('placesDetails');
+          else if (url.includes('routes.googleapis.com')) trackApiCall('routes');
+          else if (url.includes('api.allorigins.win') || url.includes('api.codetabs.com')) trackApiCall('corsProxy');
+        } catch {}
+        return origFetch(input, init);
+      };
+      window.__bwFetchWrapped = true;
+    }
+
     const ALLOWED_EMAILS = ['taly.matiteyahu@gmail.com', 'doug.pickard@gmail.com'];
     const FIREBASE_CONFIG = {
       apiKey: "AIzaSyDbS4hXieTfEc6IfSb1CntkDJdrEjxoNGA",
@@ -1109,6 +1161,86 @@
         <path d="M15.5 14h-.79l-.28-.27a6.471 6.471 0 001.48-5.34c-.47-2.78-2.79-5-5.59-5C7.21 3 5 5.04 5 7.59c0 2.54 2.21 4.59 4.95 4.59.63 0 1.23-.08 1.81-.23l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 10.5S7.01 7 8.5 7 12 9.01 12 10.5 10.99 14 9.5 14z"/>
       </svg>
     );
+
+    // API Usage display — shows current month's call counts + cost estimate vs $200 free credit
+    const ApiUsagePanel = () => {
+      const [usage, setUsage] = useState(() => getApiUsage());
+      const [tick, setTick] = useState(0);
+      // Re-read usage when panel opens or when user navigates
+      React.useEffect(() => {
+        const id = setInterval(() => setUsage(getApiUsage()), 2000);
+        return () => clearInterval(id);
+      }, []);
+      const c = usage.counts;
+      const placesCalls = (c.placesTextSearch || 0) + (c.placesDetails || 0);
+      const routesCalls = c.routes || 0;
+      const corsCalls = c.corsProxy || 0;
+      const cost = (c.placesTextSearch || 0) * API_PRICING.placesTextSearch
+        + (c.placesDetails || 0) * API_PRICING.placesDetails
+        + (c.routes || 0) * API_PRICING.routes;
+      const pctOfFree = Math.min(100, (cost / 200) * 100);
+      const prettyMonth = new Date(usage.month + '-01').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      return (
+        <div className="border-t dark:border-slate-700 pt-3">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-xs font-medium text-gray-600 dark:text-gray-400">
+              API Usage <span className="text-gray-400 font-normal">({prettyMonth})</span>
+            </label>
+            <button
+              onClick={() => {
+                if (confirm('Reset this month\'s usage counters?')) {
+                  try {
+                    const { all } = getApiUsage();
+                    delete all[usage.month];
+                    localStorage.setItem('boWanderApiUsage', JSON.stringify(all));
+                    setUsage(getApiUsage());
+                  } catch {}
+                }
+              }}
+              className="text-xs text-gray-400 hover:text-red-500 hover:underline"
+              title="Reset counters"
+            >
+              Reset
+            </button>
+          </div>
+          <div className="space-y-2">
+            <div>
+              <div className="flex justify-between text-xs mb-0.5">
+                <span className="text-gray-600 dark:text-gray-300">Estimated Google Maps cost</span>
+                <span className="font-mono text-gray-700 dark:text-gray-200">${cost.toFixed(2)} / $200 free</span>
+              </div>
+              <div className="h-2 bg-gray-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                <div
+                  className={`h-full transition-all ${pctOfFree > 90 ? 'bg-red-500' : pctOfFree > 60 ? 'bg-orange-500' : 'bg-green-500'}`}
+                  style={{ width: `${pctOfFree}%` }}
+                />
+              </div>
+              {pctOfFree > 90 && <p className="text-xs text-red-500 mt-1">⚠️ Near the $200/month free credit cap</p>}
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-xs pt-1">
+              <div className="bg-gray-50 dark:bg-slate-700 rounded p-2">
+                <div className="text-gray-500 dark:text-gray-400">Places</div>
+                <div className="font-mono font-semibold dark:text-white">{placesCalls.toLocaleString()}</div>
+                <div className="text-[10px] text-gray-400">search + details</div>
+              </div>
+              <div className="bg-gray-50 dark:bg-slate-700 rounded p-2">
+                <div className="text-gray-500 dark:text-gray-400">Routes</div>
+                <div className="font-mono font-semibold dark:text-white">{routesCalls.toLocaleString()}</div>
+                <div className="text-[10px] text-gray-400">directions</div>
+              </div>
+              <div className="bg-gray-50 dark:bg-slate-700 rounded p-2">
+                <div className="text-gray-500 dark:text-gray-400">Article fetch</div>
+                <div className="font-mono font-semibold dark:text-white">{corsCalls.toLocaleString()}</div>
+                <div className="text-[10px] text-gray-400">CORS proxy</div>
+              </div>
+            </div>
+            <p className="text-[11px] text-gray-400 leading-relaxed">
+              Costs are estimates based on published Google Maps Platform pricing. You won't be charged until you exceed $200/month. Text Search ≈ $0.034/call · Routes ≈ $0.005/call.
+            </p>
+          </div>
+        </div>
+      );
+    };
 
     const SettingsIcon = () => (
       <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -3202,13 +3334,24 @@
                 headers: {
                   'Content-Type': 'application/json',
                   'X-Goog-Api-Key': apiKey,
-                  'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating'
+                  'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
                 },
                 body: JSON.stringify({ textQuery: place.name + (locationHint ? ' ' + locationHint : ''), maxResultCount: 1 })
               });
               const pData = await resp.json();
               const gp = pData.places?.[0];
               if (gp) {
+                const hours = {};
+                if (gp.regularOpeningHours?.weekdayDescriptions) {
+                  const dayAbbrev = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun' };
+                  gp.regularOpeningHours.weekdayDescriptions.forEach(desc => {
+                    const m = desc.match(/^(\w+):\s*(.+)/);
+                    if (m) {
+                      const key = dayAbbrev[m[1].toLowerCase()] || m[1].toLowerCase().substring(0, 3);
+                      hours[key] = m[2].trim();
+                    }
+                  });
+                }
                 setBulkPlaces(prev => prev.map((p, i) => i === idx ? {
                   ...p,
                   loading: false,
@@ -3218,7 +3361,8 @@
                     address: gp.formattedAddress || '',
                     rating: gp.rating || null,
                     types: gp.types || [],
-                    displayName: gp.displayName?.text || ''
+                    displayName: gp.displayName?.text || '',
+                    opening_hours: hours,
                   }
                 } : p));
               } else {
@@ -3633,13 +3777,24 @@
                             headers: {
                               'Content-Type': 'application/json',
                               'X-Goog-Api-Key': apiKey,
-                              'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating'
+                              'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
                             },
                             body: JSON.stringify({ textQuery: place.name + (locationHint ? ' ' + locationHint : ''), maxResultCount: 1 })
                           });
                           const pData = await resp.json();
                           const gp = pData.places?.[0];
                           if (gp) {
+                            const hours = {};
+                            if (gp.regularOpeningHours?.weekdayDescriptions) {
+                              const dayAbbrev = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun' };
+                              gp.regularOpeningHours.weekdayDescriptions.forEach(desc => {
+                                const m = desc.match(/^(\w+):\s*(.+)/);
+                                if (m) {
+                                  const key = dayAbbrev[m[1].toLowerCase()] || m[1].toLowerCase().substring(0, 3);
+                                  hours[key] = m[2].trim();
+                                }
+                              });
+                            }
                             setBulkPlaces(prev => prev.map((p, i) => i === idx ? {
                               ...p,
                               loading: false,
@@ -3649,7 +3804,8 @@
                                 address: gp.formattedAddress || '',
                                 rating: gp.rating || null,
                                 types: gp.types || [],
-                                displayName: gp.displayName?.text || ''
+                                displayName: gp.displayName?.text || '',
+                                opening_hours: hours,
                               }
                             } : p));
                           } else {
@@ -3964,13 +4120,21 @@
                                           headers: {
                                             'Content-Type': 'application/json',
                                             'X-Goog-Api-Key': apiKey,
-                                            'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating'
+                                            'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
                                           },
                                           body: JSON.stringify({ textQuery: query, maxResultCount: 1 })
                                         });
                                         const pData = await resp.json();
                                         const gp = pData.places?.[0];
                                         if (gp) {
+                                          const hours = {};
+                                          if (gp.regularOpeningHours?.weekdayDescriptions) {
+                                            const dayAbbrev = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun' };
+                                            gp.regularOpeningHours.weekdayDescriptions.forEach(desc => {
+                                              const m = desc.match(/^(\w+):\s*(.+)/);
+                                              if (m) hours[dayAbbrev[m[1].toLowerCase()] || m[1].toLowerCase().substring(0, 3)] = m[2].trim();
+                                            });
+                                          }
                                           setBulkPlaces(prev => prev.map((p, i) => i === idx ? {
                                             ...p, loading: false,
                                             placeData: {
@@ -3979,7 +4143,8 @@
                                               address: gp.formattedAddress || '',
                                               rating: gp.rating || null,
                                               types: gp.types || [],
-                                              displayName: gp.placeData?.displayName || gp.displayName?.text || p.name,
+                                              displayName: gp.displayName?.text || p.name,
+                                              opening_hours: hours,
                                             },
                                             _searchOverride: '',
                                           } : p));
@@ -4003,13 +4168,21 @@
                                           headers: {
                                             'Content-Type': 'application/json',
                                             'X-Goog-Api-Key': apiKey,
-                                            'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating'
+                                            'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
                                           },
                                           body: JSON.stringify({ textQuery: query, maxResultCount: 1 })
                                         });
                                         const pData = await resp.json();
                                         const gp = pData.places?.[0];
                                         if (gp) {
+                                          const hours = {};
+                                          if (gp.regularOpeningHours?.weekdayDescriptions) {
+                                            const dayAbbrev = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun' };
+                                            gp.regularOpeningHours.weekdayDescriptions.forEach(desc => {
+                                              const m = desc.match(/^(\w+):\s*(.+)/);
+                                              if (m) hours[dayAbbrev[m[1].toLowerCase()] || m[1].toLowerCase().substring(0, 3)] = m[2].trim();
+                                            });
+                                          }
                                           setBulkPlaces(prev => prev.map((p, i) => i === idx ? {
                                             ...p, loading: false,
                                             placeData: {
@@ -4019,6 +4192,7 @@
                                               rating: gp.rating || null,
                                               types: gp.types || [],
                                               displayName: gp.displayName?.text || p.name,
+                                              opening_hours: hours,
                                             },
                                             _searchOverride: '',
                                           } : p));
@@ -4035,6 +4209,27 @@
                                     {place.loading ? '...' : '🔍'}
                                   </button>
                                 </div>
+                              </div>
+                              <div>
+                                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Hours</label>
+                                {(() => {
+                                  const h = place.placeData?.opening_hours || {};
+                                  const hasHours = Object.keys(h).length > 0;
+                                  if (place.loading) return <p className="text-xs text-gray-400 mt-1">Looking up...</p>;
+                                  if (!hasHours) return <p className="text-xs text-orange-500 mt-1">⚠️ Hours not available on Google Maps</p>;
+                                  const days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+                                  const dayLabel = { mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun' };
+                                  return (
+                                    <div className="mt-1 space-y-0.5">
+                                      {days.map(d => (
+                                        <div key={d} className="flex justify-between text-xs">
+                                          <span className="text-gray-500 dark:text-gray-400 w-10">{dayLabel[d]}</span>
+                                          <span className={h[d] ? 'text-gray-700 dark:text-gray-200' : 'text-orange-500'}>{h[d] || 'Closed / missing'}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             </div>
                           )}
@@ -4064,7 +4259,7 @@
                             lng: p.placeData?.lng || 0,
                             address: p.placeData?.address || '',
                             rating: p.placeData?.rating || null,
-                            opening_hours: {},
+                            opening_hours: p.placeData?.opening_hours || {},
                           };
                         });
                         if (selected.length === 0) return;
@@ -7330,6 +7525,9 @@
                       Free tier: ~10k lookups/month. Get a key at <a href="https://console.cloud.google.com/apis/credentials" target="_blank" className="underline text-blue-500">console.cloud.google.com</a> — enable "Places API (New)".
                     </p>
                   </div>
+
+                  {/* API Usage */}
+                  <ApiUsagePanel />
                 </div>
               </div>
             </div>
