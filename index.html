@@ -2001,6 +2001,7 @@
       const [editData, setEditData] = useState({});
       const [showEmojiPicker, setShowEmojiPicker] = useState(false);
       const [confirmingDelete, setConfirmingDelete] = useState(false);
+      const [showHours, setShowHours] = useState(false);
 
       const hasGroup = coLocatedPins.length > 1;
 
@@ -2544,34 +2545,31 @@
             })()}
 
             {/* Opening Hours — compact collapsible */}
-            {!editing && Object.keys(pin.opening_hours || {}).length > 0 && (() => {
-              const [showHours, setShowHours] = React.useState(false);
-              return (
-                <div>
-                  <button onClick={() => setShowHours(!showHours)} className="flex items-center gap-2 w-full text-left">
-                    <span className={`inline-block w-2 h-2 rounded-full ${openStatus.status === 'open' ? 'bg-green-500' : 'bg-red-500'}`} />
-                    <span className={`text-xs font-semibold ${openStatus.status === 'open' ? 'text-green-600' : 'text-red-600'}`}>
-                      {openStatus.label}
-                    </span>
-                    <span className="text-xs text-gray-400">{showHours ? '▲' : '▼'}</span>
-                  </button>
-                  {showHours && (
-                    <div className="space-y-0.5 mt-1.5 ml-4">
-                      {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(day => {
-                        const today = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][new Date().getDay()];
-                        const isToday = day === today;
-                        return (
-                          <div key={day} className={`text-xs flex justify-between ${isToday ? 'font-bold text-gray-900 dark:text-white' : 'text-gray-600 dark:text-gray-400'}`}>
-                            <span className="font-medium">{dayName(day)}{isToday ? ' (today)' : ''}</span>
-                            <span>{pin.opening_hours[day] || 'Closed'}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
+            {!editing && Object.keys(pin.opening_hours || {}).length > 0 && (
+              <div>
+                <button onClick={() => setShowHours(!showHours)} className="flex items-center gap-2 w-full text-left">
+                  <span className={`inline-block w-2 h-2 rounded-full ${openStatus.status === 'open' ? 'bg-green-500' : 'bg-red-500'}`} />
+                  <span className={`text-xs font-semibold ${openStatus.status === 'open' ? 'text-green-600' : 'text-red-600'}`}>
+                    {openStatus.label}
+                  </span>
+                  <span className="text-xs text-gray-400">{showHours ? '▲' : '▼'}</span>
+                </button>
+                {showHours && (
+                  <div className="space-y-0.5 mt-1.5 ml-4">
+                    {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(day => {
+                      const todayDay = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][new Date().getDay()];
+                      const isToday = day === todayDay;
+                      return (
+                        <div key={day} className={`text-xs flex justify-between ${isToday ? 'font-bold text-gray-900 dark:text-white' : 'text-gray-600 dark:text-gray-400'}`}>
+                          <span className="font-medium">{dayName(day)}{isToday ? ' (today)' : ''}</span>
+                          <span>{pin.opening_hours[day] || 'Closed'}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Ratings — compact single-line per source */}
             {(pin.google_rating || pin.yelp_rating) && (
@@ -2598,7 +2596,6 @@
                       <span className="text-amber-400 text-xs">⭐</span>
                       <span className="text-xs font-bold text-gray-800 dark:text-gray-200">{pin.yelp_rating.toFixed(1)}</span>
                       <span className="text-xs text-gray-400">({pin.yelp_reviews_count?.toLocaleString() || 0})</span>
-                    </div>
                     </div>
                     <a
                       href={`https://www.yelp.com/search?find_desc=${encodeURIComponent(pin.name)}`}
@@ -5662,17 +5659,66 @@
           } catch (e) { console.warn('Marker error for pin', pin.id, e); }
         });
 
+        // Smart center: find today's hotel, or fall back to pin cluster
+        const findSmartCenter = () => {
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          // 1. Check for a hotel pin where today falls within check-in → check-out
+          const hotelPins = validPins.filter(p => p.category === 'hotel' && p.reservation_details);
+          for (const hp of hotelPins) {
+            const rd = hp.reservation_details;
+            const ci = rd.check_in ? new Date(rd.check_in) : null;
+            const co = rd.check_out ? new Date(rd.check_out) : null;
+            if (ci && !isNaN(ci.getTime())) {
+              ci.setHours(0, 0, 0, 0);
+              if (co && !isNaN(co.getTime())) {
+                co.setHours(0, 0, 0, 0);
+                if (today >= ci && today <= co) return { lat: hp.lat, lng: hp.lng, zoom: 14, reason: 'hotel' };
+              } else {
+                // No checkout — match check-in day
+                if (today.getTime() === ci.getTime()) return { lat: hp.lat, lng: hp.lng, zoom: 14, reason: 'hotel' };
+              }
+            }
+          }
+          // 2. Find the upcoming hotel (next check-in within 3 days)
+          const threeDays = 3 * 24 * 60 * 60 * 1000;
+          let nearestHotel = null;
+          let nearestDiff = Infinity;
+          for (const hp of hotelPins) {
+            const ci = hp.reservation_details.check_in ? new Date(hp.reservation_details.check_in) : null;
+            if (ci && !isNaN(ci.getTime())) {
+              ci.setHours(0, 0, 0, 0);
+              const diff = ci.getTime() - today.getTime();
+              if (diff >= 0 && diff < threeDays && diff < nearestDiff) {
+                nearestDiff = diff;
+                nearestHotel = hp;
+              }
+            }
+          }
+          if (nearestHotel) return { lat: nearestHotel.lat, lng: nearestHotel.lng, zoom: 13, reason: 'upcoming' };
+          // 3. No matching hotel — fit all pins (return null to use fitBounds)
+          return null;
+        };
+
         // Fit bounds when the set of pins changes (e.g. switching collection)
         const collectionKey = validPins.map(p => p.id).sort().join(',');
         if (validPins.length > 0 && collectionKey !== prevCollectionKey.current) {
           prevCollectionKey.current = collectionKey;
-          try {
-            const bounds = L.latLngBounds(validPins.map(p => [p.lat, p.lng]));
+          const smartCenter = findSmartCenter();
+          if (smartCenter) {
             map.invalidateSize();
             setTimeout(() => {
-              try { map.fitBounds(bounds, { padding: [60, 60], maxZoom: 15, animate: true }); } catch(e) { console.warn('fitBounds error:', e); }
+              try { map.flyTo([smartCenter.lat, smartCenter.lng], smartCenter.zoom, { duration: 0.5 }); } catch(e) {}
             }, 50);
-          } catch(e) { console.warn('bounds error:', e); }
+          } else {
+            try {
+              const bounds = L.latLngBounds(validPins.map(p => [p.lat, p.lng]));
+              map.invalidateSize();
+              setTimeout(() => {
+                try { map.fitBounds(bounds, { padding: [60, 60], maxZoom: 15, animate: true }); } catch(e) { console.warn('fitBounds error:', e); }
+              }, 50);
+            } catch(e) { console.warn('bounds error:', e); }
+          }
         } else if (validPins.length === 0 && collectionKey !== prevCollectionKey.current) {
           prevCollectionKey.current = collectionKey;
           // No pins — geocode the collection name to center the map there
