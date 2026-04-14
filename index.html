@@ -1233,6 +1233,34 @@
       return `${mon} ${d.getDate()}`;
     };
 
+    // Pick the most relevant pin from a co-located group based on today's date
+    // Priority: current stay (today within check-in..check-out) > nearest upcoming > nearest past
+    const pickRelevantPin = (group) => {
+      if (!group || group.length <= 1) return group?.[0] || null;
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      let bestCurrent = null;
+      let bestUpcoming = null, upcomingDiff = Infinity;
+      let bestPast = null, pastDiff = Infinity;
+      for (const p of group) {
+        const rd = p.reservation_details;
+        if (!rd) continue;
+        const ci = rd.check_in ? new Date(rd.check_in) : null;
+        const co = rd.check_out ? new Date(rd.check_out) : null;
+        if (ci && !isNaN(ci.getTime())) {
+          ci.setHours(0, 0, 0, 0);
+          if (co && !isNaN(co.getTime())) {
+            co.setHours(0, 0, 0, 0);
+            if (today >= ci && today <= co) { bestCurrent = p; break; }
+          }
+          const diff = ci.getTime() - today.getTime();
+          if (diff > 0 && diff < upcomingDiff) { upcomingDiff = diff; bestUpcoming = p; }
+          if (diff <= 0 && Math.abs(diff) < pastDiff) { pastDiff = Math.abs(diff); bestPast = p; }
+        }
+      }
+      return bestCurrent || bestUpcoming || bestPast || group[0];
+    };
+
     const renderPinHtml = (pin, categoryData, colorClass, coLocatedPins) => {
       // Build date badges — combine from all co-located pins
       const pinsToCheck = coLocatedPins && coLocatedPins.length > 1 ? coLocatedPins : [pin];
@@ -5058,10 +5086,14 @@
       const [hiddenSources, setHiddenSources] = useState(() => {
         try { return JSON.parse(localStorage.getItem('boWanderHiddenSources') || '[]'); } catch { return []; }
       });
+      const [deletedSources, setDeletedSources] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('boWanderDeletedSources') || '[]'); } catch { return []; }
+      });
+      const [confirmDelete, setConfirmDelete] = useState(null);
 
       const defaultSources = ['Lonely Planet', 'Eater', 'Google Maps', 'Yelp', 'Friend recommendation', 'Sarah R.', "Doug's friend"];
       const uniqueSources = [...new Set(allPins.map(p => p.source_name).filter(s => s && !defaultSources.includes(s)))];
-      const allSources = [...defaultSources, ...uniqueSources].filter(s => !hiddenSources.includes(s));
+      const allSources = [...defaultSources, ...uniqueSources].filter(s => !hiddenSources.includes(s) && !deletedSources.includes(s));
 
       const handleHideSource = (src) => {
         const updated = [...hiddenSources, src];
@@ -5073,6 +5105,17 @@
         const updated = hiddenSources.filter(s => s !== src);
         setHiddenSources(updated);
         localStorage.setItem('boWanderHiddenSources', JSON.stringify(updated));
+      };
+      const handleDeleteSource = (src) => {
+        // Remove from hidden list
+        const updatedHidden = hiddenSources.filter(s => s !== src);
+        setHiddenSources(updatedHidden);
+        localStorage.setItem('boWanderHiddenSources', JSON.stringify(updatedHidden));
+        // Add to permanently deleted list
+        const updatedDeleted = [...deletedSources, src];
+        setDeletedSources(updatedDeleted);
+        localStorage.setItem('boWanderDeletedSources', JSON.stringify(updatedDeleted));
+        setConfirmDelete(null);
       };
 
       return (
@@ -5128,16 +5171,29 @@
                   >Remove</button>
                 </div>
               ))}
-              {hiddenSources.length > 0 && (
+              {hiddenSources.filter(s => !deletedSources.includes(s)).length > 0 && (
                 <div className="pt-2 border-t dark:border-slate-700">
                   <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Removed</p>
-                  {hiddenSources.map(src => (
+                  {hiddenSources.filter(s => !deletedSources.includes(s)).map(src => (
                     <div key={src} className="flex justify-between items-center py-1">
                       <span className="text-sm text-gray-400 dark:text-gray-500">{src}</span>
-                      <button
-                        onClick={() => handleRestoreSource(src)}
-                        className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
-                      >Restore</button>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleRestoreSource(src)}
+                          className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                        >Restore</button>
+                        {confirmDelete === src ? (
+                          <button
+                            onClick={() => handleDeleteSource(src)}
+                            className="text-xs text-red-600 font-semibold hover:underline"
+                          >Confirm?</button>
+                        ) : (
+                          <button
+                            onClick={() => setConfirmDelete(src)}
+                            className="text-xs text-gray-400 hover:text-red-500 hover:underline"
+                          >Delete</button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -5544,9 +5600,21 @@
       useEffect(() => {
         const map = mapInstanceRef.current;
         console.log('[BoWander Map] panTo effect:', panTo, 'map exists:', !!map);
-        if (!map || !panTo || !panTo.lat || !panTo.lng) return;
-        console.log('[BoWander Map] Flying to:', panTo.lat, panTo.lng);
-        map.flyTo([panTo.lat, panTo.lng], 15, { duration: 0.8 });
+        if (!map || !panTo) return;
+        const lat = parseFloat(panTo.lat);
+        const lng = parseFloat(panTo.lng);
+        if (isNaN(lat) || isNaN(lng)) return;
+        console.log('[BoWander Map] Flying to:', lat, lng);
+        try {
+          map.invalidateSize();
+          setTimeout(() => {
+            try { map.flyTo([lat, lng], panTo.zoom || 15, { duration: 0.8 }); }
+            catch (e) {
+              console.warn('[BoWander Map] flyTo failed, using setView:', e);
+              try { map.setView([lat, lng], panTo.zoom || 15); } catch (e2) { console.warn('[BoWander Map] setView also failed:', e2); }
+            }
+          }, 100);
+        } catch (e) { console.warn('[BoWander Map] panTo error:', e); }
       }, [panTo]);
 
       // Show/hide preview pin (temporary marker while adding a place)
@@ -5653,7 +5721,8 @@
               .on('click', () => {
                 // Pass the group along with the pin for co-located handling
                 if (isGrouped) {
-                  onSelectPin(pin, group);
+                  const relevant = pickRelevantPin(group);
+                  onSelectPin(relevant, group);
                 } else {
                   onSelectPin(pin);
                 }
@@ -5764,7 +5833,7 @@
                 const f = data.features?.[0];
                 if (f && f.geometry?.coordinates) {
                   const [lng, lat] = f.geometry.coordinates;
-                  map.flyTo([lat, lng], 12, { duration: 0.5 });
+                  try { map.flyTo([lat, lng], 12, { duration: 0.5 }); } catch(e) {}
                 }
               })
               .catch(() => {});
@@ -5904,7 +5973,8 @@
             const db = b.reservation_details?.check_in ? new Date(b.reservation_details.check_in) : new Date(9999, 0);
             return da - db;
           });
-          deduped.push({ ...group[0], _coLocatedGroup: group.length > 1 ? group : null });
+          const representative = group.length > 1 ? pickRelevantPin(group) : group[0];
+          deduped.push({ ...representative, _coLocatedGroup: group.length > 1 ? group : null });
         });
 
         // Group by category
