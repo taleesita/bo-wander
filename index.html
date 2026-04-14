@@ -1352,6 +1352,24 @@
       'Flags': ['🏳️','🏴','🏁','🚩','🏳️‍🌈','🏳️‍⚧️','🇺🇸','🇬🇧','🇫🇷','🇩🇪','🇮🇹','🇪🇸','🇯🇵','🇰🇷','🇨🇳','🇧🇷','🇮🇳','🇲🇽','🇨🇦','🇦🇺','🇷🇺','🇹🇷','🇳🇱','🇸🇪','🇳🇴','🇩🇰','🇫🇮','🇵🇱','🇦🇹','🇨🇭','🇧🇪','🇵🇹','🇬🇷','🇮🇪','🇮🇱','🇪🇬','🇿🇦','🇳🇬','🇰🇪','🇲🇦','🇸🇦','🇦🇪','🇹🇭','🇻🇳','🇮🇩','🇵🇭','🇸🇬','🇲🇾','🇳🇿','🇦🇷','🇨🇴','🇨🇱','🇵🇪','🇨🇺','🇵🇷','🇯🇲','🇭🇹','🇩🇴','🇨🇷','🇵🇦','🇺🇾','🇪🇨','🇻🇪','🇬🇹','🇭🇳','🇧🇴','🇵🇾']
     };
 
+    // Comprehensive emoji name/keyword map for search across ALL emojis
+    const EMOJI_NAME_MAP = {
+      // Smileys
+      '😀':'grin happy smile','😃':'smile happy teeth','😄':'smile happy eyes','😁':'grin beam','😆':'laugh squint','😅':'sweat smile nervous','🤣':'rofl rolling floor laugh','😂':'joy tears laugh cry','🙂':'slight smile','😊':'blush smile happy','😇':'angel halo innocent','🥰':'love hearts face','😍':'heart eyes love','🤩':'star struck excited wow','😘':'kiss blow','😋':'yum delicious tongue','😛':'tongue out playful','😜':'wink tongue crazy','🤪':'zany crazy wild','😝':'squint tongue','🤗':'hug hugging','🤭':'shh oops giggle','🤫':'shush quiet secret','🤔':'thinking think hmm','😐':'neutral blank','😑':'expressionless flat','😶':'no mouth silent','😏':'smirk sly','😒':'unamused bored','🙄':'eye roll annoyed','😬':'grimace awkward yikes','😮‍💨':'sigh exhale relief','🤥':'lie pinocchio','😌':'relieved peaceful','😔':'pensive sad thoughtful','😪':'sleepy tired drool','🤤':'drool drooling','😴':'sleep zzz snore','😷':'mask sick medical','🤒':'thermometer fever sick','🤕':'bandage hurt injured','🤢':'nauseous green sick','🤮':'vomit throw up sick','🥵':'hot sweat overheated','🥶':'cold freezing frozen','🥴':'woozy dizzy drunk','😵':'dizzy dazed spiral','🤯':'mind blown exploding head','🤠':'cowboy hat','🥳':'party celebrate birthday','🥸':'disguise glasses nose','😎':'sunglasses cool','🤓':'nerd glasses geek','🧐':'monocle fancy','😕':'confused puzzled','😟':'worried concerned','🙁':'frown sad slightly','😮':'open mouth surprised','😯':'hushed surprised','😲':'astonished shocked','😳':'flushed embarrassed','🥺':'pleading puppy eyes','😦':'frown open mouth','😧':'anguished','😨':'fearful scared','😰':'anxious sweat','😥':'sad relieved','😢':'cry tear sad','😭':'sob crying loud','😱':'scream fear horror','😖':'confounded frustrated','😣':'persevere frustrated','😞':'disappointed sad','😓':'downcast sweat','😩':'weary tired','😫':'tired exhausted','🥱':'yawn boring sleepy','😤':'triumph steam nose angry','😡':'rage angry red','😠':'angry mad','🤬':'curse swear symbols','😈':'devil horns evil','👿':'angry devil imp','💀':'skull dead death','☠️':'skull crossbones danger poison','💩':'poop poo','🤡':'clown joker','👹':'ogre oni monster','👺':'goblin tengu monster','👻':'ghost boo spooky halloween','👽':'alien ufo extraterrestrial','👾':'space invader game alien','🤖':'robot bot',
+      // People & Body
+      '👋':'wave hello bye hand','🤚':'raised back hand','🖐️':'hand fingers splayed','✋':'raised hand stop high five','🖖':'vulcan spock','👌':'ok okay perfect','🤌':'pinch italian','🤏':'pinching small tiny','✌️':'peace victory sign','🤞':'crossed fingers luck','🤟':'love you sign','🤘':'rock on horns metal','🤙':'call me shaka hang loose','👈':'point left','👉':'point right','👆':'point up','🖕':'middle finger','👇':'point down','☝️':'index pointing up','👍':'thumbs up like good','👎':'thumbs down dislike bad','✊':'fist raised','👊':'fist bump punch','🤛':'left fist','🤜':'right fist','👏':'clap applause','🙌':'raised hands celebration','👐':'open hands','🤲':'palms up together','🤝':'handshake deal','🙏':'pray please thanks namaste','✍️':'writing hand','💅':'nail polish manicure','🤳':'selfie','💪':'muscle biceps strong flex','🦾':'mechanical arm prosthetic','🦿':'mechanical leg prosthetic','🦵':'leg','🦶':'foot','👂':'ear listen hear','🦻':'ear hearing aid','👃':'nose smell','🧠':'brain mind think','🫀':'anatomical heart organ','🫁':'lungs breathe','🦷':'tooth teeth dental','🦴':'bone skeleton','👀':'eyes look see watch','👁️':'eye look see watch vision','👅':'tongue taste lick','👄':'mouth lips kiss','👶':'baby infant','🧒':'child kid','👦':'boy','👧':'girl','🧑':'person adult','👱':'blond hair','👨':'man male','🧔':'beard man','👩':'woman female','🧓':'older person elder','👴':'old man grandpa','👵':'old woman grandma',
+      // Animals
+      '🐶':'dog puppy','🐱':'cat kitten','🐭':'mouse','🐹':'hamster','🐰':'rabbit bunny','🦊':'fox','🐻':'bear','🐼':'panda','🐻‍❄️':'polar bear','🐨':'koala','🐯':'tiger','🦁':'lion','🐮':'cow','🐷':'pig','🐽':'pig nose','🐸':'frog','🐵':'monkey','🙈':'see no evil monkey','🙉':'hear no evil monkey','🙊':'speak no evil monkey','🐒':'monkey','🐔':'chicken rooster','🐧':'penguin','🐦':'bird','🐤':'chick baby','🐣':'hatching chick','🐥':'front chick','🦆':'duck','🦅':'eagle','🦉':'owl','🦇':'bat','🐺':'wolf','🐗':'boar','🐴':'horse','🦄':'unicorn','🐝':'bee honeybee','🪱':'worm','🐛':'bug caterpillar','🦋':'butterfly','🐌':'snail','🐞':'ladybug','🐜':'ant','🪰':'fly','🪲':'beetle','🪳':'cockroach','🦟':'mosquito','🦗':'cricket','🕷️':'spider','🦂':'scorpion','🐢':'turtle tortoise','🐍':'snake','🦎':'lizard','🦖':'t-rex dinosaur','🦕':'dinosaur sauropod','🐙':'octopus','🦑':'squid','🦐':'shrimp prawn','🦞':'lobster','🦀':'crab','🐡':'blowfish pufferfish','🐠':'tropical fish','🐟':'fish','🐬':'dolphin','🐳':'whale spout','🐋':'whale','🦈':'shark','🦭':'seal','🐊':'crocodile alligator','🐅':'tiger','🐆':'leopard','🦓':'zebra','🦍':'gorilla','🦧':'orangutan','🐘':'elephant','🦛':'hippo','🦏':'rhino','🐪':'camel','🐫':'camel two hump','🦒':'giraffe','🦘':'kangaroo','🦬':'bison buffalo','🐃':'water buffalo','🐂':'ox','🐄':'cow','🐎':'horse racing','🐖':'pig','🐏':'ram sheep','🐑':'sheep ewe','🦙':'llama alpaca','🐐':'goat','🦌':'deer','🐕':'dog','🐩':'poodle','🦮':'guide dog','🐈':'cat','🐈‍⬛':'black cat','🪶':'feather quill','🐓':'rooster','🦃':'turkey','🦤':'dodo','🦚':'peacock','🦜':'parrot','🦢':'swan','🦩':'flamingo','🕊️':'dove peace','🐇':'rabbit','🦝':'raccoon','🦨':'skunk','🦡':'badger','🦫':'beaver','🦦':'otter','🦥':'sloth','🐁':'mouse','🐀':'rat','🐿️':'chipmunk squirrel','🦔':'hedgehog',
+      // Objects
+      '⌚':'watch time','📱':'phone mobile','💻':'laptop computer','⌨️':'keyboard type','🖥️':'desktop computer monitor screen','🖨️':'printer','🔍':'magnifying glass search zoom left','🔎':'magnifying glass search zoom right','🕯️':'candle','💡':'light bulb idea','🔦':'flashlight torch','🏮':'lantern red paper','📔':'notebook journal','📕':'book closed red','📖':'book open read','📗':'book green','📘':'book blue','📙':'book orange','📚':'books library stack','📓':'notebook','📒':'ledger','📰':'newspaper','🗞️':'rolled newspaper','📌':'pushpin pin','📍':'pin round location','📎':'paperclip','✂️':'scissors cut','🔒':'lock locked','🔓':'unlock','🔑':'key','🗝️':'old key vintage','🔨':'hammer tool','🔧':'wrench spanner tool','🔩':'nut bolt','⚙️':'gear settings cog','🔬':'microscope science','🔭':'telescope astronomy','📡':'satellite antenna','💉':'syringe needle vaccine','💊':'pill medicine drug','🚪':'door','🛏️':'bed sleep','🛋️':'couch sofa','🪑':'chair seat','🚽':'toilet','🚿':'shower','🛁':'bathtub bath','🛒':'shopping cart trolley',
+      // Symbols
+      '❤️':'red heart love','🧡':'orange heart','💛':'yellow heart','💚':'green heart','💙':'blue heart','💜':'purple heart','🖤':'black heart','🤍':'white heart','🤎':'brown heart','💔':'broken heart','❤️‍🔥':'heart fire','❣️':'heart exclamation','💕':'two hearts','💯':'hundred perfect score','❌':'cross mark wrong','✅':'check mark correct','⭕':'circle','⚠️':'warning','♻️':'recycle','ℹ️':'information','❓':'question mark','❗':'exclamation','🔴':'red circle','🟠':'orange circle','🟡':'yellow circle','🟢':'green circle','🔵':'blue circle','🟣':'purple circle','⚫':'black circle','⚪':'white circle','🎵':'music note','🎶':'music notes',
+      // Nature (extra)
+      '🌵':'cactus desert','🌲':'evergreen tree pine','🌳':'deciduous tree','🌴':'palm tree tropical','🌱':'seedling sprout','🌿':'herb leaf','☘️':'shamrock clover','🍀':'four leaf clover luck','🍃':'leaves wind','🍂':'fallen leaf autumn','🍁':'maple leaf fall autumn canada','🍄':'mushroom fungus','🌾':'rice plant grain','💐':'bouquet flowers','🌷':'tulip flower','🌹':'rose flower','🌺':'hibiscus flower','🌸':'cherry blossom sakura','🌼':'blossom flower','🌻':'sunflower','☀️':'sun sunny','🌈':'rainbow','❄️':'snowflake snow cold winter','🌊':'wave ocean sea water','🔥':'fire hot flame',
+      // Flags
+      '🇺🇸':'usa america united states','🇬🇧':'uk britain england','🇫🇷':'france french','🇩🇪':'germany german','🇮🇹':'italy italian','🇪🇸':'spain spanish','🇯🇵':'japan japanese','🇰🇷':'korea korean','🇨🇳':'china chinese','🇧🇷':'brazil','🇮🇳':'india','🇲🇽':'mexico','🇨🇦':'canada','🇦🇺':'australia','🇹🇭':'thailand','🇻🇳':'vietnam','🇮🇩':'indonesia','🇸🇬':'singapore','🇳🇿':'new zealand'
+    };
+
     const EmojiPicker = ({ selectedEmoji, onSelect, onClose, customIcons = [], onUploadIcon, onDeleteIcon }) => {
       const [search, setSearch] = useState('');
       const [tab, setTab] = useState('curated'); // 'curated' or 'all'
@@ -1390,7 +1408,10 @@
         const result = {};
         Object.entries(ALL_EMOJIS).forEach(([cat, emojis]) => {
           const matched = emojis.filter(emoji => {
-            // Check curated keywords first
+            // Check comprehensive name map first
+            const names = EMOJI_NAME_MAP[emoji];
+            if (names && names.includes(s)) return true;
+            // Check curated keywords
             const kw = emojiKeywords[emoji];
             if (kw && kw.includes(s)) return true;
             // Fallback: category name match
@@ -2031,17 +2052,13 @@
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3 flex-1 min-w-0">
                 {editing ? (
-                  <button
-                    onClick={() => setShowEmojiPicker(true)}
-                    className="flex-shrink-0 hover:opacity-75 transition active:scale-90"
-                    title="Change icon"
-                  >
+                  <div className="flex-shrink-0" title="Change via category below">
                     {isCustomIcon(editData.emoji) ? (
                       <img src={editData.emoji} alt="" className="w-10 h-10 rounded-full object-cover" />
                     ) : (
                       <span className="text-4xl">{editData.emoji}</span>
                     )}
-                  </button>
+                  </div>
                 ) : (
                   isCustomIcon(pin.emoji) ? (
                     <img src={pin.emoji} alt="" className="w-10 h-10 rounded-full object-cover flex-shrink-0" />
@@ -2061,10 +2078,22 @@
                   ) : (
                     <h2 className="text-xl font-bold dark:text-white truncate">{pin.name}</h2>
                   )}
-                  {!editing && pin.source_name && (
-                    <span className="inline-block bg-gray-600 text-white text-xs px-2 py-1 rounded mt-1">
-                      {pin.source_name}
-                    </span>
+                  {!editing && (
+                    <div className="flex flex-wrap gap-1.5 mt-1">
+                      {pin.category && pin.category !== 'other' && (() => {
+                        const catData = PIN_CATEGORIES[pin.category] || PIN_CATEGORIES.other;
+                        return (
+                          <span className="inline-flex items-center gap-1 text-white text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: catData.color }}>
+                            {catData.label}
+                          </span>
+                        );
+                      })()}
+                      {pin.source_name && (
+                        <span className="inline-block bg-gray-600 text-white text-xs px-2 py-0.5 rounded-full">
+                          {pin.source_name}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
@@ -2134,11 +2163,14 @@
               </div>
             )}
 
-            {/* Category — fourth field to match Add form order */}
+            {/* Category & Icon — unified picker */}
             {editing && (
               <div>
-                <label className="text-xs font-semibold text-gray-600 dark:text-gray-400 block mb-1">Category</label>
-                <CategoryField value={editData.category} onChange={cat => setEditData(d => ({ ...d, category: cat }))} />
+                <label className="text-xs font-semibold text-gray-600 dark:text-gray-400 block mb-1">Category & Icon</label>
+                <CategoryField value={editData.category} showCustomizeIcon={true} onCustomizeIcon={() => setShowEmojiPicker(true)} onChange={cat => {
+                  const newCatIcon = (PIN_CATEGORIES[cat] || PIN_CATEGORIES.other).icon;
+                  setEditData(d => ({ ...d, category: cat, emoji: newCatIcon }));
+                }} />
               </div>
             )}
 
@@ -4803,10 +4835,21 @@
     };
     // Load custom categories on startup
     Object.assign(PIN_CATEGORIES, loadCustomCategories());
+    // Auto-register categories from existing pins that aren't in PIN_CATEGORIES
+    const registerMissingCategories = (pins) => {
+      pins.forEach(pin => {
+        if (pin.category && !PIN_CATEGORIES[pin.category]) {
+          const label = pin.category.charAt(0).toUpperCase() + pin.category.slice(1).replace(/-/g, ' ');
+          const icon = pin.emoji || '📍';
+          const color = CATEGORY_COLORS[Object.keys(PIN_CATEGORIES).length % CATEGORY_COLORS.length] || '#9E9E9E';
+          saveCustomCategory(pin.category, { label, icon, color });
+        }
+      });
+    };
 
     const CATEGORY_COLORS = ['#2D8A4E', '#4A90D9', '#D94A4A', '#7B4AD9', '#D4A843', '#6B8E23', '#2196F3', '#795548', '#9C27B0', '#607D8B', '#E91E63', '#FF9800', '#00BCD4', '#FF5722', '#8BC34A', '#3F51B5', '#009688', '#F44336'];
 
-    const CategoryField = ({ value, onChange }) => {
+    const CategoryField = ({ value, onChange, showCustomizeIcon, onCustomizeIcon }) => {
       const [showCustom, setShowCustom] = useState(false);
       const [newCatName, setNewCatName] = useState('');
       const [newCatEmoji, setNewCatEmoji] = useState('📍');
@@ -4815,23 +4858,37 @@
       return (
         <div className="space-y-2">
           {!showCustom ? (
-            <div className="flex gap-2">
-              <select
-                value={value}
-                onChange={e => {
-                  if (e.target.value === '__new__') {
-                    setShowCustom(true);
-                  } else {
-                    onChange(e.target.value);
-                  }
-                }}
-                className="flex-1 px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm"
-              >
+            <div>
+              <div className="flex flex-wrap gap-1.5">
                 {Object.entries(PIN_CATEGORIES).map(([id, cat]) => (
-                  <option key={id} value={id}>{cat.icon} {cat.label}</option>
+                  <button
+                    key={id}
+                    onClick={() => onChange(id)}
+                    className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium transition ${
+                      value === id
+                        ? 'ring-2 ring-offset-1 ring-blue-500 text-white'
+                        : 'bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-slate-600'
+                    }`}
+                    style={value === id ? { backgroundColor: cat.color } : {}}
+                  >
+                    <span className="text-sm">{cat.icon}</span> {cat.label}
+                  </button>
                 ))}
-                <option value="__new__">+ Add new category...</option>
-              </select>
+                <button
+                  onClick={() => setShowCustom(true)}
+                  className="flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-slate-600 transition"
+                >
+                  + New
+                </button>
+              </div>
+              {showCustomizeIcon && value && (
+                <button
+                  onClick={onCustomizeIcon}
+                  className="mt-2 text-xs text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  Customize icon...
+                </button>
+              )}
             </div>
           ) : (
             <div className="space-y-2 p-3 bg-gray-50 dark:bg-slate-800 rounded-lg">
@@ -5163,16 +5220,13 @@
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Name *</label>
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setShowEmojiPicker(true)}
-                        className="flex-shrink-0 w-10 h-10 hover:opacity-75 transition active:scale-90 flex items-center justify-center"
-                      >
+                      <div className="flex-shrink-0 w-10 h-10 flex items-center justify-center">
                         {formData.emoji?.startsWith('data:') ? (
                           <img src={formData.emoji} alt="" className="w-8 h-8 rounded-full object-cover" />
                         ) : (
                           <span className="text-3xl">{formData.emoji}</span>
                         )}
-                      </button>
+                      </div>
                       <input
                         type="text"
                         value={formData.name}
@@ -5181,6 +5235,18 @@
                         placeholder="e.g. Bombolona Bakehouse"
                       />
                     </div>
+                  </div>
+
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Category & Icon</label>
+                    <CategoryField value={formData.category || 'other'} showCustomizeIcon={true} onCustomizeIcon={() => setShowEmojiPicker(true)} onChange={cat => {
+                      const newCatIcon = (PIN_CATEGORIES[cat] || PIN_CATEGORIES.other).icon;
+                      setFormData(prev => ({
+                        ...prev,
+                        category: cat,
+                        emoji: newCatIcon
+                      }));
+                    }} />
                   </div>
 
                   <div>
@@ -5202,11 +5268,6 @@
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Source</label>
                     <SourceField value={formData.source_name || ''} onChange={e => handleChange('source_name', e)} allPins={allPins} />
-                  </div>
-
-                  <div>
-                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Category</label>
-                    <CategoryField value={formData.category || 'other'} onChange={cat => handleChange('category', cat)} />
                   </div>
 
                   <div>
@@ -5557,21 +5618,25 @@
             className: 'category-marker'
           });
           const pos = offsetMap[pin.id] || { lat: pin.lat, lng: pin.lng };
-          const marker = L.marker([pos.lat, pos.lng], { icon })
-            .on('click', () => onSelectPin(pin))
-            .addTo(map);
-          markersRef.current.set(pin.id, marker);
+          try {
+            const marker = L.marker([pos.lat, pos.lng], { icon })
+              .on('click', () => onSelectPin(pin))
+              .addTo(map);
+            markersRef.current.set(pin.id, marker);
+          } catch (e) { console.warn('Marker error for pin', pin.id, e); }
         });
 
         // Fit bounds when the set of pins changes (e.g. switching collection)
         const collectionKey = validPins.map(p => p.id).sort().join(',');
         if (validPins.length > 0 && collectionKey !== prevCollectionKey.current) {
           prevCollectionKey.current = collectionKey;
-          const bounds = L.latLngBounds(validPins.map(p => [p.lat, p.lng]));
-          map.invalidateSize();
-          setTimeout(() => {
-            map.fitBounds(bounds, { padding: [60, 60], maxZoom: 15, animate: true });
-          }, 50);
+          try {
+            const bounds = L.latLngBounds(validPins.map(p => [p.lat, p.lng]));
+            map.invalidateSize();
+            setTimeout(() => {
+              try { map.fitBounds(bounds, { padding: [60, 60], maxZoom: 15, animate: true }); } catch(e) { console.warn('fitBounds error:', e); }
+            }, 50);
+          } catch(e) { console.warn('bounds error:', e); }
         } else if (validPins.length === 0 && collectionKey !== prevCollectionKey.current) {
           prevCollectionKey.current = collectionKey;
           // No pins — geocode the collection name to center the map there
@@ -5608,18 +5673,22 @@
           });
           marker.setIcon(icon);
         });
-        if (selectedPin && selectedPin.lat) {
-          // Offset the center so the pin appears in the visible map area (left of sidebar)
-          const targetZoom = Math.max(map.getZoom(), 14);
-          if (sidebarWidth > 0) {
-            const targetPoint = map.project([selectedPin.lat, selectedPin.lng], targetZoom);
-            // Shift center to the right by half the sidebar width so pin lands in visible area
-            const offsetPoint = L.point(targetPoint.x + sidebarWidth / 2, targetPoint.y);
-            const offsetLatLng = map.unproject(offsetPoint, targetZoom);
-            map.flyTo(offsetLatLng, targetZoom, { duration: 0.4 });
-          } else {
-            map.flyTo([selectedPin.lat, selectedPin.lng], targetZoom, { duration: 0.4 });
-          }
+        if (selectedPin && selectedPin.lat && selectedPin.lng && !isNaN(parseFloat(selectedPin.lat)) && !isNaN(parseFloat(selectedPin.lng))) {
+          try {
+            const sLat = parseFloat(selectedPin.lat);
+            const sLng = parseFloat(selectedPin.lng);
+            // Offset the center so the pin appears in the visible map area (left of sidebar)
+            const targetZoom = Math.max(map.getZoom(), 14);
+            if (sidebarWidth > 0) {
+              const targetPoint = map.project([sLat, sLng], targetZoom);
+              // Shift center to the right by half the sidebar width so pin lands in visible area
+              const offsetPoint = L.point(targetPoint.x + sidebarWidth / 2, targetPoint.y);
+              const offsetLatLng = map.unproject(offsetPoint, targetZoom);
+              map.flyTo(offsetLatLng, targetZoom, { duration: 0.4 });
+            } else {
+              map.flyTo([sLat, sLng], targetZoom, { duration: 0.4 });
+            }
+          } catch (e) { console.warn('MapView flyTo error:', e); }
         }
       }, [selectedPin, sidebarWidth]);
 
@@ -7705,6 +7774,8 @@
             unsubPins = MockFirebase.onPinsSnapshot(firestorePins => {
               // Filter out any pins that are pending deletion (prevents re-add flicker)
               const filtered = firestorePins.filter(p => !pendingDeletesRef.current.has(p.id));
+              // Auto-register any categories from pins that aren't in the dropdown yet
+              registerMissingCategories(filtered);
               setPins(filtered);
             });
             unsubCollections = MockFirebase.onCollectionsSnapshot(firestoreCols => {
