@@ -3233,9 +3233,43 @@
 
       // Parse plain pasted text into candidate places
       const parsePastedText = (text) => {
-        const skipPatterns = /^(introduction|getting there|getting around|how to get|tips|map|related|about|author|comment|share|conclusion|summary|faq|where to stay|where to eat|when to visit|final thoughts|more|other|the bottom line|pin this|you may also|read more|subscribe|newsletter|what to|why|the best|a guide|welcome|table of contents|contents|overview|highlights|navigation|menu|sidebar|footer|header|contact|resources|disclosure|disclaimer|affiliate|write a comment|cancel reply|leave a reply|save my name|planning a trip|are you booking|book your|use my|ps\s*[—–\-]|related posts|popular posts|recent posts|you might also|join our|sign up|follow us|connect with|advertisement)/i;
-        const junkContent = /\b(comment|reply|subscribe|booking|itinerary|newsletter|save my name|browser|affiliate|disclosure|cancel|write a|advertisement|sponsored)\b/i;
+        const skipPatterns = /^(introduction|getting there|getting around|how to get|tips|map|related|about|author|comment|share|conclusion|summary|faq|where to stay|where to eat|when to visit|final thoughts|more|other|the bottom line|pin this|you may also|read more|subscribe|newsletter|what to|why|the best|a guide|welcome|table of contents|contents|overview|highlights|navigation|menu|sidebar|footer|header|contact|resources|disclosure|disclaimer|affiliate|write a comment|cancel reply|leave a reply|save my name|planning a trip|are you booking|book your|use my|ps\s*[—–\-]|related posts|popular posts|recent posts|you might also|join our|sign up|follow us|connect with|advertisement|skip to|jump to|search|home|log in|sign in|register|my account|wishlist|cart|categories?|tags?|filed under|posted in|share this|print this|email this|save this|bookmark|more from|read next|up next|trending|recommended|sponsored|advertisement|made in \w+|top stories|latest|popular|features?|sections?|site map|terms|privacy|cookie|©|copyright|all rights reserved)/i;
+        const junkContent = /\b(comment|reply|subscribe|booking|itinerary|newsletter|save my name|browser|affiliate|disclosure|cancel|write a|advertisement|sponsored|click here|learn more|view all|all rights)\b/i;
         const articleTitleLike = /\b(guide to|itinerary|ultimate|top \d+|best of|things to do|where to|how to|planning|tips for)\b/i;
+        // Bylines / metadata lines that shouldn't be treated as place names
+        const bylinePattern = /^(by\s+[A-Z]|published|written by|updated|posted|story by|photograph(y|s) by|reporting by|edited by|words by)\b/i;
+        // Common single-word geography / tags that appear alone
+        const geographyOnly = /^(japan|usa|uk|europe|asia|africa|americas?|china|india|france|italy|spain|germany|mexico|brazil|canada|australia|tokyo|kyoto|osaka|paris|london|rome|nyc|new york|los angeles|chicago|miami|seattle|boston|dc|washington|tokyo|paris|coffee|food|travel|hotels?|restaurants?|bars?|cafes?|shops?|tours?|news|lifestyle|culture|features?|reviews?|drinks?|wine|spirits?)$/i;
+        const isDateLike = /^(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\s+\d/i;
+        // Image caption / alt-text detector — short phrases about visual content, no verbs, no periods
+        const altTextLike = (s) => {
+          if (!s) return false;
+          const t = s.trim();
+          if (/^(image|photo|picture|caption|credit|source|illustration|photograph|getty|courtesy|©|shutterstock|via)\s*[:—–\-]/i.test(t)) return true;
+          // Starts with camera/visual language
+          if (/^(view of|interior view|exterior view|a view|aerial view|close[- ]up|photo of|picture of|image of|a look at|close up of|overhead shot|inside|exterior of|interior of|(the )?facade)/i.test(t)) return true;
+          // Short descriptive fragments with no period and no sentence structure
+          if (t.length < 160 && !/[.!?]/.test(t)) {
+            // count linking words / verbs — alt text tends to lack these
+            const verbsAndLinks = /\b(is|are|was|were|has|have|had|says|said|offers|features|serves|includes|recommends|opened|closed|located|made|built|known|considered|called|found|opened|closed|brews|pours|specializes|boasts)\b/i;
+            if (!verbsAndLinks.test(t)) return true;
+          }
+          return false;
+        };
+        // Must contain at least one letter, can't be numbers/symbols only
+        const hasRealLetters = (s) => /[A-Za-z\u00C0-\u024F\u3000-\u9FFF]{2,}/.test(s);
+        const isLikelyPlaceName = (name) => {
+          if (!name) return false;
+          if (!hasRealLetters(name)) return false;
+          if (bylinePattern.test(name)) return false;
+          if (geographyOnly.test(name.trim())) return false;
+          if (isDateLike.test(name)) return false;
+          // Contains year in middle = likely byline ("Published on March 2, 2026")
+          if (/\b(19|20)\d{2}\b/.test(name)) return false;
+          // Contains "by" followed by capitalized name pattern
+          if (/\bby\s+[A-Z][a-z]+/.test(name)) return false;
+          return true;
+        };
 
         const clean = text.replace(/\r/g, '').trim();
         const lines = clean.split('\n').map(l => l.trim());
@@ -3252,11 +3286,13 @@
           if (junkContent.test(name)) continue;
           if (articleTitleLike.test(name)) continue;
           if (name.includes('?')) continue;
+          if (!isLikelyPlaceName(name)) continue;
           // Description: next non-empty line(s) until next numbered item or blank gap
+          // Prefer sentence-like paragraphs; skip image alt text.
           let desc = '';
           for (let j = i + 1; j < lines.length && j < i + 40; j++) {
             if (lines[j].match(/^\d{1,2}[\.\)\-–—:]\s+/)) break;
-            if (lines[j].length > 30 && !junkContent.test(lines[j])) {
+            if (lines[j].length > 30 && !junkContent.test(lines[j]) && !altTextLike(lines[j])) {
               desc = lines[j].substring(0, 300);
               break;
             }
@@ -3291,15 +3327,27 @@
           if (skipPatterns.test(candidate)) continue;
           if (junkContent.test(candidate)) continue;
           if (articleTitleLike.test(candidate)) continue;
+          if (!isLikelyPlaceName(candidate)) continue;
           const wc = candidate.split(/\s+/).length;
           if (wc > 8 || wc < 1) continue;
-          // Require description in same block OR next block
-          let desc = blockLines.slice(1).join(' ').trim();
-          if (desc.length < 30 && b + 1 < blocks.length) {
-            desc = blocks[b + 1].split('\n').map(l => l.trim()).filter(Boolean).join(' ').substring(0, 300);
+          // Require description in same block OR next block — skip image captions / alt text
+          // Walk through following lines and pick the first sentence-like paragraph
+          const candidateLines = [...blockLines.slice(1)];
+          if (b + 1 < blocks.length) candidateLines.push(...blocks[b + 1].split('\n').map(l => l.trim()).filter(Boolean));
+          let desc = '';
+          for (const line of candidateLines) {
+            if (line.length < 30) continue;
+            if (junkContent.test(line)) continue;
+            if (altTextLike(line)) continue;
+            desc = line.substring(0, 300);
+            break;
+          }
+          // Fallback: if no sentence-like line, accept the longest non-alt line
+          if (!desc) {
+            const nonAlt = candidateLines.filter(l => l.length >= 30 && !junkContent.test(l) && !altTextLike(l));
+            if (nonAlt.length) desc = nonAlt.sort((a, b) => b.length - a.length)[0].substring(0, 300);
           }
           if (desc.length < 30) continue; // require real description to avoid nav/junk
-          desc = desc.substring(0, 300);
           const key = candidate.toLowerCase();
           if (seenNames.has(key)) continue;
           seenNames.add(key);
