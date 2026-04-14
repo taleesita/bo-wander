@@ -3336,14 +3336,27 @@
                 const uniqueHeadings = [...new Set(placeHeadings)];
 
                 if (uniqueHeadings.length >= 3) {
+                  // Junk patterns in descriptions (Instagram embeds, social sharing, etc.)
+                  const junkDescPattern = /view this post on instagram|a post shared by|click to share|pin it|tweet this|follow us|subscribe|read more|affiliate|disclosure/i;
+
                   // This looks like a list article! Extract descriptions for each place
                   const places = uniqueHeadings.map(name => {
                     const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                    const descRegex = new RegExp(escapedName + '[\\s\\S]*?<\\/h[23]>[\\s]*(?:<[^>]*>\\s*)*<p[^>]*>([\\s\\S]*?)<\\/p>', 'i');
-                    const descMatch = html.match(descRegex);
+                    // Find the section after this heading — grab all <p> tags until the next heading
+                    const sectionRegex = new RegExp(escapedName + '[\\s\\S]*?<\\/h[23]>([\\s\\S]*?)(?=<h[23]|$)', 'i');
+                    const sectionMatch = html.match(sectionRegex);
                     let desc = '';
-                    if (descMatch) {
-                      desc = htmlDecode(descMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')).trim().substring(0, 300);
+                    if (sectionMatch) {
+                      // Extract all paragraphs from the section
+                      const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+                      let pMatch;
+                      while ((pMatch = pRegex.exec(sectionMatch[1])) !== null) {
+                        const pText = htmlDecode(pMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')).trim();
+                        if (pText.length > 20 && !junkDescPattern.test(pText)) {
+                          desc = pText.substring(0, 300);
+                          break;
+                        }
+                      }
                     }
                     return { name, description: desc, checked: true, loading: false, placeData: null };
                   });
@@ -3613,11 +3626,11 @@
                               )}
                             </div>
                             <button
-                              onClick={(e) => { e.stopPropagation(); setExpandedIdx(isExpanded ? null : idx); }}
+                              onClick={(e) => { e.stopPropagation(); setBulkExpandedIdx(isExpanded ? null : idx); }}
                               className="text-xs text-gray-400 hover:text-blue-500 px-1 mt-0.5 flex-shrink-0"
                               title="Edit details"
                             >
-                              {isExpanded ? '▲' : '✏️'}
+                              {isExpanded ? '▲' : <span style={{ display: 'inline-block', transform: 'scaleX(-1)' }}>✏️</span>}
                             </button>
                           </div>
                           {isExpanded && (
@@ -8426,7 +8439,7 @@
             headers: {
               'Content-Type': 'application/json',
               'X-Goog-Api-Key': apiKey,
-              'X-Goog-FieldMask': 'places.displayName,places.rating,places.userRatingCount,places.priceLevel,places.websiteUri,places.googleMapsUri,places.formattedAddress,places.types'
+              'X-Goog-FieldMask': 'places.displayName,places.rating,places.userRatingCount,places.priceLevel,places.websiteUri,places.googleMapsUri,places.formattedAddress,places.types,places.regularOpeningHours'
             },
             body: JSON.stringify({
               textQuery: searchQuery,
@@ -8470,6 +8483,15 @@
             // Use the Google-provided address if we don't have one or ours is messy
             if (place.formattedAddress && (!pinData.address || pinData.address.length > 100)) {
               updates.address = place.formattedAddress;
+            }
+            // Parse opening hours if we don't already have them
+            if (place.regularOpeningHours?.weekdayDescriptions && (!pinData.opening_hours || Object.keys(pinData.opening_hours).length === 0)) {
+              const hours = {};
+              place.regularOpeningHours.weekdayDescriptions.forEach(desc => {
+                const m = desc.match(/^(\w+):\s*(.+)/);
+                if (m) hours[m[1].toLowerCase()] = m[2];
+              });
+              if (Object.keys(hours).length > 0) updates.opening_hours = hours;
             }
           }
         } catch (e) {
