@@ -3274,6 +3274,24 @@
         const clean = text.replace(/\r/g, '').trim();
         const lines = clean.split('\n').map(l => l.trim());
 
+        // Build a set of caption line indices: a short descriptive line followed (within 3 lines)
+        // by a "Credit:", "Photo by", "Courtesy", "©", "Source:" line — that preceding line is a caption.
+        const creditLine = /^(credit|photo(graph)?(s)?\s+by|courtesy|image by|©|source|via|getty|shutterstock)\b/i;
+        const captionIdx = new Set();
+        for (let i = 0; i < lines.length; i++) {
+          if (creditLine.test(lines[i])) {
+            // Walk backwards up to 3 non-empty lines; mark ones that look caption-y
+            let marked = 0;
+            for (let j = i - 1; j >= Math.max(0, i - 4) && marked < 2; j--) {
+              if (!lines[j]) continue;
+              if (lines[j].length < 200) { captionIdx.add(j); marked++; }
+            }
+            captionIdx.add(i); // the credit line itself
+          }
+        }
+        // Visual-language keywords common in photo captions
+        const visualLang = /\b(entryway|storefront|facade|interior|exterior|signage|sign outside|pour over|pouring|barista|shelves?|counter|seating|view of|pictured|shown above|shown below|sitting at|holding|posing|wearing|standing at|leaning|pictured here|in the photo)\b/i;
+
         // Strategy 1: numbered list ("1. Name", "1) Name", "1 - Name")
         const numbered = [];
         const usedIdx = new Set();
@@ -3292,7 +3310,8 @@
           let desc = '';
           for (let j = i + 1; j < lines.length && j < i + 40; j++) {
             if (lines[j].match(/^\d{1,2}[\.\)\-–—:]\s+/)) break;
-            if (lines[j].length > 30 && !junkContent.test(lines[j]) && !altTextLike(lines[j])) {
+            if (captionIdx.has(j)) continue;
+            if (lines[j].length > 30 && !junkContent.test(lines[j]) && !altTextLike(lines[j]) && !visualLang.test(lines[j])) {
               desc = lines[j].substring(0, 300);
               break;
             }
@@ -3330,22 +3349,31 @@
           if (!isLikelyPlaceName(candidate)) continue;
           const wc = candidate.split(/\s+/).length;
           if (wc > 8 || wc < 1) continue;
-          // Require description in same block OR next block — skip image captions / alt text
-          // Walk through following lines and pick the first sentence-like paragraph
+          // Require description in same block OR NEXT FEW blocks — skip photo captions / alt text.
+          // Look ahead up to 3 blocks in case the first one is a caption+credit pair.
           const candidateLines = [...blockLines.slice(1)];
-          if (b + 1 < blocks.length) candidateLines.push(...blocks[b + 1].split('\n').map(l => l.trim()).filter(Boolean));
+          for (let nb = 1; nb <= 3 && b + nb < blocks.length; nb++) {
+            candidateLines.push(...blocks[b + nb].split('\n').map(l => l.trim()).filter(Boolean));
+          }
+          const isCaption = (line, allLines, idx) => {
+            // A caption is a short line followed (within 2 lines) by a credit attribution
+            if (line.length > 200) return false;
+            for (let k = idx + 1; k < Math.min(allLines.length, idx + 3); k++) {
+              if (creditLine.test(allLines[k])) return true;
+            }
+            return false;
+          };
           let desc = '';
-          for (const line of candidateLines) {
+          for (let li = 0; li < candidateLines.length; li++) {
+            const line = candidateLines[li];
             if (line.length < 30) continue;
             if (junkContent.test(line)) continue;
+            if (creditLine.test(line)) continue;
             if (altTextLike(line)) continue;
+            if (visualLang.test(line)) continue;
+            if (isCaption(line, candidateLines, li)) continue;
             desc = line.substring(0, 300);
             break;
-          }
-          // Fallback: if no sentence-like line, accept the longest non-alt line
-          if (!desc) {
-            const nonAlt = candidateLines.filter(l => l.length >= 30 && !junkContent.test(l) && !altTextLike(l));
-            if (nonAlt.length) desc = nonAlt.sort((a, b) => b.length - a.length)[0].substring(0, 300);
           }
           if (desc.length < 30) continue; // require real description to avoid nav/junk
           const key = candidate.toLowerCase();
