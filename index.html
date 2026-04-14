@@ -3414,7 +3414,19 @@
         setBulkPlaces(parsed);
         setBulkSource({ source_name: srcName, source_url: srcUrl });
         setPasteMode(false);
-        kickOffBulkLookups(parsed);
+        // Try to infer a location hint from the URL (e.g. "tokyo-coffee", "best-bars-paris")
+        let locationHint = '';
+        if (srcUrl) {
+          const hintMatch = srcUrl.toLowerCase().match(/\b(tokyo|kyoto|osaka|paris|london|rome|nyc|new[- ]york|los[- ]angeles|chicago|seattle|boston|miami|austin|berlin|barcelona|madrid|lisbon|amsterdam|copenhagen|stockholm|oslo|dublin|sydney|melbourne|hong[- ]kong|singapore|bangkok|seoul|taipei|mexico[- ]city|buenos[- ]aires|rio|sao[- ]paulo|bali|japan|france|italy|spain|germany|thailand|vietnam|korea)\b/);
+          if (hintMatch) locationHint = hintMatch[1].replace(/[- ]/g, ' ');
+        }
+        // Also scan first few lines of pasted text for a location
+        if (!locationHint) {
+          const firstPart = text.substring(0, 2000).toLowerCase();
+          const hintMatch = firstPart.match(/\b(tokyo|kyoto|osaka|paris|london|rome|new york|los angeles|chicago|seattle|boston|miami|berlin|barcelona|madrid|amsterdam|sydney|melbourne|hong kong|singapore|bangkok|seoul|taipei|japan|france|italy|spain|germany|thailand)\b/);
+          if (hintMatch) locationHint = hintMatch[1];
+        }
+        kickOffBulkLookups(parsed, locationHint);
       };
 
       const handleFetch = async () => {
@@ -3771,9 +3783,13 @@
                     opening_hours: {},
                   };
                   if (place.regularOpeningHours?.weekdayDescriptions) {
+                    const dayAbbrev = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun' };
                     place.regularOpeningHours.weekdayDescriptions.forEach(desc => {
                       const match = desc.match(/^(\w+):\s*(.+)/);
-                      if (match) placeData.opening_hours[match[1].toLowerCase()] = match[2];
+                      if (match) {
+                        const key = dayAbbrev[match[1].toLowerCase()] || match[1].toLowerCase().substring(0, 3);
+                        placeData.opening_hours[key] = match[2].trim();
+                      }
                     });
                   }
                 }
@@ -3921,9 +3937,105 @@
                                   placeholder="Add notes..."
                                 />
                               </div>
-                              {place.placeData?.address && (
-                                <p className="text-xs text-gray-400">📍 {place.placeData.address}</p>
-                              )}
+                              <div>
+                                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Location</label>
+                                {place.placeData?.address ? (
+                                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">📍 {place.placeData.address}</p>
+                                ) : (
+                                  <p className="text-xs text-orange-500 mb-1">No location set</p>
+                                )}
+                                <div className="flex gap-1">
+                                  <input
+                                    type="text"
+                                    value={place._searchOverride || ''}
+                                    onChange={e => setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, _searchOverride: e.target.value } : p))}
+                                    placeholder="Try a better search (e.g. 'Coffee County Tokyo Shibuya')"
+                                    className="flex-1 min-w-0 px-2 py-1.5 border rounded text-xs dark:bg-slate-800 dark:border-slate-600 dark:text-white"
+                                    onKeyDown={async (e) => {
+                                      if (e.key !== 'Enter') return;
+                                      e.preventDefault();
+                                      const query = (place._searchOverride || '').trim() || place.name;
+                                      const apiKey = getGoogleApiKey();
+                                      if (!apiKey) return;
+                                      setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, loading: true } : p));
+                                      try {
+                                        const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+                                          method: 'POST',
+                                          headers: {
+                                            'Content-Type': 'application/json',
+                                            'X-Goog-Api-Key': apiKey,
+                                            'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating'
+                                          },
+                                          body: JSON.stringify({ textQuery: query, maxResultCount: 1 })
+                                        });
+                                        const pData = await resp.json();
+                                        const gp = pData.places?.[0];
+                                        if (gp) {
+                                          setBulkPlaces(prev => prev.map((p, i) => i === idx ? {
+                                            ...p, loading: false,
+                                            placeData: {
+                                              lat: gp.location?.latitude || 0,
+                                              lng: gp.location?.longitude || 0,
+                                              address: gp.formattedAddress || '',
+                                              rating: gp.rating || null,
+                                              types: gp.types || [],
+                                              displayName: gp.placeData?.displayName || gp.displayName?.text || p.name,
+                                            },
+                                            _searchOverride: '',
+                                          } : p));
+                                        } else {
+                                          setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, loading: false, placeData: null } : p));
+                                        }
+                                      } catch {
+                                        setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, loading: false } : p));
+                                      }
+                                    }}
+                                  />
+                                  <button
+                                    onClick={async () => {
+                                      const query = (place._searchOverride || '').trim() || place.name;
+                                      const apiKey = getGoogleApiKey();
+                                      if (!apiKey) return;
+                                      setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, loading: true } : p));
+                                      try {
+                                        const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+                                          method: 'POST',
+                                          headers: {
+                                            'Content-Type': 'application/json',
+                                            'X-Goog-Api-Key': apiKey,
+                                            'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating'
+                                          },
+                                          body: JSON.stringify({ textQuery: query, maxResultCount: 1 })
+                                        });
+                                        const pData = await resp.json();
+                                        const gp = pData.places?.[0];
+                                        if (gp) {
+                                          setBulkPlaces(prev => prev.map((p, i) => i === idx ? {
+                                            ...p, loading: false,
+                                            placeData: {
+                                              lat: gp.location?.latitude || 0,
+                                              lng: gp.location?.longitude || 0,
+                                              address: gp.formattedAddress || '',
+                                              rating: gp.rating || null,
+                                              types: gp.types || [],
+                                              displayName: gp.displayName?.text || p.name,
+                                            },
+                                            _searchOverride: '',
+                                          } : p));
+                                        } else {
+                                          setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, loading: false, placeData: null } : p));
+                                        }
+                                      } catch {
+                                        setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, loading: false } : p));
+                                      }
+                                    }}
+                                    disabled={place.loading}
+                                    className="px-2 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex-shrink-0"
+                                  >
+                                    {place.loading ? '...' : '🔍'}
+                                  </button>
+                                </div>
+                              </div>
                             </div>
                           )}
                         </div>
@@ -8783,9 +8895,13 @@
             // Parse opening hours if we don't already have them
             if (place.regularOpeningHours?.weekdayDescriptions && (!pinData.opening_hours || Object.keys(pinData.opening_hours).length === 0)) {
               const hours = {};
+              const dayAbbrev = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun' };
               place.regularOpeningHours.weekdayDescriptions.forEach(desc => {
                 const m = desc.match(/^(\w+):\s*(.+)/);
-                if (m) hours[m[1].toLowerCase()] = m[2];
+                if (m) {
+                  const key = dayAbbrev[m[1].toLowerCase()] || m[1].toLowerCase().substring(0, 3);
+                  hours[key] = m[2].trim();
+                }
               });
               if (Object.keys(hours).length > 0) updates.opening_hours = hours;
             }
