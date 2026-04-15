@@ -3713,6 +3713,50 @@
         if (nameSearchTimerRef.current) clearTimeout(nameSearchTimerRef.current);
       }, [bulkExpandedIdx]);
 
+      // Infer a location hint (city/region) from URL + article text, used to bias Google Places lookups.
+      // Handles patterns like exploreasheville.com/article/best-coffee-shops-asheville (→ "asheville"),
+      // domains like "exploreXXX.com", URL slug terminal segments, and international city lists.
+      const inferLocationHint = (url, text) => {
+        const knownCities = /\b(tokyo|kyoto|osaka|paris|london|rome|milan|florence|venice|nyc|new[- ]york|brooklyn|manhattan|queens|bronx|los[- ]angeles|la|san[- ]francisco|sf|chicago|seattle|portland|boston|philadelphia|philly|miami|austin|dallas|houston|atlanta|nashville|asheville|charlotte|raleigh|savannah|new[- ]orleans|nola|denver|phoenix|san[- ]diego|washington|dc|berlin|munich|hamburg|barcelona|madrid|seville|lisbon|porto|amsterdam|rotterdam|copenhagen|stockholm|oslo|helsinki|reykjavik|dublin|edinburgh|glasgow|sydney|melbourne|brisbane|perth|auckland|wellington|hong[- ]kong|singapore|bangkok|chiang[- ]mai|phuket|bali|ubud|seoul|busan|taipei|kyoto|sapporo|okinawa|mexico[- ]city|oaxaca|cancun|tulum|buenos[- ]aires|rio|sao[- ]paulo|lima|cusco|cartagena|medellin|istanbul|dubai|abu[- ]dhabi|marrakech|fez|cape[- ]town|johannesburg|nairobi|japan|france|italy|spain|portugal|germany|netherlands|thailand|vietnam|indonesia|philippines|korea|morocco|greece|turkey|peru|colombia|brazil|argentina|iceland|ireland|scotland|norway|sweden|denmark|finland)\b/i;
+        let hint = '';
+        if (url) {
+          const u = url.toLowerCase();
+          // Known city anywhere in URL
+          const m = u.match(knownCities);
+          if (m) hint = m[1];
+          // Domain pattern "exploreCITY.com" / "visitCITY.com" / "CITYtourism.com"
+          if (!hint) {
+            const dm = u.match(/\/\/(?:www\.)?(?:explore|visit|go|discover|love)([a-z]{4,})\./);
+            if (dm) hint = dm[1];
+          }
+          // Last dash-word of final slug if it's a proper noun-ish token (4+ letters, all alpha)
+          if (!hint) {
+            try {
+              const path = new URL(url).pathname.toLowerCase();
+              const last = path.split('/').filter(Boolean).pop() || '';
+              const parts = last.replace(/\.[a-z]+$/, '').split('-').filter(Boolean);
+              const tail = parts[parts.length - 1] || '';
+              if (tail.length >= 4 && /^[a-z]+$/.test(tail) && !/^(guide|best|tips|list|shops|bars|food|cafes|coffee|restaurants|things|tour|tours|place|places|spots|review|reviews|2024|2025|2026)$/.test(tail)) {
+                hint = tail;
+              }
+            } catch {}
+          }
+        }
+        if (!hint && text) {
+          const m = text.substring(0, 2000).toLowerCase().match(knownCities);
+          if (m) hint = m[1];
+        }
+        return hint.replace(/[- ]+/g, ' ').trim();
+      };
+
+      // Strip photo-credit suffixes that sometimes get appended to headings ("Luminosa / Photo: X")
+      const stripPhotoCredit = (name) => {
+        if (!name) return name;
+        return name.replace(/\s*[\/|,]\s*(photo(graph)?s?|credit|image|courtesy|pictured|©)\s*[:—–\-].*$/i, '')
+                   .replace(/\s*\|\s*photo\s+by\s+.*$/i, '')
+                   .trim();
+      };
+
       // Kick off Google Places background lookups for a set of bulk places
       const kickOffBulkLookups = (places, locationHint = '') => {
         const apiKey = getGoogleApiKey();
@@ -3874,10 +3918,28 @@
         // (bullets, Photo:, Credit:), then collect the first substantial paragraph as the description.
         {
           const guideStyle = [];
+          // A "heading line" is the last non-junk line of a block — this handles both:
+          //   single-line blocks ("Dashi Okume Azabudai Hills\n")
+          //   multi-line blocks where preceding lines are section headers / "Read more" / "Share"
+          //   ("Read more\nYagenbori" or "Speciality stores\nDashi Okume Azabudai Hills")
+          const headingJunk = /^(read more|share|written by|digital editor|time out|speciality stores|one-stop shops|more great|popular on|back to top|advertisement|sponsored)\b/i;
           for (let b = 0; b < blocks.length - 1; b++) {
             const blockLines = blocks[b].split('\n').map(l => l.trim()).filter(Boolean);
-            if (blockLines.length !== 1) continue; // must be a single-line heading block
-            let candidate = blockLines[0].replace(/^\d{1,2}[\.\)\-–—:]\s*/, '').trim();
+            if (!blockLines.length) continue;
+            // Walk from end backwards to find first non-junk line as heading candidate
+            let headingLine = '';
+            for (let i = blockLines.length - 1; i >= 0; i--) {
+              const ln = blockLines[i];
+              if (!ln) continue;
+              if (headingJunk.test(ln)) continue;
+              // Skip trailing bullet lines (* Shopping) and Photo: lines that sometimes appear at block tails
+              if (/^[\*•·\-]\s+/.test(ln)) continue;
+              if (/^photo\s*:/i.test(ln)) continue;
+              headingLine = ln;
+              break;
+            }
+            if (!headingLine) continue;
+            let candidate = headingLine.replace(/^\d{1,2}[\.\)\-–—:]\s*/, '').trim();
             candidate = candidate.replace(/^[•·\-\*]\s+/, '').trim();
             candidate = candidate.replace(/^_+|_+$/g, '').trim(); // strip markdown underscores
             if (candidate.length < 3 || candidate.length > 80) continue;
@@ -4015,22 +4077,17 @@
         } catch {
           srcUrl = '';
         }
-        setBulkPlaces(parsed);
+        // Strip photo-credit suffixes from names ("Luminosa / Photo: Andrew Cebulka" -> "Luminosa")
+        const cleanedParsed = parsed.map(p => ({
+          ...p,
+          name: p.name.replace(/\s*[\/|]\s*(photo(graph)?s?|credit|image|courtesy)\s*[:—–\-].*$/i, '').trim()
+        })).filter(p => p.name.length >= 2);
+        setBulkPlaces(cleanedParsed);
         setBulkSource({ source_name: srcName, source_url: srcUrl });
         setPasteMode(false);
-        // Try to infer a location hint from the URL (e.g. "tokyo-coffee", "best-bars-paris")
-        let locationHint = '';
-        if (srcUrl) {
-          const hintMatch = srcUrl.toLowerCase().match(/\b(tokyo|kyoto|osaka|paris|london|rome|nyc|new[- ]york|los[- ]angeles|chicago|seattle|boston|miami|austin|berlin|barcelona|madrid|lisbon|amsterdam|copenhagen|stockholm|oslo|dublin|sydney|melbourne|hong[- ]kong|singapore|bangkok|seoul|taipei|mexico[- ]city|buenos[- ]aires|rio|sao[- ]paulo|bali|japan|france|italy|spain|germany|thailand|vietnam|korea)\b/);
-          if (hintMatch) locationHint = hintMatch[1].replace(/[- ]/g, ' ');
-        }
-        // Also scan first few lines of pasted text for a location
-        if (!locationHint) {
-          const firstPart = text.substring(0, 2000).toLowerCase();
-          const hintMatch = firstPart.match(/\b(tokyo|kyoto|osaka|paris|london|rome|new york|los angeles|chicago|seattle|boston|miami|berlin|barcelona|madrid|amsterdam|sydney|melbourne|hong kong|singapore|bangkok|seoul|taipei|japan|france|italy|spain|germany|thailand)\b/);
-          if (hintMatch) locationHint = hintMatch[1];
-        }
-        kickOffBulkLookups(parsed, locationHint);
+        // Infer a location hint: URL slug city, domain, known city list, then text
+        const locationHint = inferLocationHint(srcUrl, text);
+        kickOffBulkLookups(cleanedParsed, locationHint);
       };
 
       const handleFetch = async () => {
@@ -4136,10 +4193,13 @@
                 const t = html.match(/<title[^>]*>([^<]+)<\/title>/i);
                 return t ? htmlDecode(t[1]) : '';
               })();
-              // Try to extract a location hint like "Tokyo Japan" from the title
+              // Location hint — check URL (domain, slug) + title + body for city
               const locationHint = (() => {
-                const m = earlyTitle.match(/\b(?:in|of|to|around|near)\s+([A-Z][^|–—\-\n]{2,40})/i);
-                return m ? m[1].trim() : '';
+                // Prefer title "in X" pattern if present (most specific)
+                const titleMatch = earlyTitle.match(/\b(?:in|of|to|around|near)\s+([A-Z][^|–—\-\n]{2,40})/i);
+                if (titleMatch) return titleMatch[1].trim();
+                // Fall back to URL/body helper
+                return inferLocationHint(url, earlyTitle + '\n' + html.replace(/<[^>]+>/g, ' ').substring(0, 3000));
               })();
 
               // Map known domains to proper source names (moved here so article detection can use it)
@@ -4171,6 +4231,7 @@
                 while ((hMatch = headingRegex.exec(articleHtml)) !== null) {
                   let text = htmlDecode(hMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')).trim();
                   text = text.replace(/^[\s#]*\d{1,2}[\.\)\-–—:\s]+\s*/, '').trim();
+                  text = stripPhotoCredit(text);
                   if (text) rawHeadings.push(text);
                 }
 
@@ -4179,13 +4240,21 @@
                 const junkContent = /\b(comment|reply|subscribe|booking|itinerary|newsletter|save my name|browser|affiliate|disclosure|cancel|write a)\b/i;
                 const articleTitleLike = /\b(guide to|itinerary|ultimate|top \d+|best of|things to do|where to|how to|planning|tips for)\b/i;
 
+                // CTAs / nav / related-article titles commonly pulled from sidebars
+                const ctaLike = /^(plan your trip|things to do|places to (eat|stay|see|go|visit)|where to (eat|stay|go|shop)|our story|sign up|get the newsletter|learn more|view (all|map)|see more|explore more|latest articles|you might (also|like)|related articles?|popular articles?|featured|trending|from our partners|sponsored|more stories|browse|discover|book now|reserve|get tickets|download|get the guide|read more|about us|contact us)$/i;
+                // Obvious cross-article contamination (other city refs, ad/corp names)
+                const looksLikeOtherArticle = /\b(nyc tour|tour guide|book exchange|locks?\s*&\s*alarm|mobile audio|upper east side|farewell|summit one)\b/i;
                 const placeHeadings = rawHeadings.filter(h => {
                   if (h.length < 3 || h.length > 60) return false;
                   if (skipPatterns.test(h)) return false;
                   if (junkContent.test(h)) return false;
                   if (articleTitleLike.test(h)) return false;
+                  if (ctaLike.test(h)) return false;
+                  if (looksLikeOtherArticle.test(h)) return false;
                   if (/^\d+$/.test(h)) return false;
                   if (h.includes('©') || h.includes('?')) return false;
+                  // Reject headings that are mostly ALL-CAPS nav items
+                  if (h === h.toUpperCase() && h.split(/\s+/).length <= 3 && /^[A-Z\s&]+$/.test(h)) return false;
                   // Skip if it looks like a full sentence (too many words)
                   if (h.split(/\s+/).length > 8) return false;
                   // Skip if it exactly matches or closely matches the page title
@@ -8409,10 +8478,43 @@
     // ---- StartingPointPicker ----
     const StartingPointPicker = ({ pins, currentPoint, onSelect, onClose, isDarkMode }) => {
       const [search, setSearch] = useState('');
+      const [addressResults, setAddressResults] = useState([]);
+      const [addrLoading, setAddrLoading] = useState(false);
+      const timerRef = useRef(null);
+
       const hotelPins = pins.filter(p => p.category === 'hotel' || p.emoji === '🏨');
-      const filtered = search
+      const pinMatches = search
         ? pins.filter(p => p.name.toLowerCase().includes(search.toLowerCase()))
         : hotelPins;
+
+      // Debounced Photon lookup for any place/address (matches AddressAutocomplete)
+      useEffect(() => {
+        clearTimeout(timerRef.current);
+        if (search.length < 3) { setAddressResults([]); setAddrLoading(false); return; }
+        setAddrLoading(true);
+        timerRef.current = setTimeout(() => {
+          fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(search)}&limit=5`)
+            .then(r => r.json())
+            .then(data => {
+              const results = (data.features || []).map(f => {
+                const p = f.properties || {};
+                const geo = f.geometry?.coordinates || [];
+                const parts = [p.housenumber, p.street].filter(Boolean).join(' ');
+                const locality = [p.city || p.town || p.village, p.state, p.country].filter(Boolean).join(', ');
+                return {
+                  label: p.name || [parts, locality].filter(Boolean).join(', ') || search,
+                  address: [p.name, parts, locality].filter(Boolean).join(', '),
+                  lat: geo[1],
+                  lng: geo[0],
+                };
+              }).filter(r => r.lat && r.lng);
+              setAddressResults(results);
+              setAddrLoading(false);
+            })
+            .catch(() => { setAddrLoading(false); });
+        }, 300);
+        return () => clearTimeout(timerRef.current);
+      }, [search]);
 
       return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ zIndex: 10001 }} onClick={onClose}>
@@ -8426,21 +8528,56 @@
                 type="text"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search all pins..."
+                placeholder="Search pins or any address..."
                 className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
               />
-              <div className="max-h-60 overflow-y-auto space-y-1">
-                {filtered.length === 0 && <p className="text-sm text-gray-400 text-center py-4">No pins found</p>}
-                {filtered.map(pin => (
-                  <button
-                    key={pin.id}
-                    onClick={() => { onSelect({ pin_id: pin.id, label: pin.name, lat: pin.lat, lng: pin.lng, emoji: pin.emoji }); onClose(); }}
-                    className={`w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-slate-700 ${currentPoint?.pin_id === pin.id ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-400' : ''}`}
-                  >
-                    <span>{pin.emoji || '📌'}</span>
-                    <span className="truncate dark:text-white">{pin.name}</span>
-                  </button>
-                ))}
+              <div className="max-h-80 overflow-y-auto space-y-1">
+                {/* Pin matches */}
+                {pinMatches.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide px-1 pt-1 pb-0.5">Your pins</p>
+                    {pinMatches.map(pin => (
+                      <button
+                        key={pin.id}
+                        onClick={() => { onSelect({ pin_id: pin.id, label: pin.name, lat: pin.lat, lng: pin.lng, emoji: pin.emoji }); onClose(); }}
+                        className={`w-full text-left px-3 py-2 rounded-lg text-sm flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-slate-700 ${currentPoint?.pin_id === pin.id ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-400' : ''}`}
+                      >
+                        <span>{pin.emoji || '📌'}</span>
+                        <span className="truncate dark:text-white">{pin.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Address results */}
+                {search.length >= 3 && (
+                  <div>
+                    <p className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide px-1 pt-2 pb-0.5">Places & addresses</p>
+                    {addrLoading && <p className="text-xs text-gray-400 text-center py-2">Searching…</p>}
+                    {!addrLoading && addressResults.length === 0 && pinMatches.length === 0 && (
+                      <p className="text-sm text-gray-400 text-center py-4">No results</p>
+                    )}
+                    {addressResults.map((r, i) => (
+                      <button
+                        key={i}
+                        onClick={() => { onSelect({ pin_id: null, label: r.label, address: r.address, lat: r.lat, lng: r.lng, emoji: '📍' }); onClose(); }}
+                        className="w-full text-left px-3 py-2 rounded-lg text-sm flex items-start gap-2 hover:bg-gray-100 dark:hover:bg-slate-700"
+                      >
+                        <span>📍</span>
+                        <span className="flex-1 min-w-0">
+                          <span className="block font-medium truncate dark:text-white">{r.label}</span>
+                          {r.address && r.address !== r.label && (
+                            <span className="block text-xs text-gray-500 dark:text-gray-400 truncate">{r.address}</span>
+                          )}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {!search && pinMatches.length === 0 && (
+                  <p className="text-sm text-gray-400 text-center py-4">Type to search pins or any address</p>
+                )}
               </div>
             </div>
           </div>
@@ -9905,8 +10042,8 @@
       // Collection view (map + list)
       return (
         <div className={`${darkMode ? 'dark' : ''} h-screen w-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-white overflow-hidden`}>
-          {/* Small map-name chip (desktop only, below top bar, subtle) */}
-          {!isMobile && (
+          {/* Small map-name chip (desktop only, below top bar, subtle) — hide when list view open so it doesn't overlap filters */}
+          {!isMobile && !showList && (
             <div
               className="absolute left-4 pointer-events-none text-xs font-semibold text-gray-700 dark:text-gray-200 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm rounded-full shadow px-3 py-1 max-w-[200px] truncate"
               style={{ top: 72, zIndex: 9000 }}
