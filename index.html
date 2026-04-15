@@ -1242,10 +1242,8 @@
       const persistCustom = (next) => { setCustomSources(next); localStorage.setItem('boWanderCustomSources', JSON.stringify(next)); };
 
       return (
-        <div className="border-t dark:border-slate-700 pt-3">
-          <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-2">
-            Sources <span className="text-gray-400 font-normal">(global — applies to all maps)</span>
-          </label>
+        <div className="pt-1">
+          <p className="text-xs text-gray-400 mb-2">Global — applies to all maps.</p>
           <div className="space-y-1 max-h-48 overflow-y-auto">
             {allKnown.map(src => {
               const isHidden = hiddenSources.includes(src);
@@ -1351,10 +1349,10 @@
       const [yr, mo] = usage.month.split('-').map(Number);
       const prettyMonth = new Date(yr, mo - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
       return (
-        <div className="border-t dark:border-slate-700 pt-3">
+        <div className="pt-1">
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-medium text-gray-600 dark:text-gray-400">
-              API Usage <span className="text-gray-400 font-normal">({prettyMonth})</span>
+            <label className="text-xs text-gray-500 dark:text-gray-400">
+              {prettyMonth}
             </label>
             <button
               onClick={() => {
@@ -2005,13 +2003,23 @@
       const [draft, setDraft] = useState(value);
       const textareaRef = useRef(null);
 
+      // Auto-grow textarea helper (declared here so hook below can reference)
+      const autoGrow = (el) => {
+        if (!el) return;
+        el.style.height = 'auto';
+        el.style.height = Math.min(Math.max(el.scrollHeight, 80), 480) + 'px';
+      };
+
       useEffect(() => { setDraft(value); }, [value]);
       useEffect(() => {
         if (editing && textareaRef.current) {
           textareaRef.current.focus();
           textareaRef.current.selectionStart = textareaRef.current.value.length;
+          autoGrow(textareaRef.current);
         }
       }, [editing]);
+      // Re-grow whenever draft changes while editing (must be declared before any conditional return)
+      useEffect(() => { if (editing) autoGrow(textareaRef.current); }, [draft, editing]);
 
       const handleSave = () => {
         onSave(draft);
@@ -2041,13 +2049,6 @@
         );
       }
 
-      // Auto-grow textarea to fit content
-      const autoGrow = (el) => {
-        if (!el) return;
-        el.style.height = 'auto';
-        el.style.height = Math.min(Math.max(el.scrollHeight, 80), 480) + 'px';
-      };
-      useEffect(() => { if (editing) autoGrow(textareaRef.current); }, [editing, draft]);
       return (
         <div className={`space-y-2 ${showBorder ? 'border-t dark:border-slate-700 pt-2' : ''}`}>
           <label className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</label>
@@ -6760,11 +6761,13 @@
       useEffect(() => {
         if (!mapRef.current || mapInstanceRef.current) return;
         const map = L.map(mapRef.current, {
-          zoomControl: true,
+          zoomControl: false,
           attributionControl: true,
           zoomAnimation: true,
           markerZoomAnimation: true
         }).setView([35.68, 139.69], 12);
+        // Place zoom controls on the right (bottom) to avoid colliding with the floating back/search chips
+        L.control.zoom({ position: 'bottomright' }).addTo(map);
         mapInstanceRef.current = map;
 
         // Report map center for search biasing
@@ -7830,36 +7833,53 @@
             <div className="bg-white dark:bg-slate-800 border-b dark:border-slate-700 px-6 py-4 shadow-inner" style={{ zIndex: 9000 }}>
               <div className="max-w-xl">
                 <h3 className="font-semibold text-sm mb-3 text-gray-700 dark:text-gray-300">Settings</h3>
-                <div className="space-y-3">
-                  <div>
-                    <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-1">
-                      Google Places API Key <span className="text-gray-400 font-normal">(for auto-fetching ratings)</span>
-                    </label>
-                    <div className="flex gap-2">
-                      <input
-                        type="password"
-                        value={apiKeyInput}
-                        onChange={(e) => setApiKeyInput(e.target.value)}
-                        placeholder="AIza..."
-                        className="flex-1 px-3 py-1.5 text-sm border rounded-lg bg-white dark:bg-slate-700 dark:border-slate-600 dark:text-white"
-                      />
-                      <button
-                        onClick={() => { setGoogleApiKey(apiKeyInput); setShowSettings(false); }}
-                        className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition"
-                      >
-                        Save
-                      </button>
+                <div className="space-y-2">
+                  <details className="group">
+                    <summary className="flex items-center justify-between cursor-pointer py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400">
+                      <span>🔑 Google Places API Key</span>
+                      <span className="text-xs text-gray-400 group-open:rotate-90 transition-transform">▶</span>
+                    </summary>
+                    <div className="pt-2 pb-3 pl-2">
+                      <div className="flex gap-2">
+                        <input
+                          type="password"
+                          value={apiKeyInput}
+                          onChange={(e) => setApiKeyInput(e.target.value)}
+                          placeholder="AIza..."
+                          className="flex-1 px-3 py-1.5 text-sm border rounded-lg bg-white dark:bg-slate-700 dark:border-slate-600 dark:text-white"
+                        />
+                        <button
+                          onClick={() => { setGoogleApiKey(apiKeyInput); }}
+                          className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition"
+                        >
+                          Save
+                        </button>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-1">
+                        Free tier: ~10k lookups/month. Get a key at <a href="https://console.cloud.google.com/apis/credentials" target="_blank" className="underline text-blue-500">console.cloud.google.com</a> — enable "Places API (New)".
+                      </p>
                     </div>
-                    <p className="text-xs text-gray-400 mt-1">
-                      Free tier: ~10k lookups/month. Get a key at <a href="https://console.cloud.google.com/apis/credentials" target="_blank" className="underline text-blue-500">console.cloud.google.com</a> — enable "Places API (New)".
-                    </p>
-                  </div>
+                  </details>
 
-                  {/* Global Sources Manager */}
-                  <GlobalSourcesPanel allPins={pins || []} />
+                  <details className="group">
+                    <summary className="flex items-center justify-between cursor-pointer py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400">
+                      <span>🏷️ Sources</span>
+                      <span className="text-xs text-gray-400 group-open:rotate-90 transition-transform">▶</span>
+                    </summary>
+                    <div className="pt-1 pl-2">
+                      <GlobalSourcesPanel allPins={pins || []} />
+                    </div>
+                  </details>
 
-                  {/* API Usage */}
-                  <ApiUsagePanel />
+                  <details className="group">
+                    <summary className="flex items-center justify-between cursor-pointer py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400">
+                      <span>📊 API Usage</span>
+                      <span className="text-xs text-gray-400 group-open:rotate-90 transition-transform">▶</span>
+                    </summary>
+                    <div className="pt-1 pl-2">
+                      <ApiUsagePanel />
+                    </div>
+                  </details>
                 </div>
               </div>
             </div>
@@ -8991,31 +9011,33 @@
               <input type="text" value={newName} onChange={e => setNewName(e.target.value)}
                 placeholder="Trip name (e.g. Japan 2026)"
                 className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
-              <div className="grid grid-cols-2 gap-2">
-                <div className="min-w-0">
-                  <label className="text-xs text-gray-500 dark:text-gray-400 block mb-0.5">Start</label>
+              <div className="flex flex-col gap-2">
+                <div>
+                  <label className="text-xs text-gray-500 dark:text-gray-400 block mb-0.5">Start date</label>
                   <input type="date" value={newStartDate} onChange={e => {
                       setNewStartDate(e.target.value);
                       if (newEndDate && e.target.value > newEndDate) setNewEndDate('');
                     }}
-                    className="w-full min-w-0 px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
                 </div>
-                <div className="min-w-0">
-                  <label className="text-xs text-gray-500 dark:text-gray-400 block mb-0.5">End</label>
-                  <input type="date" value={newEndDate} min={newStartDate || undefined} onChange={e => setNewEndDate(e.target.value)}
-                    className="w-full min-w-0 px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                <div>
+                  <label className="text-xs text-gray-500 dark:text-gray-400 block mb-0.5">End date</label>
+                  <input type="date" value={newEndDate} min={newStartDate || undefined} disabled={!newStartDate}
+                    onChange={e => {
+                      if (newStartDate && e.target.value < newStartDate) { setNewEndDate(newStartDate); return; }
+                      setNewEndDate(e.target.value);
+                    }}
+                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white disabled:opacity-50 disabled:cursor-not-allowed" />
+                  {!newStartDate && <p className="text-[11px] text-gray-400 mt-0.5">Pick start date first</p>}
                 </div>
               </div>
-              {(!newName || !newStartDate || !newEndDate) && (
-                <p className="text-xs text-gray-400 dark:text-gray-500">
-                  {!newName ? 'Enter a trip name' : (!newStartDate ? 'Pick a start date' : 'Pick an end date')} to continue.
-                </p>
-              )}
               <div className="flex gap-2">
                 <button onClick={() => setShowNewItinerary(false)}
                   className="flex-1 px-3 py-2 border dark:border-slate-600 rounded-lg text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700">Cancel</button>
                 <button onClick={pendingAddPin ? handleCreateItineraryWithPending : handleCreateItinerary} disabled={!newName || !newStartDate || !newEndDate}
-                  className="flex-1 px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition">Create</button>
+                  className="flex-1 px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition">
+                  {!newName ? 'Enter trip name' : !newStartDate ? 'Pick start date' : !newEndDate ? 'Pick end date' : 'Create'}
+                </button>
               </div>
             </div>
           )}
@@ -10086,7 +10108,7 @@
                     : 'bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 border dark:border-slate-600'
                 }`}
               >
-                {showList ? <><span className="text-base">🗺️</span> Map</> : <><ListIcon /> List</>}
+                {showList ? <><span className="text-base">🗺️</span> Map</> : <><span className="text-base">📋</span> List</>}
               </button>
               <button
                 onClick={() => setView('home')}
