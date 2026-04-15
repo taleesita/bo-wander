@@ -35,6 +35,10 @@
   <!-- heic2any: converts iPhone HEIC photos to JPEG so canvas + Tesseract can read them -->
   <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
 
+  <!-- Cropper.js: lets user crop a photo before OCR for better text recognition -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cropperjs@1.6.1/dist/cropper.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.1/dist/cropper.min.js"></script>
+
   <!-- PDF.js for PDF text extraction -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>if(window.pdfjsLib)pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
@@ -2242,6 +2246,7 @@
       const [expanded, setExpanded] = useState(false);
       const [viewingPhoto, setViewingPhoto] = useState(null);
       const [confirmRemove, setConfirmRemove] = useState(null);
+      const [cropPending, setCropPending] = useState(null); // { imageSrc, fileName }
       const fileInputRef = useRef(null);
 
       const infoPhotos = pin.info_photos || [];
@@ -2316,15 +2321,31 @@
           })();
 
           // OCR the normalized canvas (not the raw File)
-          let ocrText = '';
+          let rawOcr = '';
           let ocrConfidence = 0;
           try {
             const result = await Tesseract.recognize(ocrCanvas, 'eng+jpn', { logger: () => {} });
-            ocrText = (result.data?.text || '').trim();
+            rawOcr = (result.data?.text || '').trim();
             ocrConfidence = result.data?.confidence || 0;
           } catch (err) {
             console.warn('OCR failed:', err);
           }
+
+          // Clean up common OCR noise: lines dominated by symbols, stray chars, column pipes
+          const ocrText = rawOcr
+            .split('\n')
+            .map(l => l.trim())
+            .filter(l => {
+              if (!l) return false;
+              const wordish = (l.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]/g) || []).length;
+              if (l.length >= 3 && wordish / l.length < 0.4) return false;
+              if (l.length <= 2 && !/[.!?]/.test(l)) return false;
+              return true;
+            })
+            .map(l => l.replace(/\s*\|\s*/g, ' '))
+            .join('\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
 
           // Gibberish detector — reject low-confidence or word-less output
           const wordChars = (ocrText.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]{2,}/g) || []).length;
@@ -4140,6 +4161,68 @@
               seen.add(key);
               return true;
             });
+          }
+        }
+
+        // Strategy 1.65: "Read more" chunk splitter (Time Out style without blank lines/bullets)
+        // Splits the text on "Read more" and treats each chunk as: first real line = place name,
+        // 0-3 short meta lines (category / neighborhood), then the description paragraph.
+        {
+          const readMoreSplit = clean.split(/^\s*read\s*more\s*$/im);
+          if (readMoreSplit.length >= 3) {
+            const chunkStyle = [];
+            for (const chunk of readMoreSplit) {
+              const chunkLines = chunk.split('\n').map(l => l.trim()).filter(Boolean);
+              if (chunkLines.length < 2) continue;
+              // Find the first line that looks like a place-name heading
+              let nameIdx = -1;
+              for (let i = 0; i < Math.min(chunkLines.length, 4); i++) {
+                let c = chunkLines[i].replace(/^[•·\-\*]\s+/, '').trim();
+                c = c.replace(/^_+|_+$|\*\*/g, '').trim();
+                c = stripPhotoCredit(c);
+                if (c.length < 3 || c.length > 80) continue;
+                if (c.includes('?')) continue;
+                if (/[.!;]$/.test(c)) continue;
+                if (skipPatterns.test(c)) continue;
+                if (junkContent.test(c)) continue;
+                if (articleTitleLike.test(c)) continue;
+                if (!isLikelyPlaceName(c)) continue;
+                const wc = c.split(/\s+/).length;
+                if (wc > 10) continue;
+                nameIdx = i;
+                break;
+              }
+              if (nameIdx === -1) continue;
+              let name = chunkLines[nameIdx].replace(/^[•·\-\*]\s+|_+|\*\*/g, '').trim();
+              name = stripPhotoCredit(name);
+              // Skip immediate duplicate heading lines (some sites repeat the name as a caption)
+              let descStart = nameIdx + 1;
+              while (descStart < chunkLines.length && chunkLines[descStart].replace(/^[•·\-\*]\s+|_+|\*\*/g, '').trim().toLowerCase() === name.toLowerCase()) {
+                descStart++;
+              }
+              // Collect description — first substantial paragraph + subsequent substantial lines.
+              // Note: skip visualLang filter here — real descriptions often use words like "counter", "seating".
+              const descParts = [];
+              for (let i = descStart; i < chunkLines.length; i++) {
+                const ln = chunkLines[i];
+                if (ln.length < 40) continue; // short meta line (category/neighborhood)
+                if (junkContent.test(ln)) continue;
+                if (altTextLike(ln)) continue;
+                descParts.push(ln);
+              }
+              const desc = descParts.join('\n\n').slice(0, 1500);
+              if (!desc) continue;
+              chunkStyle.push({ name, description: desc, checked: true, loading: false, placeData: null });
+            }
+            if (chunkStyle.length >= 3) {
+              const seen = new Set();
+              return chunkStyle.filter(p => {
+                const key = p.name.toLowerCase();
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+              });
+            }
           }
         }
 
@@ -6726,6 +6809,70 @@
     };
 
     // Editor for multiple source links per pin — each with optional label + URL
+    // ---- PhotoCropModal ----
+    // Presents a full-screen crop UI backed by Cropper.js. onApply receives a canvas of the cropped region.
+    const PhotoCropModal = ({ imageSrc, onApply, onCancel, isDarkMode }) => {
+      const imgRef = useRef(null);
+      const cropperRef = useRef(null);
+
+      useEffect(() => {
+        if (!imgRef.current || typeof Cropper === 'undefined') return;
+        const c = new Cropper(imgRef.current, {
+          viewMode: 1,
+          autoCropArea: 0.85,
+          dragMode: 'move',
+          background: false,
+          zoomable: true,
+          scalable: false,
+          rotatable: true,
+          toggleDragModeOnDblclick: false,
+          responsive: true,
+          ready() {
+            // Cropper ready
+          },
+        });
+        cropperRef.current = c;
+        return () => { try { c.destroy(); } catch {} };
+      }, []);
+
+      const handleApply = () => {
+        const c = cropperRef.current;
+        if (!c) return;
+        const canvas = c.getCroppedCanvas({
+          // Keep it reasonable for OCR — long side up to 2000px
+          maxWidth: 2400,
+          maxHeight: 2400,
+          fillColor: '#ffffff',
+          imageSmoothingQuality: 'high',
+        });
+        onApply(canvas);
+      };
+
+      const rotate = (deg) => cropperRef.current?.rotate(deg);
+      const reset = () => cropperRef.current?.reset();
+
+      return (
+        <div className="fixed inset-0 bg-black flex flex-col" style={{ zIndex: 10050 }}>
+          {/* Top bar */}
+          <div className="flex items-center justify-between px-3 py-2 bg-slate-900 text-white flex-shrink-0">
+            <button onClick={onCancel} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">Cancel</button>
+            <span className="text-xs text-gray-400">Drag to move · Pinch/scroll to zoom</span>
+            <button onClick={handleApply} className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-sm font-semibold">Use crop</button>
+          </div>
+          {/* Image area */}
+          <div className="flex-1 overflow-hidden flex items-center justify-center bg-black" style={{ minHeight: 0 }}>
+            <img ref={imgRef} src={imageSrc} alt="Crop source" style={{ maxWidth: '100%', display: 'block' }} />
+          </div>
+          {/* Tool bar */}
+          <div className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-900 text-white flex-shrink-0">
+            <button onClick={() => rotate(-90)} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">↺ Rotate L</button>
+            <button onClick={() => rotate(90)} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">↻ Rotate R</button>
+            <button onClick={reset} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">Reset</button>
+          </div>
+        </div>
+      );
+    };
+
     const SourceLinksField = ({ sources, onChange }) => {
       const list = Array.isArray(sources) ? sources : [];
       const update = (idx, patch) => {
@@ -6908,6 +7055,9 @@
       const [newCollectionName, setNewCollectionName] = useState('');
       const [showNewCollection, setShowNewCollection] = useState(false);
       const [confirmingDelete, setConfirmingDelete] = useState(false);
+      // OCR-from-photo state: { imageSrc, fileName } while crop modal is open
+      const [ocrCropPending, setOcrCropPending] = useState(null);
+      const [ocrRunning, setOcrRunning] = useState(false);
 
       const handleChange = (field, value) => {
         setFormData(prev => ({ ...prev, [field]: value }));
@@ -7065,10 +7215,10 @@
                   </label>
 
                   <div>
-                    <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center justify-between mb-1 gap-2">
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300">Description</label>
                       {/* Quick OCR from photo — appends extracted text to description */}
-                      <label className="text-xs text-gray-500 dark:text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 cursor-pointer flex items-center gap-1" title="Add info from photo (OCR)">
+                      <label className="text-xs font-medium px-2 py-1 rounded-full border border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/30 cursor-pointer flex items-center gap-1 flex-shrink-0" title="Add info from photo (OCR). You'll be able to crop it first.">
                         <input
                           type="file"
                           accept="image/*,.heic,.heif"
@@ -7082,14 +7232,12 @@
                               alert('OCR not loaded yet. Try again in a moment.');
                               return;
                             }
-                            handleChange('description', (formData.description || '') + '\n\n📷 Reading photo…');
                             let file = original;
-                            // Auto-convert HEIC/HEIF via heic2any so the canvas can decode it
+                            // Auto-convert HEIC/HEIF via heic2any so canvas + Cropper can decode it
                             const lowerName = (original.name || '').toLowerCase();
                             const isHeic = /\.(heic|heif)$/.test(lowerName) || /^image\/heic/.test(original.type) || /^image\/heif/.test(original.type);
                             if (isHeic) {
                               if (typeof heic2any === 'undefined') {
-                                handleChange('description', (formData.description || '').replace(/\n\n📷 Reading photo…$/, ''));
                                 alert('HEIC converter not loaded. Refresh the page and try again.');
                                 return;
                               }
@@ -7098,49 +7246,18 @@
                                 file = new File([converted], (original.name || 'photo').replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' });
                               } catch (err) {
                                 console.warn('HEIC conversion failed:', err);
-                                handleChange('description', (formData.description || '').replace(/\n\n📷 Reading photo…$/, ''));
                                 alert('Could not convert this HEIC photo. Try taking a fresh shot.');
                                 return;
                               }
                             }
-                            try {
-                              // Pre-process: decode through canvas to normalize + upscale small images for better OCR.
-                              const imgUrl = URL.createObjectURL(file);
-                              const img = await new Promise((resolve, reject) => {
-                                const el = new Image();
-                                el.onload = () => resolve(el);
-                                el.onerror = () => reject(new Error('Browser could not decode this image.'));
-                                el.src = imgUrl;
-                              });
-                              // Scale so the longer side is at least 1600px (Tesseract does better on larger images)
-                              const longSide = Math.max(img.width, img.height) || 1;
-                              const scale = longSide < 1600 ? 1600 / longSide : 1;
-                              const canvas = document.createElement('canvas');
-                              canvas.width = Math.round(img.width * scale);
-                              canvas.height = Math.round(img.height * scale);
-                              const ctx = canvas.getContext('2d');
-                              ctx.fillStyle = '#ffffff';
-                              ctx.fillRect(0, 0, canvas.width, canvas.height);
-                              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                              URL.revokeObjectURL(imgUrl);
-                              const result = await Tesseract.recognize(canvas, 'eng+jpn', { logger: () => {} });
-                              const text = (result.data?.text || '').trim();
-                              const confidence = result.data?.confidence || 0;
-                              const existing = (formData.description || '').replace(/\n\n📷 Reading photo…$/, '');
-                              const divider = existing ? '\n\n---\n' : '';
-                              // Detect gibberish: very low confidence OR mostly non-word symbols
-                              const wordChars = (text.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]{2,}/g) || []).length;
-                              if (!text || confidence < 40 || wordChars < 3) {
-                                handleChange('description', existing);
-                                alert(`Couldn't reliably read text from this photo (confidence ${Math.round(confidence)}%). Try a clearer, higher-contrast, straight-on shot.`);
-                                return;
-                              }
-                              handleChange('description', `${existing}${divider}📷 From ${file.name}:\n${text}`);
-                            } catch (err) {
-                              console.warn('OCR failed:', err);
-                              handleChange('description', (formData.description || '').replace(/\n\n📷 Reading photo…$/, ''));
-                              alert(`Could not read text: ${err?.message || 'unknown error'}`);
-                            }
+                            // Read as data URL for the crop modal
+                            const imgUrl = await new Promise((resolve, reject) => {
+                              const reader = new FileReader();
+                              reader.onload = () => resolve(reader.result);
+                              reader.onerror = () => reject(new Error('Could not read file'));
+                              reader.readAsDataURL(file);
+                            });
+                            setOcrCropPending({ imageSrc: imgUrl, fileName: file.name });
                           }}
                         />
                         <span>📷</span><span>from photo</span>
@@ -7294,6 +7411,66 @@
                 setShowEmojiPicker(false);
               }}
               onClose={() => setShowEmojiPicker(false)}
+            />
+          )}
+          {ocrCropPending && (
+            <PhotoCropModal
+              imageSrc={ocrCropPending.imageSrc}
+              isDarkMode={isDarkMode}
+              onCancel={() => setOcrCropPending(null)}
+              onApply={async (croppedCanvas) => {
+                const fileName = ocrCropPending.fileName;
+                setOcrCropPending(null);
+                setOcrRunning(true);
+                handleChange('description', (formData.description || '') + '\n\n📷 Reading photo…');
+                try {
+                  // Upscale small crops so Tesseract gets enough pixels
+                  const longSide = Math.max(croppedCanvas.width, croppedCanvas.height) || 1;
+                  const scale = longSide < 1600 ? 1600 / longSide : 1;
+                  let ocrCanvas = croppedCanvas;
+                  if (scale !== 1) {
+                    const c = document.createElement('canvas');
+                    c.width = Math.round(croppedCanvas.width * scale);
+                    c.height = Math.round(croppedCanvas.height * scale);
+                    const ctx = c.getContext('2d');
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, c.width, c.height);
+                    ctx.drawImage(croppedCanvas, 0, 0, c.width, c.height);
+                    ocrCanvas = c;
+                  }
+                  const result = await Tesseract.recognize(ocrCanvas, 'eng+jpn', { logger: () => {} });
+                  const rawText = (result.data?.text || '').trim();
+                  const confidence = result.data?.confidence || 0;
+                  const cleanedText = rawText
+                    .split('\n')
+                    .map(l => l.trim())
+                    .filter(l => {
+                      if (!l) return false;
+                      const wordish = (l.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]/g) || []).length;
+                      if (l.length >= 3 && wordish / l.length < 0.4) return false;
+                      if (l.length <= 2 && !/[.!?]/.test(l)) return false;
+                      return true;
+                    })
+                    .map(l => l.replace(/\s*\|\s*/g, ' '))
+                    .join('\n')
+                    .replace(/\n{3,}/g, '\n\n')
+                    .trim();
+                  const existing = (formData.description || '').replace(/\n\n📷 Reading photo…$/, '');
+                  const divider = existing ? '\n\n---\n' : '';
+                  const wordChars = (cleanedText.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]{2,}/g) || []).length;
+                  if (!cleanedText || confidence < 40 || wordChars < 3) {
+                    handleChange('description', existing);
+                    alert(`Couldn't reliably read text from this crop (confidence ${Math.round(confidence)}%). Try cropping tighter to just the text.`);
+                  } else {
+                    handleChange('description', `${existing}${divider}📷 From ${fileName}:\n${cleanedText}`);
+                  }
+                } catch (err) {
+                  console.warn('OCR failed:', err);
+                  handleChange('description', (formData.description || '').replace(/\n\n📷 Reading photo…$/, ''));
+                  alert(`Could not read text: ${err?.message || 'unknown error'}`);
+                }
+                setOcrRunning(false);
+              }}
             />
           )}
         </div>
