@@ -2247,43 +2247,88 @@
       const infoPhotos = pin.info_photos || [];
 
       const handleFileSelect = async (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
+        const original = e.target.files?.[0];
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        if (!original) return;
         setProcessing(true);
 
         try {
+          // Auto-convert HEIC/HEIF so canvas + Tesseract can decode it properly
+          let file = original;
+          const lowerName = (original.name || '').toLowerCase();
+          const isHeic = /\.(heic|heif)$/.test(lowerName) || /^image\/heic/.test(original.type) || /^image\/heif/.test(original.type);
+          if (isHeic) {
+            if (typeof heic2any === 'undefined') {
+              alert('HEIC converter not loaded. Refresh the page and try again.');
+              setProcessing(false);
+              return;
+            }
+            try {
+              const converted = await heic2any({ blob: original, toType: 'image/jpeg', quality: 0.92 });
+              file = new File([converted], (original.name || 'photo').replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' });
+            } catch (err) {
+              console.warn('HEIC conversion failed:', err);
+              alert('Could not convert this HEIC photo. Try taking a fresh shot.');
+              setProcessing(false);
+              return;
+            }
+          }
+
           // Read file as data URL for storage
-          const dataUrl = await new Promise((resolve) => {
+          const dataUrl = await new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('Could not read file'));
             reader.readAsDataURL(file);
           });
 
-          // Create thumbnail (resize to max 300px for storage efficiency)
-          const thumb = await new Promise((resolve) => {
-            const img = new Image();
-            img.onload = () => {
-              const maxDim = 300;
-              const scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
-              const canvas = document.createElement('canvas');
-              canvas.width = img.width * scale;
-              canvas.height = img.height * scale;
-              canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-              resolve(canvas.toDataURL('image/jpeg', 0.7));
-            };
-            img.src = dataUrl;
+          // Load image once; use the <img> for both thumbnail and OCR-ready upscaled canvas
+          const img = await new Promise((resolve, reject) => {
+            const el = new Image();
+            el.onload = () => resolve(el);
+            el.onerror = () => reject(new Error('Browser could not decode this image.'));
+            el.src = dataUrl;
           });
 
-          // OCR the image
+          // Thumbnail (max 300px)
+          const thumb = (() => {
+            const maxDim = 300;
+            const scale = Math.min(maxDim / img.width, maxDim / img.height, 1);
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.round(img.width * scale);
+            canvas.height = Math.round(img.height * scale);
+            canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+            return canvas.toDataURL('image/jpeg', 0.7);
+          })();
+
+          // OCR canvas: upscale small images so Tesseract gets enough pixels to work with
+          const ocrCanvas = (() => {
+            const longSide = Math.max(img.width, img.height) || 1;
+            const scale = longSide < 1600 ? 1600 / longSide : 1;
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.round(img.width * scale);
+            canvas.height = Math.round(img.height * scale);
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            return canvas;
+          })();
+
+          // OCR the normalized canvas (not the raw File)
           let ocrText = '';
+          let ocrConfidence = 0;
           try {
-            const result = await Tesseract.recognize(file, 'eng+jpn', {
-              logger: () => {}, // suppress progress logs
-            });
-            ocrText = result.data?.text?.trim() || '';
+            const result = await Tesseract.recognize(ocrCanvas, 'eng+jpn', { logger: () => {} });
+            ocrText = (result.data?.text || '').trim();
+            ocrConfidence = result.data?.confidence || 0;
           } catch (err) {
             console.warn('OCR failed:', err);
           }
+
+          // Gibberish detector — reject low-confidence or word-less output
+          const wordChars = (ocrText.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]{2,}/g) || []).length;
+          const isGoodOcr = ocrText && ocrConfidence >= 40 && wordChars >= 3;
 
           // Build the new info photo entry
           const newPhoto = {
@@ -2291,13 +2336,13 @@
             thumbnail: thumb,
             full: dataUrl,
             name: file.name,
-            ocr_text: ocrText,
+            ocr_text: isGoodOcr ? ocrText : '',
             added_at: new Date().toISOString(),
           };
 
-          // Append OCR text to description
+          // Only append OCR text to description if it passed the quality bar
           let newDescription = pin.description || '';
-          if (ocrText) {
+          if (isGoodOcr) {
             const divider = newDescription ? '\n\n---\n' : '';
             const label = `📷 From ${file.name}:`;
             newDescription = `${newDescription}${divider}${label}\n${ocrText}`;
@@ -2309,12 +2354,15 @@
             info_photos: [...infoPhotos, newPhoto],
           };
           onUpdate(updatedPin);
+
+          if (!isGoodOcr) {
+            setTimeout(() => alert(`Photo saved, but couldn't reliably read text from it (confidence ${Math.round(ocrConfidence)}%). Try a clearer, straight-on shot with good lighting.`), 0);
+          }
         } catch (err) {
           console.error('Info photo processing failed:', err);
+          alert(`Could not process photo: ${err?.message || 'unknown error'}`);
         }
         setProcessing(false);
-        // Reset input so the same file can be re-selected
-        if (fileInputRef.current) fileInputRef.current.value = '';
       };
 
       const handleRemovePhoto = (photoId) => {
