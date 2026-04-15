@@ -11181,6 +11181,8 @@
                       lng: dup.lng || lng,
                       opening_hours: (dup.opening_hours && Object.keys(dup.opening_hours).length) ? dup.opening_hours : (data.opening_hours || {}),
                       google_rating: dup.google_rating || data.rating || null,
+                      // If either side flagged veg, keep it flagged
+                      is_vegetarian: !!(dup.is_vegetarian || data.is_vegetarian),
                     };
                     MockFirebase.savePin(merged);
                     updates.push(merged);
@@ -11202,6 +11204,7 @@
                       opening_hours: data.opening_hours || {},
                       lat, lng,
                       google_rating: data.rating || null,
+                      is_vegetarian: !!data.is_vegetarian,
                       created_at: new Date().toISOString(),
                     };
                     MockFirebase.savePin(newPin);
