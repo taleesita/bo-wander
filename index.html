@@ -3766,7 +3766,7 @@
             headers: {
               'Content-Type': 'application/json',
               'X-Goog-Api-Key': apiKey,
-              'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
+              'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours,places.businessStatus'
             },
             body: JSON.stringify({ textQuery: q.trim() + (bulkLocationHint ? ' ' + bulkLocationHint : ''), maxResultCount: 5 })
           });
@@ -3873,7 +3873,7 @@
                 headers: {
                   'Content-Type': 'application/json',
                   'X-Goog-Api-Key': apiKey,
-                  'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
+                  'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours,places.businessStatus'
                 },
                 body: JSON.stringify({ textQuery: place.name + (locationHint ? ' ' + locationHint : ''), maxResultCount: 1 })
               });
@@ -3903,7 +3903,10 @@
                       types: gp.types || [],
                       displayName: gp.displayName?.text || '',
                       opening_hours: hours,
-                    }
+                      businessStatus: gp.businessStatus || 'OPERATIONAL',
+                    },
+                    // Auto-uncheck closed businesses so user doesn't accidentally import them
+                    checked: i === idx && gp.businessStatus && gp.businessStatus !== 'OPERATIONAL' ? false : p.checked,
                   } : p);
                   // Dedup: if an earlier entry resolved to the same Google address, mark this one duplicate and uncheck it.
                   const seenAddr = new Set();
@@ -4578,7 +4581,7 @@
                             headers: {
                               'Content-Type': 'application/json',
                               'X-Goog-Api-Key': apiKey,
-                              'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
+                              'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours,places.businessStatus'
                             },
                             body: JSON.stringify({ textQuery: place.name + (locationHint ? ' ' + locationHint : ''), maxResultCount: 1 })
                           });
@@ -4608,7 +4611,9 @@
                                   types: gp.types || [],
                                   displayName: gp.displayName?.text || '',
                                   opening_hours: hours,
-                                }
+                                  businessStatus: gp.businessStatus || 'OPERATIONAL',
+                                },
+                                checked: i === idx && gp.businessStatus && gp.businessStatus !== 'OPERATIONAL' ? false : p.checked,
                               } : p);
                               const seenAddr = new Set();
                               return next.map((p) => {
@@ -4733,7 +4738,7 @@
                   headers: {
                     'Content-Type': 'application/json',
                     'X-Goog-Api-Key': apiKey,
-                    'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours,places.websiteUri'
+                    'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours,places.businessStatus,places.websiteUri'
                   },
                   body: JSON.stringify({ textQuery: finalName, maxResultCount: 1 })
                 });
@@ -4792,10 +4797,10 @@
       return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ zIndex: 9999 }}>
           <div
-            className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-xl w-full max-w-md shadow-2xl`}
+            className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-xl w-full ${bulkPlaces ? 'max-w-2xl md:max-w-3xl' : 'max-w-md'} shadow-2xl`}
             onClick={e => e.stopPropagation()}
           >
-            <div className="p-6 space-y-4 max-h-[85vh] overflow-y-auto">
+            <div className="p-6 space-y-4 max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-bold dark:text-white">Add from Link</h2>
                 <button onClick={onClose} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded">
@@ -4818,7 +4823,7 @@
                     </button>
                     <span className="text-xs text-gray-500">{bulkPlaces.filter(p => p.checked).length} selected</span>
                   </div>
-                  <div className="max-h-[50vh] overflow-y-auto space-y-1 -mx-1 px-1">
+                  <div className="max-h-[65vh] overflow-y-auto space-y-1 -mx-1 px-1">
                     {bulkPlaces.map((place, idx) => {
                       if (place.duplicate) return null; // hide duplicates entirely
                       const cat = guessEmojiAndCategory(place.placeData?.displayName || place.name, place.placeData?.types?.join(',') || '');
@@ -4843,9 +4848,19 @@
                               </div>
                             </div>
                             <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className="text-sm">{cat.emoji}</span>
                                 <span className="font-medium text-sm dark:text-white truncate">{place.placeData?.displayName || place.name}</span>
+                                {place.placeData?.businessStatus === 'CLOSED_PERMANENTLY' && (
+                                  <span className="text-[10px] font-semibold bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 px-1.5 py-0.5 rounded-full flex-shrink-0" title="Google reports this place as permanently closed — auto-unchecked">
+                                    Permanently closed
+                                  </span>
+                                )}
+                                {place.placeData?.businessStatus === 'CLOSED_TEMPORARILY' && (
+                                  <span className="text-[10px] font-semibold bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 rounded-full flex-shrink-0" title="Google reports this place as temporarily closed — auto-unchecked">
+                                    Temporarily closed
+                                  </span>
+                                )}
                               </div>
                               {place.loading && <p className="text-xs text-gray-400 mt-0.5">Looking up...</p>}
                               {!place.loading && place.placeData?.address && (
@@ -4926,8 +4941,8 @@
                                 <textarea
                                   value={place.description}
                                   onChange={e => setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, description: e.target.value } : p))}
-                                  className="w-full px-2 py-1.5 border rounded text-xs dark:bg-slate-800 dark:border-slate-600 dark:text-white"
-                                  rows={2}
+                                  className="w-full px-2 py-1.5 border rounded text-xs dark:bg-slate-800 dark:border-slate-600 dark:text-white resize-y"
+                                  rows={8}
                                   placeholder="Add notes..."
                                 />
                               </div>
@@ -4955,7 +4970,7 @@
                                           headers: {
                                             'Content-Type': 'application/json',
                                             'X-Goog-Api-Key': apiKey,
-                                            'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
+                                            'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours,places.businessStatus'
                                           },
                                           body: JSON.stringify({ textQuery: query, maxResultCount: 1 })
                                         });
@@ -5003,7 +5018,7 @@
                                           headers: {
                                             'Content-Type': 'application/json',
                                             'X-Goog-Api-Key': apiKey,
-                                            'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
+                                            'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours,places.businessStatus'
                                           },
                                           body: JSON.stringify({ textQuery: query, maxResultCount: 1 })
                                         });
