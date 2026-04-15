@@ -3961,7 +3961,8 @@
             const firstIsPhoto = /^photo\s*:/i.test(nextLines[0]);
             if (!firstIsBullet && !firstIsPhoto) continue;
 
-            // Find description: first substantial paragraph in the next 1-3 blocks, skipping metadata lines.
+            // Find description: ALL substantial paragraphs in the next block, skipping metadata lines
+            // and stopping at the next place heading (typically "Read more" or a short proper-noun line).
             const isMetaLine = (line) => (
               /^[\*•·\-]\s+/.test(line) ||
               /^photo\s*:/i.test(line) ||
@@ -3970,20 +3971,18 @@
               /^share\s*$/i.test(line) ||
               /^written by/i.test(line)
             );
-            let desc = '';
-            for (let nb = b + 1; nb <= Math.min(blocks.length - 1, b + 3); nb++) {
-              const cand = blocks[nb].split('\n').map(l => l.trim()).filter(Boolean);
-              for (const line of cand) {
-                if (isMetaLine(line)) continue;
-                if (line.length < 40) continue;
-                if (junkContent.test(line)) continue;
-                if (altTextLike(line)) continue;
-                if (visualLang.test(line)) continue;
-                desc = line.substring(0, 400);
-                break;
-              }
-              if (desc) break;
+            const descParts = [];
+            // Look in the immediately-following block (its description paragraphs precede the next heading)
+            const followBlockLines = blocks[b + 1].split('\n').map(l => l.trim()).filter(Boolean);
+            for (const line of followBlockLines) {
+              if (isMetaLine(line)) continue;
+              if (line.length < 40) continue; // short proper-noun line is the next place heading — stop
+              if (junkContent.test(line)) continue;
+              if (altTextLike(line)) continue;
+              if (visualLang.test(line)) continue;
+              descParts.push(line);
             }
+            const desc = descParts.join('\n\n').slice(0, 1500);
             if (!desc) continue; // skip headings without real descriptions
             guideStyle.push({ name: candidate, description: desc, checked: true, loading: false, placeData: null });
           }
@@ -4023,18 +4022,21 @@
             if (!isLikelyPlaceName(candidate)) continue;
             const wc = candidate.split(/\s+/).length;
             if (wc > 10 || wc < 1) continue;
-            // Find first substantial description line in next 1-4 lines, skipping more photo/credit lines
-            let desc = '';
-            for (let j = i + 2; j < Math.min(allLines.length, i + 6); j++) {
+            // Collect ALL substantial description lines after the photo line until the next heading
+            // (next heading = a short line followed by another photo line within 1-2 lines)
+            const descParts = [];
+            for (let j = i + 2; j < Math.min(allLines.length, i + 30); j++) {
               const ln = allLines[j];
-              if (isPhoto(ln)) continue;
+              if (isPhoto(ln)) break; // hit next photo line — next entry is starting
+              // If this line looks like a next heading (short, no period, followed by photo within next 2 lines)
+              if (ln.length < 40 && !/[.!?]$/.test(ln) && j + 1 < allLines.length && isPhoto(allLines[j + 1])) break;
               if (ln.length < 30) continue;
               if (junkContent.test(ln)) continue;
               if (altTextLike(ln)) continue;
               if (visualLang.test(ln)) continue;
-              desc = ln.substring(0, 400);
-              break;
+              descParts.push(ln);
             }
+            const desc = descParts.join('\n\n').slice(0, 1500);
             if (!desc) continue;
             photoStyle.push({ name: candidate, description: desc, checked: true, loading: false, placeData: null });
           }
@@ -4329,16 +4331,17 @@
                     const sectionMatch = html.match(sectionRegex);
                     let desc = '';
                     if (sectionMatch) {
-                      // Extract all paragraphs from the section
+                      // Extract ALL substantial paragraphs from the section, not just the first
                       const pRegex = /<p[^>]*>([\s\S]*?)<\/p>/gi;
                       let pMatch;
+                      const parts = [];
                       while ((pMatch = pRegex.exec(sectionMatch[1])) !== null) {
                         const pText = htmlDecode(pMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')).trim();
                         if (pText.length > 20 && !junkDescPattern.test(pText)) {
-                          desc = pText.substring(0, 300);
-                          break;
+                          parts.push(pText);
                         }
                       }
+                      desc = parts.join('\n\n').slice(0, 1500);
                     }
                     return { name, description: desc, checked: true, loading: false, placeData: null };
                   });
@@ -10203,16 +10206,7 @@
       // Collection view (map + list)
       return (
         <div className={`${darkMode ? 'dark' : ''} h-screen w-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-white overflow-hidden`}>
-          {/* Small map-name chip (desktop only, below top bar, subtle) — hide when list view open so it doesn't overlap filters */}
-          {!isMobile && !showList && (
-            <div
-              className="absolute left-4 pointer-events-none text-xs font-semibold text-gray-700 dark:text-gray-200 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm rounded-full shadow px-3 py-1 max-w-[200px] truncate"
-              style={{ top: 72, zIndex: 9000 }}
-              title={collections.find(c => c.id === activeCollection)?.name}
-            >
-              {collections.find(c => c.id === activeCollection)?.name || ''}
-            </div>
-          )}
+          {/* (Floating map-name chip removed — collection name is shown in back-arrow tooltip and elsewhere) */}
 
           {/* Floating top controls (Google Maps style) — overlay on map, no fixed bar */}
           <div className="absolute top-0 left-0 right-0 pointer-events-none" style={{ zIndex: 9001 }}>
