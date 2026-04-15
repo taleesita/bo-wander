@@ -3998,6 +3998,57 @@
           }
         }
 
+        // Strategy 1.6: line-by-line "Heading → Photo: credit → description" pattern
+        // (handles articles with no blank lines between entries — entire body is one block)
+        {
+          const allLines = lines.filter(Boolean); // already trimmed at top
+          const photoLine = /^(photo(graph)?(s)?|image|credit|illustration|design)\s*[:—–\-]/i;
+          const photoBy   = /^(photo(graph)?s?\s+by|courtesy|via|©)\b/i;
+          const isPhoto = (s) => photoLine.test(s) || photoBy.test(s);
+          const photoStyle = [];
+          for (let i = 0; i < allLines.length - 2; i++) {
+            // Need: heading line at i, photo line at i+1, substantial paragraph at i+2 (or +3)
+            if (!isPhoto(allLines[i + 1])) continue;
+            let candidate = allLines[i].replace(/^\d{1,2}[\.\)\-–—:]\s*/, '').trim();
+            candidate = candidate.replace(/^[•·\-\*]\s+/, '').trim();
+            candidate = candidate.replace(/^_+|_+$/g, '').trim();
+            candidate = stripPhotoCredit(candidate);
+            if (candidate.length < 2 || candidate.length > 80) continue;
+            if (candidate.includes('?')) continue;
+            if (/[.!;]$/.test(candidate)) continue; // sentence-like
+            if (skipPatterns.test(candidate)) continue;
+            if (junkContent.test(candidate)) continue;
+            if (articleTitleLike.test(candidate)) continue;
+            if (isPhoto(candidate)) continue; // skip stacked Photo: Photo: pairs
+            if (!isLikelyPlaceName(candidate)) continue;
+            const wc = candidate.split(/\s+/).length;
+            if (wc > 10 || wc < 1) continue;
+            // Find first substantial description line in next 1-4 lines, skipping more photo/credit lines
+            let desc = '';
+            for (let j = i + 2; j < Math.min(allLines.length, i + 6); j++) {
+              const ln = allLines[j];
+              if (isPhoto(ln)) continue;
+              if (ln.length < 30) continue;
+              if (junkContent.test(ln)) continue;
+              if (altTextLike(ln)) continue;
+              if (visualLang.test(ln)) continue;
+              desc = ln.substring(0, 400);
+              break;
+            }
+            if (!desc) continue;
+            photoStyle.push({ name: candidate, description: desc, checked: true, loading: false, placeData: null });
+          }
+          if (photoStyle.length >= 3) {
+            const seen = new Set();
+            return photoStyle.filter(p => {
+              const key = p.name.toLowerCase();
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+          }
+        }
+
         // Strategy 2: short-line-followed-by-paragraph heading detection (simpler blogs)
         const places = [];
         const seenNames = new Set();
