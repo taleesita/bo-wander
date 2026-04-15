@@ -32,6 +32,9 @@
   <!-- Tesseract.js for OCR -->
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
+  <!-- heic2any: converts iPhone HEIC photos to JPEG so canvas + Tesseract can read them -->
+  <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
+
   <!-- PDF.js for PDF text extraction -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>if(window.pdfjsLib)pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
@@ -6990,29 +6993,76 @@
                       <label className="text-xs text-gray-500 dark:text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 cursor-pointer flex items-center gap-1" title="Add info from photo (OCR)">
                         <input
                           type="file"
-                          accept="image/*"
+                          accept="image/*,.heic,.heif"
                           capture="environment"
                           className="hidden"
                           onChange={async (e) => {
-                            const file = e.target.files?.[0];
-                            if (!file) return;
+                            const original = e.target.files?.[0];
+                            e.target.value = '';
+                            if (!original) return;
                             if (typeof Tesseract === 'undefined') {
                               alert('OCR not loaded yet. Try again in a moment.');
                               return;
                             }
                             handleChange('description', (formData.description || '') + '\n\n📷 Reading photo…');
+                            let file = original;
+                            // Auto-convert HEIC/HEIF via heic2any so the canvas can decode it
+                            const lowerName = (original.name || '').toLowerCase();
+                            const isHeic = /\.(heic|heif)$/.test(lowerName) || /^image\/heic/.test(original.type) || /^image\/heif/.test(original.type);
+                            if (isHeic) {
+                              if (typeof heic2any === 'undefined') {
+                                handleChange('description', (formData.description || '').replace(/\n\n📷 Reading photo…$/, ''));
+                                alert('HEIC converter not loaded. Refresh the page and try again.');
+                                return;
+                              }
+                              try {
+                                const converted = await heic2any({ blob: original, toType: 'image/jpeg', quality: 0.92 });
+                                file = new File([converted], (original.name || 'photo').replace(/\.(heic|heif)$/i, '.jpg'), { type: 'image/jpeg' });
+                              } catch (err) {
+                                console.warn('HEIC conversion failed:', err);
+                                handleChange('description', (formData.description || '').replace(/\n\n📷 Reading photo…$/, ''));
+                                alert('Could not convert this HEIC photo. Try taking a fresh shot.');
+                                return;
+                              }
+                            }
                             try {
-                              const result = await Tesseract.recognize(file, 'eng+jpn', { logger: () => {} });
+                              // Pre-process: decode through canvas to normalize + upscale small images for better OCR.
+                              const imgUrl = URL.createObjectURL(file);
+                              const img = await new Promise((resolve, reject) => {
+                                const el = new Image();
+                                el.onload = () => resolve(el);
+                                el.onerror = () => reject(new Error('Browser could not decode this image.'));
+                                el.src = imgUrl;
+                              });
+                              // Scale so the longer side is at least 1600px (Tesseract does better on larger images)
+                              const longSide = Math.max(img.width, img.height) || 1;
+                              const scale = longSide < 1600 ? 1600 / longSide : 1;
+                              const canvas = document.createElement('canvas');
+                              canvas.width = Math.round(img.width * scale);
+                              canvas.height = Math.round(img.height * scale);
+                              const ctx = canvas.getContext('2d');
+                              ctx.fillStyle = '#ffffff';
+                              ctx.fillRect(0, 0, canvas.width, canvas.height);
+                              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                              URL.revokeObjectURL(imgUrl);
+                              const result = await Tesseract.recognize(canvas, 'eng+jpn', { logger: () => {} });
                               const text = (result.data?.text || '').trim();
+                              const confidence = result.data?.confidence || 0;
                               const existing = (formData.description || '').replace(/\n\n📷 Reading photo…$/, '');
                               const divider = existing ? '\n\n---\n' : '';
-                              handleChange('description', `${existing}${divider}📷 From ${file.name}:\n${text || '(no text found)'}`);
+                              // Detect gibberish: very low confidence OR mostly non-word symbols
+                              const wordChars = (text.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]{2,}/g) || []).length;
+                              if (!text || confidence < 40 || wordChars < 3) {
+                                handleChange('description', existing);
+                                alert(`Couldn't reliably read text from this photo (confidence ${Math.round(confidence)}%). Try a clearer, higher-contrast, straight-on shot.`);
+                                return;
+                              }
+                              handleChange('description', `${existing}${divider}📷 From ${file.name}:\n${text}`);
                             } catch (err) {
                               console.warn('OCR failed:', err);
                               handleChange('description', (formData.description || '').replace(/\n\n📷 Reading photo…$/, ''));
-                              alert('Could not read text from that photo.');
+                              alert(`Could not read text: ${err?.message || 'unknown error'}`);
                             }
-                            e.target.value = '';
                           }}
                         />
                         <span>📷</span><span>from photo</span>
