@@ -9497,6 +9497,28 @@
       const [showUploadConfirmation, setShowUploadConfirmation] = useState(false);
       const [showDocCenter, setShowDocCenter] = useState(false);
       const [showItinerary, setShowItinerary] = useState(false);
+
+      // Auto-replace side panels: only one right-side panel visible at a time.
+      // When a pin is selected, close itinerary + doc center. When itinerary
+      // opens, close selected pin + doc center, etc.
+      useEffect(() => {
+        if (selectedPin) {
+          if (showItinerary) setShowItinerary(false);
+          if (showDocCenter) setShowDocCenter(false);
+        }
+      }, [selectedPin]);
+      useEffect(() => {
+        if (showItinerary) {
+          if (selectedPin) setSelectedPin(null);
+          if (showDocCenter) setShowDocCenter(false);
+        }
+      }, [showItinerary]);
+      useEffect(() => {
+        if (showDocCenter) {
+          if (selectedPin) setSelectedPin(null);
+          if (showItinerary) setShowItinerary(false);
+        }
+      }, [showDocCenter]);
       const [pendingItineraryPin, setPendingItineraryPin] = useState(null);
       const [coLocatedPins, setCoLocatedPins] = useState([]);
       const [mapCenter, setMapCenter] = useState(null); // passive: where the map currently is (for search biasing)
