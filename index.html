@@ -8644,7 +8644,12 @@
       const [name, setName] = useState(item?.name || '');
       const [emoji, setEmoji] = useState(item?.emoji || '📌');
       const [scheduledTime, setScheduledTime] = useState(item?.scheduled_time || '');
-      const [duration, setDuration] = useState(item?.estimated_duration_minutes || 60);
+      // Allow empty duration for arrival markers / instant items. Default to 60 only for new items.
+      const [duration, setDuration] = useState(
+        item?.id != null
+          ? (item.estimated_duration_minutes == null ? '' : String(item.estimated_duration_minutes))
+          : '60'
+      );
       const [description, setDescription] = useState(item?.description || '');
       const [pinSearch, setPinSearch] = useState('');
 
@@ -8670,7 +8675,7 @@
           type, pin_id: type === 'pin' ? selectedPinId : null,
           name: finalName, emoji: finalEmoji,
           scheduled_time: scheduledTime,
-          estimated_duration_minutes: parseInt(duration) || 60,
+          estimated_duration_minutes: duration === '' ? 0 : (parseInt(duration) || 0),
           description, lat, lng,
         });
         onClose();
@@ -8750,8 +8755,10 @@
                 </div>
                 <div className="w-28">
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Duration (min)</label>
-                  <input type="number" value={duration} onChange={e => setDuration(e.target.value)} min="5" step="5"
+                  <input type="number" value={duration} onChange={e => setDuration(e.target.value)} min="0" step="5"
+                    placeholder="—"
                     className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                  <p className="text-[10px] text-gray-400 mt-0.5">Leave blank for marker</p>
                 </div>
               </div>
 
@@ -8773,10 +8780,12 @@
     };
 
     // ---- Single Itinerary Item Row ----
-    const ItineraryItemRow = ({ item, index, isDarkMode, onEdit, onDelete, onDragStart, onDragOver, onDrop, isDragTarget, transitInfo, onFlyTo }) => {
+    const ItineraryItemRow = ({ item, index, isDarkMode, onEdit, onDelete, onDragStart, onDragOver, onDrop, isDragTarget, transitInfo, onFlyTo, autoTime }) => {
       const [confirmDelete, setConfirmDelete] = useState(false);
 
-      const timeStr = item.scheduled_time || '';
+      // If item has its own scheduled_time, prefer that. Otherwise fall back to auto-computed time from day start.
+      const timeStr = item.scheduled_time || autoTime || '';
+      const isAutoTime = !item.scheduled_time && !!autoTime;
       const formatTime = (t) => {
         if (!t) return '';
         const [h, m] = t.split(':');
@@ -8835,7 +8844,7 @@
             {/* Content */}
             <div className="flex-1 min-w-0 cursor-pointer" onClick={() => item.lat && onFlyTo?.(item.lat, item.lng)}>
               <div className="flex items-center gap-2">
-                {timeStr && <span className="text-xs font-mono text-blue-600 dark:text-blue-400 flex-shrink-0">{formatTime(timeStr)}</span>}
+                {timeStr && <span className={`text-xs font-mono flex-shrink-0 ${isAutoTime ? 'text-gray-400 dark:text-gray-500 italic' : 'text-blue-600 dark:text-blue-400'}`} title={isAutoTime ? 'Auto-scheduled from day start' : 'Scheduled time'}>{formatTime(timeStr)}</span>}
                 <span className="text-sm font-medium truncate dark:text-white">{item.name || 'Untitled'}</span>
               </div>
               {item.estimated_duration_minutes && (
@@ -8865,16 +8874,37 @@
     };
 
     // ---- DayView (single day card) ----
-    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onDeleteDay, isExpanded, onToggle, onFlyTo }) => {
+    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, transitError }) => {
       const [dragItemId, setDragItemId] = useState(null);
       const [dragOverIndex, setDragOverIndex] = useState(null);
       const [showStartPicker, setShowStartPicker] = useState(false);
       const [confirmDeleteDay, setConfirmDeleteDay] = useState(false);
+      const [editingStartTime, setEditingStartTime] = useState(false);
+      const [startTimeDraft, setStartTimeDraft] = useState(day.start_time || '');
 
-      // Separate ordered items (have scheduled_time) and unordered
+      // Separate ordered items (have scheduled_time) and unordered.
+      // If the day has a start_time and items are in order_in_day order without explicit times,
+      // auto-compute scheduled times for display: start_time + cumulative (transit + duration).
+      const itemsByOrder = [...items].sort((a, b) => (a.order_in_day || 0) - (b.order_in_day || 0));
       const orderedItems = items.filter(i => i.scheduled_time).sort((a, b) => a.scheduled_time.localeCompare(b.scheduled_time));
       const unorderedItems = items.filter(i => !i.scheduled_time);
-      const allSorted = [...orderedItems, ...unorderedItems];
+      const allSorted = orderedItems.length > 0 ? [...orderedItems, ...unorderedItems] : itemsByOrder;
+
+      // Compute auto-scheduled times when day has a start_time
+      const autoTimes = {};
+      if (day.start_time && itemsByOrder.length > 0) {
+        const [sh, sm] = day.start_time.split(':').map(Number);
+        let cursor = sh * 60 + sm;
+        for (const it of itemsByOrder) {
+          // Add transit BEFORE this item (transit_info travel time to reach this item)
+          const transitMin = it.transit_info?.estimated_time_minutes || 0;
+          cursor += transitMin;
+          const hh = Math.floor(cursor / 60) % 24;
+          const mm = cursor % 60;
+          autoTimes[it.id] = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+          cursor += (it.estimated_duration_minutes || 0);
+        }
+      }
 
       const totalActivityMin = items.reduce((sum, i) => sum + (i.estimated_duration_minutes || 0), 0);
       const totalTransitMin = items.reduce((sum, i) => sum + (i.transit_info?.estimated_time_minutes || 0), 0);
@@ -8947,17 +8977,55 @@
           {/* Expanded content */}
           {isExpanded && (
             <div className="p-2 space-y-1">
-              {/* Starting point */}
-              <button
-                onClick={() => setShowStartPicker(true)}
-                className="w-full text-left px-2 py-1.5 rounded-lg text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700/50 border border-dashed dark:border-slate-700 flex items-center gap-2"
-              >
-                {day.starting_point?.label ? (
-                  <><span>{day.starting_point.emoji || '🏨'}</span> Start: {day.starting_point.label}</>
+              {/* Starting point + start time */}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setShowStartPicker(true)}
+                  className="flex-1 text-left px-2 py-1.5 rounded-lg text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700/50 border border-dashed dark:border-slate-700 flex items-center gap-2"
+                >
+                  {day.starting_point?.label ? (
+                    <><span>{day.starting_point.emoji || '🏨'}</span> Start: {day.starting_point.label}</>
+                  ) : (
+                    <><span>📍</span> Set starting point...</>
+                  )}
+                </button>
+                {/* Start time chip */}
+                {!editingStartTime ? (
+                  <button
+                    onClick={() => { setStartTimeDraft(day.start_time || ''); setEditingStartTime(true); }}
+                    className="px-2 py-1.5 rounded-lg text-xs border border-dashed dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700/50 text-gray-500 dark:text-gray-400 flex items-center gap-1 flex-shrink-0"
+                    title="Set start time for this day (auto-schedules items)"
+                  >
+                    🕐 {day.start_time ? day.start_time : 'Time'}
+                  </button>
                 ) : (
-                  <><span>📍</span> Set starting point (hotel)...</>
+                  <div className="flex items-center gap-0.5 flex-shrink-0">
+                    <input
+                      type="time"
+                      value={startTimeDraft}
+                      onChange={e => setStartTimeDraft(e.target.value)}
+                      autoFocus
+                      className="px-1 py-1 text-xs border rounded dark:bg-slate-800 dark:border-slate-700 dark:text-white"
+                    />
+                    <button
+                      onClick={() => { onSetStartTime(day.id, startTimeDraft); setEditingStartTime(false); }}
+                      className="px-1.5 py-1 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded"
+                    >✓</button>
+                    <button
+                      onClick={() => { onSetStartTime(day.id, ''); setEditingStartTime(false); }}
+                      className="px-1.5 py-1 text-xs text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-slate-700 rounded"
+                      title="Clear"
+                    >✕</button>
+                  </div>
                 )}
-              </button>
+              </div>
+
+              {/* Transit-fetch error notice (shown once if any segment failed) */}
+              {transitError && (
+                <div className="text-xs text-amber-600 dark:text-amber-400 px-2 py-1 bg-amber-50 dark:bg-amber-900/20 rounded">
+                  ⚠️ Travel times unavailable — {transitError}
+                </div>
+              )}
 
               {/* Ordered items */}
               {allSorted.map((item, idx) => (
@@ -8974,6 +9042,7 @@
                   isDragTarget={dragOverIndex === idx && dragItemId !== item.id}
                   transitInfo={item.transit_info || null}
                   onFlyTo={onFlyTo}
+                  autoTime={autoTimes[item.id]}
                 />
               ))}
 
@@ -9193,6 +9262,18 @@
         }
       };
 
+      // Set start time for a day (e.g. arrival time at airport)
+      const handleSetStartTime = async (dayId, startTime) => {
+        setDays(prev => prev.map(d => d.id === dayId ? { ...d, start_time: startTime } : d));
+        const day = days.find(d => d.id === dayId);
+        if (day) {
+          MockFirebase.saveDays([{ ...day, start_time: startTime }]);
+        }
+      };
+
+      // Per-day transit fetch errors (so we can surface API-key / Routes-API issues)
+      const [transitErrors, setTransitErrors] = useState({});
+
       // Delete a day
       const handleDeleteDay = async (dayId) => {
         setDays(prev => prev.filter(d => d.id !== dayId));
@@ -9232,21 +9313,19 @@
       const transitDebounceRef = useRef(null);
 
       const fetchTransitForPair = async (origin, destination) => {
-        if (!origin?.lat || !destination?.lat) return null;
+        if (!origin?.lat || !destination?.lat) return { result: null, error: null };
         const cacheKey = `${origin.lat.toFixed(5)},${origin.lng.toFixed(5)}->${destination.lat.toFixed(5)},${destination.lng.toFixed(5)}`;
-        if (transitCacheRef.current[cacheKey]) return transitCacheRef.current[cacheKey];
+        if (transitCacheRef.current[cacheKey]) return { result: transitCacheRef.current[cacheKey], error: null };
 
         const apiKey = getGoogleApiKey();
-        if (!apiKey) return null;
+        if (!apiKey) return { result: null, error: 'Add your Google Places API key in Settings.' };
 
+        let firstError = null;
         try {
-          // Fetch driving and transit in parallel
+          // Fetch driving and transit in parallel via Routes API (v2) — supports CORS
           const modes = ['driving', 'transit', 'walking'];
           const results = await Promise.all(modes.map(async (mode) => {
             try {
-              const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin.lat},${origin.lng}&destination=${destination.lat},${destination.lng}&mode=${mode}&key=${apiKey}`;
-              // CORS: Google Directions API doesn't support browser calls directly
-              // Use the Routes API (v2) which supports CORS
               const resp = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
                 method: 'POST',
                 headers: {
@@ -9260,12 +9339,28 @@
                   travelMode: mode === 'driving' ? 'DRIVE' : mode === 'transit' ? 'TRANSIT' : 'WALK',
                 }),
               });
+              if (!resp.ok) {
+                const errText = await resp.text();
+                if (!firstError) {
+                  if (resp.status === 403 && /API_KEY|not authorized|disabled/i.test(errText)) {
+                    firstError = 'Enable "Routes API" in your Google Cloud project (Console → APIs & Services).';
+                  } else if (resp.status === 403) {
+                    firstError = 'API key denied. Check key restrictions & billing in Google Cloud.';
+                  } else {
+                    firstError = `Routes API error ${resp.status}.`;
+                  }
+                }
+                return { mode, minutes: null };
+              }
               const data = await resp.json();
               const route = data.routes?.[0];
               if (!route) return { mode, minutes: null };
               const seconds = parseInt(route.duration?.replace('s', '') || '0');
               return { mode, minutes: Math.round(seconds / 60), meters: route.distanceMeters };
-            } catch { return { mode, minutes: null }; }
+            } catch (e) {
+              if (!firstError) firstError = e?.message || 'Network error';
+              return { mode, minutes: null };
+            }
           }));
 
           const transit = {};
@@ -9287,10 +9382,10 @@
           };
 
           transitCacheRef.current[cacheKey] = result;
-          return result;
+          return { result, error: firstError && Object.keys(transit).length === 0 ? firstError : null };
         } catch (err) {
           console.warn('Transit calc failed:', err);
-          return null;
+          return { result: null, error: err?.message || 'Unknown error' };
         }
       };
 
@@ -9309,15 +9404,27 @@
           if (item.lat && item.lng) points.push({ lat: item.lat, lng: item.lng, id: item.id });
         });
 
-        if (points.length < 2) return;
+        if (points.length < 2) {
+          // Clear any prior error since we have nothing to compute
+          setTransitErrors(prev => { const n = { ...prev }; delete n[dayId]; return n; });
+          return;
+        }
 
         const updates = [];
+        let dayError = null;
         for (let i = 1; i < points.length; i++) {
-          const result = await fetchTransitForPair(points[i - 1], points[i]);
+          const { result, error } = await fetchTransitForPair(points[i - 1], points[i]);
+          if (error && !dayError) dayError = error;
           if (result && points[i].id !== '__start__') {
             updates.push({ id: points[i].id, transit_info: result });
           }
         }
+        setTransitErrors(prev => {
+          const n = { ...prev };
+          if (dayError && updates.length === 0) n[dayId] = dayError;
+          else delete n[dayId];
+          return n;
+        });
 
         if (updates.length > 0) {
           setItems(prev => prev.map(item => {
@@ -9535,10 +9642,12 @@
                   onAddItem={(newItem) => handleAddItem(day.id, newItem)}
                   onEditItem={(item) => { setEditingItem(item); setAddingToDay(null); }}
                   onSetStartingPoint={handleSetStartingPoint}
+                  onSetStartTime={handleSetStartTime}
                   onDeleteDay={handleDeleteDay}
                   isExpanded={!!expandedDays[day.id]}
                   onToggle={() => toggleDay(day.id)}
                   onFlyTo={onFlyTo}
+                  transitError={transitErrors[day.id]}
                 />
               ))}
 
