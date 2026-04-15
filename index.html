@@ -111,6 +111,11 @@
       transform-origin: bottom center;
     }
 
+    @keyframes bw-toast-in {
+      from { transform: translate(-50%, 20px); opacity: 0; }
+      to { transform: translate(-50%, 0); opacity: 1; }
+    }
+
     @keyframes bw-slide-up {
       from { transform: translateY(100%); opacity: 0.4; }
       to   { transform: translateY(0); opacity: 1; }
@@ -1099,23 +1104,45 @@
         });
       },
 
-      // ===== ITINERARY CRUD =====
+      // ===== ITINERARY CRUD (with localStorage fallback for offline / missing-permissions) =====
+      _itinLocalKey: 'boWanderItineraries',
+      _daysLocalKey: 'boWanderItineraryDays',
+      _itemsLocalKey: 'boWanderItineraryItems',
+      _loadLocal(key) { try { return JSON.parse(localStorage.getItem(key) || '[]'); } catch { return []; } },
+      _saveLocal(key, arr) { try { localStorage.setItem(key, JSON.stringify(arr)); } catch {} },
+      _mergeLocal(key, item) {
+        const arr = this._loadLocal(key);
+        const idx = arr.findIndex(x => x.id === item.id);
+        if (idx > -1) arr[idx] = item; else arr.push(item);
+        this._saveLocal(key, arr);
+      },
+
       async saveItinerary(itin) {
         const data = { ...itin, updated_at: new Date().toISOString() };
         if (!data.created_at) data.created_at = data.updated_at;
-        await db.collection('itineraries').doc(itin.id).set(data, { merge: true });
+        // Always save locally so it works even without Firestore rules
+        this._mergeLocal(this._itinLocalKey, data);
+        try {
+          await db.collection('itineraries').doc(itin.id).set(data, { merge: true });
+        } catch (e) {
+          console.warn('[Itinerary] Firestore save failed, using localStorage only:', e.message);
+        }
         return data;
       },
 
       async loadItineraries(collectionId) {
+        const local = this._loadLocal(this._itinLocalKey).filter(i => i.collection_id === collectionId);
         try {
           const snap = await db.collection('itineraries').where('collection_id', '==', collectionId).get();
           const items = [];
           snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-          return items;
+          // Merge remote + local (remote wins on conflict)
+          const byId = {};
+          [...local, ...items].forEach(it => { byId[it.id] = it; });
+          return Object.values(byId);
         } catch (e) {
-          console.warn('Failed to load itineraries:', e);
-          return [];
+          console.warn('Failed to load itineraries from Firestore, using localStorage:', e.message);
+          return local;
         }
       },
 
@@ -1131,46 +1158,71 @@
       },
 
       async saveDays(days) {
-        const batch = db.batch();
+        // Save locally first so it works regardless of Firestore status
         days.forEach(day => {
           const data = { ...day, updated_at: new Date().toISOString() };
           if (!data.created_at) data.created_at = data.updated_at;
-          batch.set(db.collection('itinerary_days').doc(day.id), data, { merge: true });
+          this._mergeLocal(this._daysLocalKey, data);
         });
-        await batch.commit();
+        try {
+          const batch = db.batch();
+          days.forEach(day => {
+            const data = { ...day, updated_at: new Date().toISOString() };
+            if (!data.created_at) data.created_at = data.updated_at;
+            batch.set(db.collection('itinerary_days').doc(day.id), data, { merge: true });
+          });
+          await batch.commit();
+        } catch (e) {
+          console.warn('[Itinerary Days] Firestore save failed, using localStorage only:', e.message);
+        }
       },
 
       async loadDays(itinId) {
+        const local = this._loadLocal(this._daysLocalKey).filter(d => d.itinerary_id === itinId).sort((a, b) => a.day_number - b.day_number);
         try {
           const snap = await db.collection('itinerary_days').where('itinerary_id', '==', itinId).orderBy('day_number').get();
           const items = [];
           snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-          return items;
+          const byId = {};
+          [...local, ...items].forEach(it => { byId[it.id] = it; });
+          return Object.values(byId).sort((a, b) => a.day_number - b.day_number);
         } catch (e) {
-          console.warn('Failed to load days:', e);
-          return [];
+          console.warn('Failed to load days from Firestore, using localStorage:', e.message);
+          return local;
         }
       },
 
       async saveItems(items) {
-        const batch = db.batch();
         items.forEach(item => {
           const data = { ...item, updated_at: new Date().toISOString() };
           if (!data.created_at) data.created_at = data.updated_at;
-          batch.set(db.collection('itinerary_items').doc(item.id), data, { merge: true });
+          this._mergeLocal(this._itemsLocalKey, data);
         });
-        await batch.commit();
+        try {
+          const batch = db.batch();
+          items.forEach(item => {
+            const data = { ...item, updated_at: new Date().toISOString() };
+            if (!data.created_at) data.created_at = data.updated_at;
+            batch.set(db.collection('itinerary_items').doc(item.id), data, { merge: true });
+          });
+          await batch.commit();
+        } catch (e) {
+          console.warn('[Itinerary Items] Firestore save failed, using localStorage only:', e.message);
+        }
       },
 
       async loadItems(itinId) {
+        const local = this._loadLocal(this._itemsLocalKey).filter(i => i.itinerary_id === itinId);
         try {
           const snap = await db.collection('itinerary_items').where('itinerary_id', '==', itinId).get();
           const items = [];
           snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-          return items;
+          const byId = {};
+          [...local, ...items].forEach(it => { byId[it.id] = it; });
+          return Object.values(byId);
         } catch (e) {
-          console.warn('Failed to load itinerary items:', e);
-          return [];
+          console.warn('Failed to load itinerary items from Firestore, using localStorage:', e.message);
+          return local;
         }
       },
 
@@ -2007,7 +2059,7 @@
       const autoGrow = (el) => {
         if (!el) return;
         el.style.height = 'auto';
-        el.style.height = Math.min(Math.max(el.scrollHeight, 80), 480) + 'px';
+        el.style.height = Math.min(Math.max(el.scrollHeight, 140), 480) + 'px';
       };
 
       useEffect(() => { setDraft(value); }, [value]);
@@ -2029,21 +2081,13 @@
       if (!editing) {
         return (
           <div className={`space-y-1 ${showBorder ? 'border-t dark:border-slate-700 pt-2' : ''}`}>
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</label>
-              <button
-                onClick={() => setEditing(true)}
-                className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
-              >
-                {value ? 'Edit' : 'Add'}
-              </button>
-            </div>
+            <label className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</label>
             {value ? (
-              <div className="text-sm text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800 rounded p-1 -m-1" onClick={() => setEditing(true)}>
+              <div className="text-sm text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800 rounded p-1 -m-1 transition" onClick={() => setEditing(true)} title="Click to edit">
                 <SimpleMarkdown text={value} />
               </div>
             ) : (
-              <p className="text-sm text-gray-400 italic cursor-pointer" onClick={() => setEditing(true)}>{emptyText || `No ${label.toLowerCase()} yet — tap to add`}</p>
+              <p className="text-sm text-gray-400 italic cursor-pointer hover:text-blue-500 transition" onClick={() => setEditing(true)}>{emptyText || `Tap to add ${label.toLowerCase()}`}</p>
             )}
           </div>
         );
@@ -2058,7 +2102,7 @@
             onChange={e => { setDraft(e.target.value); autoGrow(e.target); }}
             className="w-full px-3 py-2 border rounded dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 resize-none overflow-hidden"
             placeholder={placeholder || `Add ${label.toLowerCase()}...`}
-            style={{ minHeight: 80 }}
+            style={{ minHeight: 140 }}
           />
           <div className="flex gap-2">
             <button
@@ -2284,7 +2328,8 @@
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={processing}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-dashed rounded-lg text-gray-500 dark:text-gray-400 dark:border-slate-600 hover:border-blue-400 hover:text-blue-500 dark:hover:border-blue-500 transition disabled:opacity-50"
+              title="Add info from photo (OCR)"
+              className="flex items-center gap-1 px-2 py-1 text-[11px] text-gray-500 dark:text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 transition disabled:opacity-50"
             >
               {processing ? (
                 <><span className="animate-spin">⏳</span> OCR processing...</>
@@ -2368,15 +2413,37 @@
       useEffect(() => { setEditing(false); setConfirmingDelete(false); }, [pin?.id]);
 
       const startEditing = () => {
+        // Extract legacy "Source: [label](url)" markdown from description into sources[]
+        let desc = pin.description || '';
+        const extractedLinks = [];
+        // Match patterns like "Source: [Bon Traveler](https://...)" or "Source: [label](url)" on a line
+        const sourcePattern = /(?:^|\n)\s*Source:\s*\[([^\]]*)\]\(([^)]+)\)\s*/gi;
+        desc = desc.replace(sourcePattern, (match, label, url) => {
+          extractedLinks.push({ label: label.trim(), url: url.trim() });
+          return '';
+        }).replace(/\n{3,}/g, '\n\n').trim();
+
+        const existingSources = Array.isArray(pin.sources) && pin.sources.length
+          ? pin.sources
+          : (pin.source_url || pin.source_name ? [{ label: pin.source_name || '', url: pin.source_url || '' }] : []);
+        // Merge extracted + existing, dedupe by url
+        const merged = [...existingSources, ...extractedLinks];
+        const seen = new Set();
+        const dedupedSources = merged.filter(s => {
+          const key = (s.url || '').trim().toLowerCase();
+          if (!key && !s.label) return false;
+          if (key && seen.has(key)) return false;
+          if (key) seen.add(key);
+          return true;
+        });
+
         setEditData({
           name: pin.name || '',
           address: pin.address || '',
-          description: pin.description || '',
+          description: desc,
           source_name: pin.source_name || '',
           source_url: pin.source_url || '',
-          sources: Array.isArray(pin.sources) && pin.sources.length
-            ? pin.sources
-            : (pin.source_url || pin.source_name ? [{ label: pin.source_name || '', url: pin.source_url || '' }] : []),
+          sources: dedupedSources,
           category: pin.category || 'other',
           personal_notes: pin.personal_notes || '',
           emoji: pin.emoji || '📍',
@@ -2553,12 +2620,47 @@
               ) : (
                 <>
                   <p className="text-xs text-gray-500 dark:text-gray-400">{pin.address}</p>
+
+                  {/* Opening Hours — compact, right under the address */}
+                  {Object.keys(pin.opening_hours || {}).length > 0 && (
+                    <div>
+                      <button onClick={() => setShowHours(!showHours)} className="flex items-center gap-2 w-full text-left">
+                        <span className={`inline-block w-2 h-2 rounded-full ${openStatus.status === 'open' ? 'bg-green-500' : 'bg-red-500'}`} />
+                        <span className={`text-xs font-semibold ${openStatus.status === 'open' ? 'text-green-600' : 'text-red-600'}`}>
+                          {openStatus.label}
+                        </span>
+                        <span className="text-xs text-gray-400">{showHours ? '▲' : '▼'}</span>
+                      </button>
+                      {showHours && (
+                        <div className="space-y-0.5 mt-1.5 ml-4">
+                          {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(day => {
+                            const todayDay = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][new Date().getDay()];
+                            const isToday = day === todayDay;
+                            return (
+                              <div key={day} className={`text-xs flex justify-between ${isToday ? 'font-bold text-gray-900 dark:text-white' : 'text-gray-600 dark:text-gray-400'}`}>
+                                <span className="font-medium">{dayName(day)}{isToday ? ' (today)' : ''}</span>
+                                <span>{pin.opening_hours[day] || 'Closed'}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="flex gap-1.5">
                     <button
-                      onClick={() => onNavigate(pin)}
+                      onClick={() => {
+                        const lat = parseFloat(pin.lat);
+                        const lng = parseFloat(pin.lng);
+                        const q = !isNaN(lat) && !isNaN(lng)
+                          ? `${lat},${lng}`
+                          : encodeURIComponent(pin.address || pin.name);
+                        window.open(`https://www.google.com/maps/dir/?api=1&destination=${q}`, '_blank', 'noopener');
+                      }}
                       className="flex-1 flex items-center justify-center gap-1.5 bg-blue-600 text-white px-2 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700"
                     >
-                      <DirectionsIcon /> Directions
+                      🧭 Directions
                     </button>
                     {onAddToItinerary && (
                       <button
@@ -2571,7 +2673,12 @@
                     <button
                       onClick={() => {
                         navigator.clipboard.writeText(pin.address);
-                        alert('Address copied!');
+                        // Lightweight inline toast
+                        const t = document.createElement('div');
+                        t.textContent = '✓ Address copied';
+                        t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(22,163,74,0.95);color:white;padding:8px 16px;border-radius:999px;font-size:13px;font-weight:500;box-shadow:0 4px 12px rgba(0,0,0,0.3);z-index:99999;animation:bw-toast-in 200ms ease-out;';
+                        document.body.appendChild(t);
+                        setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 200ms'; setTimeout(() => t.remove(), 220); }, 1600);
                       }}
                       className="px-2 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg text-xs hover:bg-gray-100 dark:hover:bg-slate-700"
                     >
@@ -2945,33 +3052,6 @@
 
               return <CalendarSection />;
             })()}
-
-            {/* Opening Hours — compact collapsible */}
-            {!editing && Object.keys(pin.opening_hours || {}).length > 0 && (
-              <div>
-                <button onClick={() => setShowHours(!showHours)} className="flex items-center gap-2 w-full text-left">
-                  <span className={`inline-block w-2 h-2 rounded-full ${openStatus.status === 'open' ? 'bg-green-500' : 'bg-red-500'}`} />
-                  <span className={`text-xs font-semibold ${openStatus.status === 'open' ? 'text-green-600' : 'text-red-600'}`}>
-                    {openStatus.label}
-                  </span>
-                  <span className="text-xs text-gray-400">{showHours ? '▲' : '▼'}</span>
-                </button>
-                {showHours && (
-                  <div className="space-y-0.5 mt-1.5 ml-4">
-                    {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(day => {
-                      const todayDay = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][new Date().getDay()];
-                      const isToday = day === todayDay;
-                      return (
-                        <div key={day} className={`text-xs flex justify-between ${isToday ? 'font-bold text-gray-900 dark:text-white' : 'text-gray-600 dark:text-gray-400'}`}>
-                          <span className="font-medium">{dayName(day)}{isToday ? ' (today)' : ''}</span>
-                          <span>{pin.opening_hours[day] || 'Closed'}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
 
             {/* Ratings — compact single-line per source */}
             {(pin.google_rating || pin.yelp_rating) && (
@@ -3689,7 +3769,7 @@
 
       // Parse plain pasted text into candidate places
       const parsePastedText = (text) => {
-        const skipPatterns = /^(introduction|getting there|getting around|how to get|tips|map|related|about|author|comment|share|conclusion|summary|faq|where to stay|where to eat|when to visit|final thoughts|more|other|the bottom line|pin this|you may also|read more|subscribe|newsletter|what to|why|the best|a guide|welcome|table of contents|contents|overview|highlights|navigation|menu|sidebar|footer|header|contact|resources|disclosure|disclaimer|affiliate|write a comment|cancel reply|leave a reply|save my name|planning a trip|are you booking|book your|use my|ps\s*[—–\-]|related posts|popular posts|recent posts|you might also|join our|sign up|follow us|connect with|advertisement|skip to|jump to|search|home|log in|sign in|register|my account|wishlist|cart|categories?|tags?|filed under|posted in|share this|print this|email this|save this|bookmark|more from|read next|up next|trending|recommended|sponsored|advertisement|made in \w+|top stories|latest|popular|features?|sections?|site map|terms|privacy|cookie|©|copyright|all rights reserved)/i;
+        const skipPatterns = /^(introduction|getting there|getting around|how to get|tips|map|related|about|author|comment|share|conclusion|summary|faq|where to stay|where to eat|when to visit|final thoughts|more|other|the bottom line|pin this|you may also|read more|subscribe|newsletter|what to|why|the best|a guide|welcome|table of contents|contents|overview|highlights|navigation|menu|sidebar|footer|header|contact|resources|disclosure|disclaimer|affiliate|write a comment|cancel reply|leave a reply|save my name|planning a trip|are you booking|book your|use my|ps\s*[—–\-]|related posts|popular posts|recent posts|you might also|join our|sign up|follow us|connect with|advertisement|skip to|jump to|go to|search|home|log in|sign in|register|my account|wishlist|cart|categories?|tags?|filed under|posted in|share this|print this|email this|save this|bookmark|more from|read next|up next|trending|recommended|sponsored|advertisement|made in \w+|top stories|latest|popular|features?|sections?|site map|terms|privacy|cookie|©|copyright|all rights reserved|explore cities|time out markets|facebook|twitter|pinterest|instagram|speciality stores|one-stop shops|more great|popular on|back to top|digital edition|magazine subscription|time out (group|products|worldwide|tokyo|london|new york))/i;
         const junkContent = /\b(comment|reply|subscribe|booking|itinerary|newsletter|save my name|browser|affiliate|disclosure|cancel|write a|advertisement|sponsored|click here|learn more|view all|all rights)\b/i;
         const articleTitleLike = /\b(guide to|itinerary|ultimate|top \d+|best of|things to do|where to|how to|planning|tips for)\b/i;
         // Bylines / metadata lines that shouldn't be treated as place names
@@ -3786,8 +3866,69 @@
           });
         }
 
-        // Strategy 2: short-line-followed-by-paragraph heading detection
         const blocks = clean.split(/\n\s*\n+/).map(b => b.trim()).filter(Boolean);
+
+        // Strategy 1.5: "Heading + metadata bullets / Photo credit + description" (Time Out / city guide style)
+        // A place heading is a short line followed by a block that starts with "* " (bullet list of tags/categories)
+        // OR a "Photo:" credit line. The description is the first substantial paragraph after that metadata.
+        {
+          const guideStyle = [];
+          for (let b = 0; b < blocks.length - 1; b++) {
+            const blockLines = blocks[b].split('\n').map(l => l.trim()).filter(Boolean);
+            if (blockLines.length !== 1) continue; // must be a single-line heading block
+            let candidate = blockLines[0].replace(/^\d{1,2}[\.\)\-–—:]\s*/, '').trim();
+            candidate = candidate.replace(/^[•·\-\*]\s+/, '').trim();
+            candidate = candidate.replace(/^_+|_+$/g, '').trim(); // strip markdown underscores
+            if (candidate.length < 3 || candidate.length > 80) continue;
+            if (candidate.includes('?')) continue;
+            if (/[.!;]$/.test(candidate)) continue;
+            if (skipPatterns.test(candidate)) continue;
+            if (junkContent.test(candidate)) continue;
+            if (articleTitleLike.test(candidate)) continue;
+            if (!isLikelyPlaceName(candidate)) continue;
+            const wc = candidate.split(/\s+/).length;
+            if (wc > 10 || wc < 1) continue;
+
+            // Next block must be a bullet list OR start with "Photo:" OR a neighborhood-style metadata block
+            const nextBlock = blocks[b + 1];
+            const nextLines = nextBlock.split('\n').map(l => l.trim()).filter(Boolean);
+            const isBulletBlock = nextLines.length >= 1 && nextLines.every(l => /^[\*•·\-]\s+/.test(l) || /^photo\s*:/i.test(l));
+            const startsWithPhoto = /^photo\s*:/i.test(nextLines[0] || '');
+            if (!isBulletBlock && !startsWithPhoto) continue;
+
+            // Find description: first substantial paragraph in subsequent blocks, skip bullets/photo lines
+            let desc = '';
+            for (let nb = b + 1; nb <= Math.min(blocks.length - 1, b + 4); nb++) {
+              const cand = blocks[nb].split('\n').map(l => l.trim()).filter(Boolean);
+              for (const line of cand) {
+                if (/^[\*•·\-]\s+/.test(line)) continue;
+                if (/^photo\s*:/i.test(line)) continue;
+                if (creditLine.test(line)) continue;
+                if (line.length < 40) continue;
+                if (junkContent.test(line)) continue;
+                if (altTextLike(line)) continue;
+                if (visualLang.test(line)) continue;
+                if (/^read more$/i.test(line)) continue;
+                desc = line.substring(0, 400);
+                break;
+              }
+              if (desc) break;
+            }
+            if (!desc) continue; // skip headings without real descriptions
+            guideStyle.push({ name: candidate, description: desc, checked: true, loading: false, placeData: null });
+          }
+          if (guideStyle.length >= 3) {
+            const seen = new Set();
+            return guideStyle.filter(p => {
+              const key = p.name.toLowerCase();
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+          }
+        }
+
+        // Strategy 2: short-line-followed-by-paragraph heading detection (simpler blogs)
         const places = [];
         const seenNames = new Set();
         for (let b = 0; b < blocks.length; b++) {
@@ -9104,27 +9245,27 @@
 
           {/* New itinerary form */}
           {showNewItinerary && (
-            <div className="p-4 border-b dark:border-slate-700 space-y-3 bg-blue-50/50 dark:bg-blue-900/10">
+            <div className="p-4 border-b dark:border-slate-700 space-y-3 bg-blue-50/50 dark:bg-blue-900/10 min-w-0">
               <input type="text" value={newName} onChange={e => setNewName(e.target.value)}
                 placeholder="Trip name (e.g. Japan 2026)"
-                className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
-              <div className="flex flex-col gap-2">
-                <div>
+                className="w-full min-w-0 px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white box-border" />
+              <div className="flex flex-col gap-2 min-w-0">
+                <div className="min-w-0">
                   <label className="text-xs text-gray-500 dark:text-gray-400 block mb-0.5">Start date</label>
                   <input type="date" value={newStartDate} onChange={e => {
                       setNewStartDate(e.target.value);
                       if (newEndDate && e.target.value > newEndDate) setNewEndDate('');
                     }}
-                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                    className="w-full min-w-0 px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white box-border" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <label className="text-xs text-gray-500 dark:text-gray-400 block mb-0.5">End date</label>
                   <input type="date" value={newEndDate} min={newStartDate || undefined} disabled={!newStartDate}
                     onChange={e => {
                       if (newStartDate && e.target.value < newStartDate) { setNewEndDate(newStartDate); return; }
                       setNewEndDate(e.target.value);
                     }}
-                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white disabled:opacity-50 disabled:cursor-not-allowed" />
+                    className="w-full min-w-0 px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white disabled:opacity-50 disabled:cursor-not-allowed box-border" />
                   {!newStartDate && <p className="text-[11px] text-gray-400 mt-0.5">Pick start date first</p>}
                 </div>
               </div>
@@ -9735,22 +9876,28 @@
       // Collection view (map + list)
       return (
         <div className={`${darkMode ? 'dark' : ''} h-screen w-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-white overflow-hidden`}>
+          {/* Small map-name chip (desktop only, below top bar, subtle) */}
+          {!isMobile && (
+            <div
+              className="absolute left-4 pointer-events-none text-xs font-semibold text-gray-700 dark:text-gray-200 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm rounded-full shadow px-3 py-1 max-w-[200px] truncate"
+              style={{ top: 72, zIndex: 9000 }}
+              title={collections.find(c => c.id === activeCollection)?.name}
+            >
+              {collections.find(c => c.id === activeCollection)?.name || ''}
+            </div>
+          )}
+
           {/* Floating top controls (Google Maps style) — overlay on map, no fixed bar */}
           <div className="absolute top-0 left-0 right-0 pointer-events-none" style={{ zIndex: 9001 }}>
             <div className="flex items-start gap-2 p-3 sm:p-4">
-              {/* Back + title chip (left) */}
-              <div className="pointer-events-auto flex items-center gap-1 bg-white dark:bg-slate-800 rounded-full shadow-lg px-1 py-1 max-w-[40%] flex-shrink-0">
-                <button
-                  onClick={() => setView('home')}
-                  className="w-9 h-9 flex items-center justify-center hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full text-lg flex-shrink-0"
-                  title="Back to maps"
-                >
-                  ←
-                </button>
-                <span className="text-sm font-semibold dark:text-white truncate pr-2 hidden sm:inline" title={collections.find(c => c.id === activeCollection)?.name}>
-                  {collections.find(c => c.id === activeCollection)?.name || ''}
-                </span>
-              </div>
+              {/* Back arrow (left) — title is shown as small overlay chip on desktop only */}
+              <button
+                onClick={() => setView('home')}
+                className="pointer-events-auto w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-lg flex-shrink-0"
+                title={`Back — ${collections.find(c => c.id === activeCollection)?.name || 'Maps'}`}
+              >
+                ←
+              </button>
 
               {/* Search (center, takes remaining space) */}
               <div className="pointer-events-auto flex-1 min-w-0">
@@ -9792,10 +9939,10 @@
               </div>
             </div>
 
-            {/* Floating action icons (right side, vertical column on mobile) —
-                hide on mobile when list is open or a pin is selected, to avoid covering content */}
-            <div className={`absolute right-3 sm:right-4 top-16 sm:top-20 flex flex-col gap-2 pointer-events-auto ${
-              isMobile && (showList || selectedPin) ? 'hidden' : ''
+            {/* Floating action icons (right side, vertical column) —
+                hide whenever a right-side panel (pin, itinerary, doc center) is open or list view is open on mobile */}
+            <div className={`absolute right-3 sm:right-4 top-16 sm:top-20 flex flex-col items-end gap-2 pointer-events-auto ${
+              (selectedPin || showItinerary || showDocCenter || (isMobile && showList)) ? 'hidden' : ''
             }`}>
               {!isMobile && (
                 <div className="flex bg-white dark:bg-slate-800 rounded-full shadow-lg p-1">
