@@ -2552,6 +2552,11 @@
                           </span>
                         );
                       })()}
+                      {pin.is_vegetarian && (
+                        <span className="inline-flex items-center gap-0.5 bg-green-600 text-white px-1.5 py-px rounded-full" style={{ fontSize: '10px' }} title="Vegetarian-friendly">
+                          🌱 Veg
+                        </span>
+                      )}
                       {/* Recommender chip (who suggested it) */}
                       {pin.source_name && (
                         <span className="inline-block bg-gray-600 text-white px-1.5 py-px rounded-full" style={{ fontSize: '10px' }} title="Recommender">
@@ -6925,6 +6930,17 @@
                     <SourceField value={formData.source_name || ''} onChange={e => handleChange('source_name', e)} allPins={allPins} />
                   </div>
 
+                  {/* Vegetarian-friendly toggle — surfaces 🌱 badge in lists + enables a veg filter */}
+                  <label className="flex items-center gap-2 cursor-pointer select-none py-1">
+                    <input
+                      type="checkbox"
+                      checked={!!formData.is_vegetarian}
+                      onChange={e => handleChange('is_vegetarian', e.target.checked)}
+                      className="w-4 h-4 accent-green-600"
+                    />
+                    <span className="text-sm dark:text-gray-200">🌱 Vegetarian-friendly</span>
+                  </label>
+
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300">Description</label>
@@ -7535,7 +7551,8 @@
         category: null,
         source: null,
         myRating: null,
-        googleRating: null
+        googleRating: null,
+        vegetarian: false,
       });
       const [showOpenAtPicker, setShowOpenAtPicker] = useState(false);
       const [openAtDay, setOpenAtDay] = useState('mon');
@@ -7568,6 +7585,9 @@
         }
         if (filters.category) {
           result = result.filter(p => p.category === filters.category);
+        }
+        if (filters.vegetarian) {
+          result = result.filter(p => !!p.is_vegetarian);
         }
         if (filters.source) {
           result = result.filter(p => p.source_name === filters.source);
@@ -7659,7 +7679,7 @@
             <select
               value={sortBy}
               onChange={e => setSortBy(e.target.value)}
-              className="w-full px-3 py-2 border rounded dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm"
+              className="w-full pl-3 pr-9 py-2 border rounded dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm"
             >
               <option value="name">Sort by Name</option>
               <option value="date">Sort by Date Added</option>
@@ -7679,6 +7699,17 @@
                   }`}
                 >
                   Open Now
+                </button>
+                <button
+                  onClick={() => setFilters(f => ({ ...f, vegetarian: !f.vegetarian }))}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                    filters.vegetarian
+                      ? 'bg-green-700 text-white'
+                      : 'bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
+                  }`}
+                  title="Only show vegetarian-friendly pins"
+                >
+                  🌱 Veg
                 </button>
                 <button
                   onClick={() => {
@@ -7760,9 +7791,9 @@
                   <option value="4">4+ ★</option>
                   <option value="4.5">4.5+ ★</option>
                 </select>
-                {(filters.openNow || filters.openAt || filters.category || filters.source || filters.myRating || filters.googleRating) && (
+                {(filters.openNow || filters.openAt || filters.category || filters.source || filters.myRating || filters.googleRating || filters.vegetarian) && (
                   <button
-                    onClick={() => { setFilters({ openNow: false, openAt: null, category: null, source: null, myRating: null, googleRating: null }); setShowOpenAtPicker(false); }}
+                    onClick={() => { setFilters({ openNow: false, openAt: null, category: null, source: null, myRating: null, googleRating: null, vegetarian: false }); setShowOpenAtPicker(false); }}
                     className="px-3 py-1 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 transition hover:bg-red-200"
                   >
                     Clear all
@@ -7859,6 +7890,9 @@
                               )}
                             </div>
                             <div className="flex items-center gap-1.5 flex-shrink-0">
+                              {pin.is_vegetarian && (
+                                <span className="text-[10px]" title="Vegetarian-friendly">🌱</span>
+                              )}
                               {coGroup && (
                                 <span className="text-xs text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-slate-700 px-1.5 py-0.5 rounded-full">
                                   {coGroup.length}×
@@ -8714,9 +8748,35 @@
       const [description, setDescription] = useState(item?.description || '');
       const [pinSearch, setPinSearch] = useState('');
 
-      const filteredPins = pinSearch
-        ? pins.filter(p => p.name.toLowerCase().includes(pinSearch.toLowerCase()))
-        : pins.slice(0, 20);
+      // If a meal preset passed an anchor location (e.g. "sort by proximity to my 12:30 item"),
+      // filter to food-like pins and sort by distance.
+      const mealMode = item?.__mealCategories || null; // array of categories to filter
+      const anchorLat = item?.__anchorLat;
+      const anchorLng = item?.__anchorLng;
+      const haversine = (lat1, lng1, lat2, lng2) => {
+        const R = 6371;
+        const toRad = x => x * Math.PI / 180;
+        const dLat = toRad(lat2 - lat1);
+        const dLng = toRad(lng2 - lng1);
+        const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
+        return 2 * R * Math.asin(Math.sqrt(a));
+      };
+      let filteredPins;
+      if (pinSearch) {
+        filteredPins = pins.filter(p => p.name.toLowerCase().includes(pinSearch.toLowerCase()));
+      } else if (mealMode && mealMode.length > 0) {
+        const foodPins = pins.filter(p => mealMode.includes(p.category));
+        if (anchorLat != null && anchorLng != null && foodPins.length > 0) {
+          filteredPins = foodPins
+            .map(p => ({ ...p, __dist: p.lat && p.lng ? haversine(anchorLat, anchorLng, p.lat, p.lng) : Infinity }))
+            .sort((a, b) => a.__dist - b.__dist)
+            .slice(0, 30);
+        } else {
+          filteredPins = foodPins.slice(0, 30);
+        }
+      } else {
+        filteredPins = pins.slice(0, 20);
+      }
 
       const handleSave = () => {
         let lat = item?.lat || 0, lng = item?.lng || 0;
@@ -8730,8 +8790,13 @@
             finalEmoji = pin.emoji || finalEmoji;
           }
         }
+        // Strip transient hint fields that shouldn't be persisted
+        const base = { ...(item || {}) };
+        delete base.__mealCategories;
+        delete base.__anchorLat;
+        delete base.__anchorLng;
         onSave({
-          ...(item || {}),
+          ...base,
           id: item?.id || generateId(),
           type, pin_id: type === 'pin' ? selectedPinId : null,
           name: finalName, emoji: finalEmoji,
@@ -8766,18 +8831,31 @@
               {/* Pin selector */}
               {type === 'pin' && (
                 <div className="space-y-2">
+                  {mealMode && !pinSearch && (
+                    <p className="text-xs text-blue-600 dark:text-blue-400 flex items-center gap-1">
+                      <span>📍</span> Nearby food pins{anchorLat != null ? ' (sorted by distance)' : ''}
+                    </p>
+                  )}
                   <input
                     type="text" value={pinSearch} onChange={e => setPinSearch(e.target.value)}
-                    placeholder="Search your pins..."
+                    placeholder={mealMode ? 'Search all pins…' : 'Search your pins...'}
                     className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
                   />
-                  <div className="max-h-40 overflow-y-auto space-y-1 border rounded-lg dark:border-slate-700 p-1">
+                  <div className="max-h-56 overflow-y-auto space-y-1 border rounded-lg dark:border-slate-700 p-1">
+                    {filteredPins.length === 0 && (
+                      <p className="text-xs text-gray-400 text-center py-3">
+                        {mealMode ? 'No food pins yet — add some restaurants to your map first.' : 'No pins found'}
+                      </p>
+                    )}
                     {filteredPins.map(pin => (
                       <button key={pin.id}
                         onClick={() => { setSelectedPinId(pin.id); setName(pin.name); setEmoji(pin.emoji || '📌'); }}
                         className={`w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-slate-700 ${selectedPinId === pin.id ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-400' : ''}`}>
                         <span>{pin.emoji || '📌'}</span>
-                        <span className="truncate dark:text-white">{pin.name}</span>
+                        <span className="truncate dark:text-white flex-1 min-w-0">{pin.name}</span>
+                        {pin.__dist != null && pin.__dist !== Infinity && (
+                          <span className="text-[10px] text-gray-400 flex-shrink-0">{pin.__dist < 1 ? `${Math.round(pin.__dist * 1000)}m` : `${pin.__dist.toFixed(1)}km`}</span>
+                        )}
                       </button>
                     ))}
                   </div>
@@ -8908,7 +8986,7 @@
                 {timeStr && <span className={`text-xs font-mono flex-shrink-0 ${isAutoTime ? 'text-gray-400 dark:text-gray-500 italic' : 'text-blue-600 dark:text-blue-400'}`} title={isAutoTime ? 'Auto-scheduled from day start' : 'Scheduled time'}>{formatTime(timeStr)}</span>}
                 <span className="text-sm font-medium truncate dark:text-white">{item.name || 'Untitled'}</span>
               </div>
-              {item.estimated_duration_minutes && (
+              {item.estimated_duration_minutes > 0 && (
                 <span className="text-xs text-gray-400">{item.estimated_duration_minutes} min</span>
               )}
             </div>
@@ -9085,25 +9163,54 @@
                 </div>
               )}
 
-              {/* Quick-add meal slots — clicking pre-fills the form with type=meal + suggested time */}
+              {/* Quick-add meal slots — clicking opens the form with nearby food pins sorted by distance */}
               <div className="flex gap-1 flex-wrap pb-0.5">
                 {[
-                  { name: 'Breakfast', emoji: '🥐', time: '08:00' },
-                  { name: 'Lunch',     emoji: '🍱', time: '12:30' },
-                  { name: 'Dinner',    emoji: '🍽️', time: '19:00' },
+                  // target: middle of the eating window; used to find the day's item closest to meal time
+                  { name: 'Breakfast', emoji: '🥐', time: '09:30', targetMin: 9 * 60 + 30 },
+                  { name: 'Lunch',     emoji: '🍱', time: '12:30', targetMin: 12 * 60 + 30 },
+                  { name: 'Dinner',    emoji: '🍽️', time: '18:00', targetMin: 18 * 60 },
                 ].map(meal => (
                   <button
                     key={meal.name}
-                    onClick={() => onAddItem({
-                      __mealPreset: true,
-                      type: 'pin',                // let user search/select an existing pin
-                      name: meal.name,            // pre-label "Lunch" — overwritten when pin selected
-                      emoji: meal.emoji,
-                      scheduled_time: day.start_time ? '' : meal.time, // if day has start_time, auto-schedule handles it
-                      description: '',
-                    })}
+                    onClick={() => {
+                      // Pick an anchor: the item whose (auto-)scheduled time is closest to the meal's target.
+                      // Fallback to day starting_point, then last item with coordinates.
+                      let anchor = null;
+                      const timedItems = itemsByOrder
+                        .map(it => {
+                          const t = it.scheduled_time || autoTimes[it.id];
+                          if (!t || !/^\d{2}:\d{2}$/.test(t)) return null;
+                          const [h, m] = t.split(':').map(Number);
+                          return { item: it, mins: h * 60 + m };
+                        })
+                        .filter(Boolean);
+                      if (timedItems.length > 0) {
+                        timedItems.sort((a, b) => Math.abs(a.mins - meal.targetMin) - Math.abs(b.mins - meal.targetMin));
+                        const best = timedItems[0].item;
+                        if (best.lat && best.lng) anchor = { lat: best.lat, lng: best.lng };
+                      }
+                      if (!anchor && day.starting_point?.lat) {
+                        anchor = { lat: day.starting_point.lat, lng: day.starting_point.lng };
+                      }
+                      if (!anchor) {
+                        const last = [...itemsByOrder].reverse().find(i => i.lat && i.lng);
+                        if (last) anchor = { lat: last.lat, lng: last.lng };
+                      }
+                      onAddItem({
+                        __mealPreset: true,
+                        __mealCategories: ['restaurant', 'coffee', 'treats', 'bar', 'food_market'],
+                        __anchorLat: anchor?.lat,
+                        __anchorLng: anchor?.lng,
+                        type: 'pin',
+                        name: meal.name,
+                        emoji: meal.emoji,
+                        scheduled_time: day.start_time ? '' : meal.time,
+                        description: '',
+                      });
+                    }}
                     className="flex-1 min-w-[80px] text-xs px-2 py-1.5 rounded-lg border border-dashed dark:border-slate-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700/50 hover:text-gray-700 hover:border-gray-400 transition flex items-center justify-center gap-1"
-                    title={`Add ${meal.name.toLowerCase()}`}
+                    title={`Add ${meal.name.toLowerCase()} — suggests food pins near your other stops at this time`}
                   >
                     <span>{meal.emoji}</span>
                     <span>+ {meal.name}</span>
@@ -9305,7 +9412,8 @@
           setEditingItem({});
           return;
         }
-        // Meal preset chip — open form pre-filled with meal type + suggested time/emoji
+        // Meal preset chip — open form pre-filled with meal type + suggested time/emoji.
+        // Keep __mealCategories / __anchorLat / __anchorLng so the form can sort pins by distance.
         if (newItem.__mealPreset) {
           const { __mealPreset, ...preset } = newItem;
           setAddingToDay(dayId);
@@ -9410,9 +9518,11 @@
       const transitCacheRef = useRef({});
       const transitDebounceRef = useRef(null);
 
-      const fetchTransitForPair = async (origin, destination) => {
+      const fetchTransitForPair = async (origin, destination, departureISO) => {
         if (!origin?.lat || !destination?.lat) return { result: null, error: null };
-        const cacheKey = `${origin.lat.toFixed(5)},${origin.lng.toFixed(5)}->${destination.lat.toFixed(5)},${destination.lng.toFixed(5)}`;
+        // Include departure time in cache key so different day start-times don't return stale results
+        const depKey = departureISO ? departureISO.substring(0, 13) : 'now'; // hour-level cache bucket
+        const cacheKey = `${origin.lat.toFixed(5)},${origin.lng.toFixed(5)}->${destination.lat.toFixed(5)},${destination.lng.toFixed(5)}@${depKey}`;
         if (transitCacheRef.current[cacheKey]) return { result: transitCacheRef.current[cacheKey], error: null };
 
         const apiKey = getGoogleApiKey();
@@ -9432,7 +9542,13 @@
                 travelMode,
               };
               if (travelMode === 'TRANSIT') {
-                body.departureTime = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+                // Prefer caller-supplied departure (day start time) so timing reflects their plan.
+                // Routes API requires it to be in the future — so if the supplied time is in the past, bump it forward.
+                let dep = departureISO ? new Date(departureISO) : new Date(Date.now() + 60 * 60 * 1000);
+                if (isNaN(dep.getTime()) || dep.getTime() < Date.now() + 60 * 1000) {
+                  dep = new Date(Date.now() + 60 * 60 * 1000);
+                }
+                body.departureTime = dep.toISOString();
               }
               const resp = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
                 method: 'POST',
@@ -9524,13 +9640,40 @@
           return;
         }
 
+        // Build per-segment departure times from day.start_time so TRANSIT routing uses the user's plan.
+        // cursor starts at day.start_time; after each item, advance by (transit + item duration) so later segments
+        // query departure = "when we'd realistically leave the previous stop".
+        const todayISO = new Date().toISOString().substring(0, 10);
+        const baseDate = dayObj.date || todayISO;
+        let cursorMs = null;
+        if (dayObj.start_time && /^\d{2}:\d{2}$/.test(dayObj.start_time)) {
+          const [hh, mm] = dayObj.start_time.split(':').map(Number);
+          const d = new Date(`${baseDate}T00:00:00`);
+          d.setHours(hh, mm, 0, 0);
+          cursorMs = d.getTime();
+          // Routes API requires future time — if this day is in the past, push to next weekday same time
+          if (cursorMs < Date.now()) {
+            const soon = new Date(Date.now() + 24 * 60 * 60 * 1000);
+            soon.setHours(hh, mm, 0, 0);
+            cursorMs = soon.getTime();
+          }
+        }
+
         const updates = [];
         let dayError = null;
         for (let i = 1; i < points.length; i++) {
-          const { result, error } = await fetchTransitForPair(points[i - 1], points[i]);
+          const depISO = cursorMs ? new Date(cursorMs).toISOString() : null;
+          const { result, error } = await fetchTransitForPair(points[i - 1], points[i], depISO);
           if (error && !dayError) dayError = error;
           if (result && points[i].id !== '__start__') {
             updates.push({ id: points[i].id, transit_info: result });
+          }
+          // Advance cursor for next segment: add this segment's travel time + the item's duration
+          if (cursorMs) {
+            const segMin = result?.estimated_time_minutes || 0;
+            const item = dayItems.find(it => it.id === points[i].id);
+            const itemDur = item?.estimated_duration_minutes || 0;
+            cursorMs += (segMin + itemDur) * 60 * 1000;
           }
         }
         setTransitErrors(prev => {
@@ -10793,12 +10936,7 @@
               >
                 {showList ? <><span className="text-base">🗺️</span> Map</> : <><span className="text-base">📋</span> List</>}
               </button>
-              <button
-                onClick={() => setView('home')}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-full shadow-lg text-sm font-medium bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 border dark:border-slate-600 transition"
-              >
-                🏠
-              </button>
+              {/* Home button removed — same action as top-left back arrow */}
             </div>
           )}
 
