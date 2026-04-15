@@ -3869,8 +3869,9 @@
         const blocks = clean.split(/\n\s*\n+/).map(b => b.trim()).filter(Boolean);
 
         // Strategy 1.5: "Heading + metadata bullets / Photo credit + description" (Time Out / city guide style)
-        // A place heading is a short line followed by a block that starts with "* " (bullet list of tags/categories)
-        // OR a "Photo:" credit line. The description is the first substantial paragraph after that metadata.
+        // A place heading is a single-line block. The NEXT block starts with bullet tags (* Shopping) or Photo:
+        // followed by the actual description paragraphs. We walk lines in the next block, skipping metadata
+        // (bullets, Photo:, Credit:), then collect the first substantial paragraph as the description.
         {
           const guideStyle = [];
           for (let b = 0; b < blocks.length - 1; b++) {
@@ -3889,26 +3890,32 @@
             const wc = candidate.split(/\s+/).length;
             if (wc > 10 || wc < 1) continue;
 
-            // Next block must be a bullet list OR start with "Photo:" OR a neighborhood-style metadata block
-            const nextBlock = blocks[b + 1];
-            const nextLines = nextBlock.split('\n').map(l => l.trim()).filter(Boolean);
-            const isBulletBlock = nextLines.length >= 1 && nextLines.every(l => /^[\*•·\-]\s+/.test(l) || /^photo\s*:/i.test(l));
-            const startsWithPhoto = /^photo\s*:/i.test(nextLines[0] || '');
-            if (!isBulletBlock && !startsWithPhoto) continue;
+            // Next block's FIRST line must look like metadata (bullet or Photo:) — strong signal
+            // that the preceding heading is a place name, not a section header.
+            const nextLines = blocks[b + 1].split('\n').map(l => l.trim()).filter(Boolean);
+            if (!nextLines.length) continue;
+            const firstIsBullet = /^[\*•·\-]\s+/.test(nextLines[0]);
+            const firstIsPhoto = /^photo\s*:/i.test(nextLines[0]);
+            if (!firstIsBullet && !firstIsPhoto) continue;
 
-            // Find description: first substantial paragraph in subsequent blocks, skip bullets/photo lines
+            // Find description: first substantial paragraph in the next 1-3 blocks, skipping metadata lines.
+            const isMetaLine = (line) => (
+              /^[\*•·\-]\s+/.test(line) ||
+              /^photo\s*:/i.test(line) ||
+              creditLine.test(line) ||
+              /^read more$/i.test(line) ||
+              /^share\s*$/i.test(line) ||
+              /^written by/i.test(line)
+            );
             let desc = '';
-            for (let nb = b + 1; nb <= Math.min(blocks.length - 1, b + 4); nb++) {
+            for (let nb = b + 1; nb <= Math.min(blocks.length - 1, b + 3); nb++) {
               const cand = blocks[nb].split('\n').map(l => l.trim()).filter(Boolean);
               for (const line of cand) {
-                if (/^[\*•·\-]\s+/.test(line)) continue;
-                if (/^photo\s*:/i.test(line)) continue;
-                if (creditLine.test(line)) continue;
+                if (isMetaLine(line)) continue;
                 if (line.length < 40) continue;
                 if (junkContent.test(line)) continue;
                 if (altTextLike(line)) continue;
                 if (visualLang.test(line)) continue;
-                if (/^read more$/i.test(line)) continue;
                 desc = line.substring(0, 400);
                 break;
               }
