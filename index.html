@@ -2808,6 +2808,19 @@
               </div>
             )}
 
+            {/* Vegetarian-friendly toggle */}
+            {editing && (
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={!!editData.is_vegetarian}
+                  onChange={e => setEditData(d => ({ ...d, is_vegetarian: e.target.checked }))}
+                  className="w-4 h-4 accent-green-600"
+                />
+                <span className="text-sm dark:text-gray-200">🌱 Vegetarian-friendly</span>
+              </label>
+            )}
+
             {/* Category & Icon — unified picker */}
             {editing && (
               <div>
@@ -4352,9 +4365,12 @@
           srcUrl = '';
         }
         // Strip photo-credit suffixes from names ("Luminosa / Photo: Andrew Cebulka" -> "Luminosa")
+        // Also auto-flag vegetarian if the URL/text screams vegetarian/vegan
+        const looksVeg = /\b(vegetarian|vegan|plant[-\s]?based|meatless)\b/i.test((srcUrl || '') + ' ' + (text || '').substring(0, 500));
         const cleanedParsed = parsed.map(p => ({
           ...p,
-          name: p.name.replace(/\s*[\/|]\s*(photo(graph)?s?|credit|image|courtesy)\s*[:—–\-].*$/i, '').trim()
+          name: p.name.replace(/\s*[\/|]\s*(photo(graph)?s?|credit|image|courtesy)\s*[:—–\-].*$/i, '').trim(),
+          is_vegetarian: looksVeg,
         })).filter(p => p.name.length >= 2);
         setBulkPlaces(cleanedParsed);
         setBulkSource({ source_name: srcName, source_url: srcUrl });
@@ -4566,7 +4582,10 @@
                     return { name, description: desc, checked: true, loading: false, placeData: null };
                   });
 
-                  setBulkPlaces(places);
+                  // Auto-flag vegetarian if URL or title suggests it
+                  const looksVeg = /\b(vegetarian|vegan|plant[-\s]?based|meatless)\b/i.test(url + ' ' + (earlyTitle || ''));
+                  const vegPlaces = looksVeg ? places.map(p => ({ ...p, is_vegetarian: true })) : places;
+                  setBulkPlaces(vegPlaces);
                   setBulkSource({ source_name: sourceName, source_url: url });
                   setFetching(false);
 
@@ -4936,6 +4955,16 @@
                                   ))}
                                 </div>
                               </div>
+                              {/* Vegetarian-friendly toggle */}
+                              <label className="flex items-center gap-2 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={!!place.is_vegetarian}
+                                  onChange={e => setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, is_vegetarian: e.target.checked } : p))}
+                                  className="w-4 h-4 accent-green-600"
+                                />
+                                <span className="text-xs dark:text-gray-200">🌱 Vegetarian-friendly</span>
+                              </label>
                               <div>
                                 <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Description</label>
                                 <textarea
@@ -5130,6 +5159,7 @@
                             address: p.placeData?.address || '',
                             rating: p.placeData?.rating || null,
                             opening_hours: p.placeData?.opening_hours || {},
+                            is_vegetarian: !!p.is_vegetarian,
                           };
                         });
                         if (selected.length === 0) return;
