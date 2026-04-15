@@ -1117,6 +1117,10 @@
         if (idx > -1) arr[idx] = item; else arr.push(item);
         this._saveLocal(key, arr);
       },
+      _removeLocal(key, id) {
+        const arr = this._loadLocal(key).filter(x => x.id !== id);
+        this._saveLocal(key, arr);
+      },
 
       async saveItinerary(itin) {
         const data = { ...itin, updated_at: new Date().toISOString() };
@@ -1228,16 +1232,30 @@
       },
 
       async deleteItem(itemId) {
-        await db.collection('itinerary_items').doc(itemId).delete();
+        // Remove from localStorage first so it can't resurrect from cache
+        this._removeLocal(this._itemsLocalKey, itemId);
+        try {
+          await db.collection('itinerary_items').doc(itemId).delete();
+        } catch (e) {
+          console.warn('[Itinerary Items] Firestore delete failed (kept local removal):', e.message);
+        }
       },
 
       async deleteDay(dayId) {
-        // Delete items for this day first
-        const snap = await db.collection('itinerary_items').where('day_id', '==', dayId).get();
-        const batch = db.batch();
-        snap.forEach(doc => batch.delete(doc.ref));
-        batch.delete(db.collection('itinerary_days').doc(dayId));
-        await batch.commit();
+        // Remove the day + its items from localStorage first
+        const items = this._loadLocal(this._itemsLocalKey).filter(i => i.day_id === dayId);
+        items.forEach(i => this._removeLocal(this._itemsLocalKey, i.id));
+        this._removeLocal(this._daysLocalKey, dayId);
+        try {
+          // Delete items for this day first
+          const snap = await db.collection('itinerary_items').where('day_id', '==', dayId).get();
+          const batch = db.batch();
+          snap.forEach(doc => batch.delete(doc.ref));
+          batch.delete(db.collection('itinerary_days').doc(dayId));
+          await batch.commit();
+        } catch (e) {
+          console.warn('[Itinerary Day] Firestore delete failed (kept local removal):', e.message);
+        }
       }
     };
 
@@ -8647,11 +8665,11 @@
       const [name, setName] = useState(item?.name || '');
       const [emoji, setEmoji] = useState(item?.emoji || '📌');
       const [scheduledTime, setScheduledTime] = useState(item?.scheduled_time || '');
-      // Allow empty duration for arrival markers / instant items. Default to 60 only for new items.
+      // Allow empty duration for arrival markers / instant items. Default blank — user picks per-item.
       const [duration, setDuration] = useState(
-        item?.id != null
-          ? (item.estimated_duration_minutes == null ? '' : String(item.estimated_duration_minutes))
-          : '60'
+        item?.estimated_duration_minutes != null && item.estimated_duration_minutes !== 0
+          ? String(item.estimated_duration_minutes)
+          : ''
       );
       const [description, setDescription] = useState(item?.description || '');
       const [pinSearch, setPinSearch] = useState('');
@@ -8877,7 +8895,7 @@
     };
 
     // ---- DayView (single day card) ----
-    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, transitError }) => {
+    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, transitError, onRecalcTransit }) => {
       const [dragItemId, setDragItemId] = useState(null);
       const [dragOverIndex, setDragOverIndex] = useState(null);
       const [showStartPicker, setShowStartPicker] = useState(false);
@@ -9030,6 +9048,33 @@
                 </div>
               )}
 
+              {/* Quick-add meal slots — clicking pre-fills the form with type=meal + suggested time */}
+              <div className="flex gap-1 flex-wrap pb-0.5">
+                {[
+                  { name: 'Breakfast', emoji: '🥐', time: '08:00' },
+                  { name: 'Lunch',     emoji: '🍱', time: '12:30' },
+                  { name: 'Dinner',    emoji: '🍽️', time: '19:00' },
+                ].map(meal => (
+                  <button
+                    key={meal.name}
+                    onClick={() => onAddItem({
+                      __mealPreset: true,
+                      type: 'pin',                // let user search/select an existing pin
+                      name: meal.name,            // pre-label "Lunch" — overwritten when pin selected
+                      emoji: meal.emoji,
+                      scheduled_time: day.start_time ? '' : meal.time, // if day has start_time, auto-schedule handles it
+                      estimated_duration_minutes: 60,
+                      description: '',
+                    })}
+                    className="flex-1 min-w-[80px] text-xs px-2 py-1.5 rounded-lg border border-dashed dark:border-slate-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700/50 hover:text-gray-700 hover:border-gray-400 transition flex items-center justify-center gap-1"
+                    title={`Add ${meal.name.toLowerCase()}`}
+                  >
+                    <span>{meal.emoji}</span>
+                    <span>+ {meal.name}</span>
+                  </button>
+                ))}
+              </div>
+
               {/* Ordered items */}
               {allSorted.map((item, idx) => (
                 <ItineraryItemRow
@@ -9065,12 +9110,19 @@
               </button>
 
               {/* Day footer actions */}
-              <div className="flex items-center justify-between pt-1 border-t dark:border-slate-700 mt-1">
-                <div className="flex gap-2">
+              <div className="flex items-center justify-between pt-1 border-t dark:border-slate-700 mt-1 gap-2 flex-wrap">
+                <div className="flex items-center gap-2">
                   {totalTransitMin > 0 && (
                     <span className="text-xs text-gray-400 px-2 py-1">
                       📊 {items.length} stops · {Math.floor(totalActivityMin / 60) > 0 ? Math.floor(totalActivityMin / 60) + 'h ' : ''}{totalActivityMin % 60}m activities + {totalTransitMin}m travel
                     </span>
+                  )}
+                  {items.length >= 1 && onRecalcTransit && (
+                    <button
+                      onClick={() => onRecalcTransit(day.id)}
+                      className="text-xs text-blue-500 hover:text-blue-600 px-2 py-1"
+                      title="Recalculate walking / transit times via Google"
+                    >🔄 Travel times</button>
                   )}
                 </div>
                 {!confirmDeleteDay ? (
@@ -9215,6 +9267,13 @@
           // Open the form for this day
           setAddingToDay(dayId);
           setEditingItem({});
+          return;
+        }
+        // Meal preset chip — open form pre-filled with meal type + suggested time/emoji
+        if (newItem.__mealPreset) {
+          const { __mealPreset, ...preset } = newItem;
+          setAddingToDay(dayId);
+          setEditingItem(preset);
           return;
         }
         const item = {
@@ -9397,6 +9456,12 @@
         if (!dayObj) return;
         const dayItems = items.filter(i => i.day_id === dayId).sort((a, b) => (a.order_in_day || 0) - (b.order_in_day || 0));
         if (dayItems.length === 0) return;
+        // Quick API-key check so user gets a clear warning even when no segments succeed
+        if (!getGoogleApiKey()) {
+          setTransitErrors(prev => ({ ...prev, [dayId]: 'Add your Google Places API key in Settings (also enable Routes API).' }));
+          return;
+        }
+        console.log('[Transit] calculating for day', dayId, 'with', dayItems.length, 'items');
 
         // Build sequence: starting_point -> item1 -> item2 -> ...
         const points = [];
@@ -9443,7 +9508,10 @@
         }
       }, [days, items]);
 
-      // Debounced transit recalculation when items change
+      // Debounced transit recalculation when items change.
+      // Use a stable signature of items (id + lat/lng + order) so reorders, lat updates, and adds all trigger.
+      const itemsSig = items.map(i => `${i.id}:${i.day_id}:${i.lat || 0},${i.lng || 0}:${i.order_in_day || 0}`).join('|');
+      const daysSig = days.map(d => `${d.id}:${d.starting_point?.lat || 0},${d.starting_point?.lng || 0}`).join('|');
       useEffect(() => {
         if (!activeItinerary) return;
         if (transitDebounceRef.current) clearTimeout(transitDebounceRef.current);
@@ -9454,7 +9522,7 @@
           });
         }, 1500); // 1.5s debounce
         return () => { if (transitDebounceRef.current) clearTimeout(transitDebounceRef.current); };
-      }, [items.length, expandedDays, activeItinerary?.id]);
+      }, [itemsSig, daysSig, expandedDays, activeItinerary?.id]);
 
       // Handle pending add from PinDetailSheet
       useEffect(() => {
@@ -9651,6 +9719,7 @@
                   onToggle={() => toggleDay(day.id)}
                   onFlyTo={onFlyTo}
                   transitError={transitErrors[day.id]}
+                  onRecalcTransit={(dayId) => { transitCacheRef.current = {}; calculateTransitForDay(dayId); }}
                 />
               ))}
 
