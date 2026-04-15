@@ -3512,11 +3512,18 @@
             <div className="relative flex items-center bg-white dark:bg-slate-800 shadow-lg rounded-full">
               <span className="absolute left-3 text-gray-400 text-sm pointer-events-none"><SearchIcon /></span>
               <input
-                type="text"
+                type="search"
                 placeholder="Search places..."
                 value={query}
                 onChange={e => handleInput(e.target.value)}
                 onFocus={() => setIsFocused(true)}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck="false"
+                data-1p-ignore
+                data-lpignore="true"
+                data-form-type="other"
                 className={`w-full px-3 py-2.5 pl-9 pr-8 border-0 text-sm bg-transparent dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 ${showDropdown ? 'rounded-t-2xl' : 'rounded-full'}`}
               />
               {query && (
@@ -6919,7 +6926,40 @@
                   </div>
 
                   <div>
-                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Description</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300">Description</label>
+                      {/* Quick OCR from photo — appends extracted text to description */}
+                      <label className="text-xs text-gray-500 dark:text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 cursor-pointer flex items-center gap-1" title="Add info from photo (OCR)">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            if (typeof Tesseract === 'undefined') {
+                              alert('OCR not loaded yet. Try again in a moment.');
+                              return;
+                            }
+                            handleChange('description', (formData.description || '') + '\n\n📷 Reading photo…');
+                            try {
+                              const result = await Tesseract.recognize(file, 'eng+jpn', { logger: () => {} });
+                              const text = (result.data?.text || '').trim();
+                              const existing = (formData.description || '').replace(/\n\n📷 Reading photo…$/, '');
+                              const divider = existing ? '\n\n---\n' : '';
+                              handleChange('description', `${existing}${divider}📷 From ${file.name}:\n${text || '(no text found)'}`);
+                            } catch (err) {
+                              console.warn('OCR failed:', err);
+                              handleChange('description', (formData.description || '').replace(/\n\n📷 Reading photo…$/, ''));
+                              alert('Could not read text from that photo.');
+                            }
+                            e.target.value = '';
+                          }}
+                        />
+                        <span>📷</span><span>from photo</span>
+                      </label>
+                    </div>
                     <textarea
                       value={formData.description || ''}
                       onChange={e => handleChange('description', e.target.value)}
@@ -7614,8 +7654,8 @@
 
       return (
         <div className="h-full overflow-y-auto pb-20">
-          {/* Controls */}
-          <div className={`sticky top-0 ${isDarkMode ? 'bg-slate-900' : 'bg-white'} border-b dark:border-slate-700 p-4 space-y-3 z-10`}>
+          {/* Controls — pt-16 so sticky header clears the floating search bar (~64px) above */}
+          <div className={`sticky top-0 ${isDarkMode ? 'bg-slate-900' : 'bg-white'} border-b dark:border-slate-700 px-4 pt-16 pb-4 space-y-3 z-10`}>
             <select
               value={sortBy}
               onChange={e => setSortBy(e.target.value)}
@@ -8963,7 +9003,7 @@
               type: 'pin', pin_id: pin.id,
               name: pin.name, emoji: pin.emoji || '📌',
               lat: pin.lat, lng: pin.lng,
-              estimated_duration_minutes: 60,
+              estimated_duration_minutes: 0,
               order_in_day: items.length,
               scheduled_time: '', description: '',
             });
@@ -8982,12 +9022,9 @@
             onClick={onToggle}
             className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 dark:bg-slate-800/80 hover:bg-gray-100 dark:hover:bg-slate-700/80 transition text-left"
           >
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-gray-400 dark:text-gray-500">D{day.day_number}</span>
-              <span className="text-sm font-semibold dark:text-white">{formatDayDate(day.date)}</span>
-              {day.starting_point?.label && (
-                <span className="text-xs text-gray-400 truncate max-w-[120px]">from {day.starting_point.emoji || '🏨'} {day.starting_point.label}</span>
-              )}
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-xs font-bold text-gray-400 dark:text-gray-500 flex-shrink-0">D{day.day_number}</span>
+              <span className="text-sm font-semibold dark:text-white flex-shrink-0">{formatDayDate(day.date)}</span>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-xs text-gray-400">{items.length} item{items.length !== 1 ? 's' : ''}{totalMinutes > 0 ? ` · ${totalHrs > 0 ? totalHrs + 'h ' : ''}${totalMins > 0 ? totalMins + 'm' : ''}` : ''}{totalTransitMin > 0 ? ` (${totalTransitMin}m travel)` : ''}</span>
@@ -9063,7 +9100,6 @@
                       name: meal.name,            // pre-label "Lunch" — overwritten when pin selected
                       emoji: meal.emoji,
                       scheduled_time: day.start_time ? '' : meal.time, // if day has start_time, auto-schedule handles it
-                      estimated_duration_minutes: 60,
                       description: '',
                     })}
                     className="flex-1 min-w-[80px] text-xs px-2 py-1.5 rounded-lg border border-dashed dark:border-slate-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700/50 hover:text-gray-700 hover:border-gray-400 transition flex items-center justify-center gap-1"
@@ -9388,21 +9424,28 @@
           const modes = ['driving', 'transit', 'walking'];
           const results = await Promise.all(modes.map(async (mode) => {
             try {
+              const travelMode = mode === 'driving' ? 'DRIVE' : mode === 'transit' ? 'TRANSIT' : 'WALK';
+              // Routes API TRANSIT mode requires departureTime (RFC3339). Use 1 hour from now so schedules line up.
+              const body = {
+                origin: { location: { latLng: { latitude: origin.lat, longitude: origin.lng } } },
+                destination: { location: { latLng: { latitude: destination.lat, longitude: destination.lng } } },
+                travelMode,
+              };
+              if (travelMode === 'TRANSIT') {
+                body.departureTime = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+              }
               const resp = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
                   'X-Goog-Api-Key': apiKey,
-                  'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters',
+                  'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.legs.steps.transitDetails',
                 },
-                body: JSON.stringify({
-                  origin: { location: { latLng: { latitude: origin.lat, longitude: origin.lng } } },
-                  destination: { location: { latLng: { latitude: destination.lat, longitude: destination.lng } } },
-                  travelMode: mode === 'driving' ? 'DRIVE' : mode === 'transit' ? 'TRANSIT' : 'WALK',
-                }),
+                body: JSON.stringify(body),
               });
               if (!resp.ok) {
                 const errText = await resp.text();
+                if (mode === 'transit') console.warn('[Transit] TRANSIT fetch failed:', resp.status, errText);
                 if (!firstError) {
                   if (resp.status === 403 && /API_KEY|not authorized|disabled/i.test(errText)) {
                     firstError = 'Enable "Routes API" in your Google Cloud project (Console → APIs & Services).';
@@ -9415,6 +9458,9 @@
                 return { mode, minutes: null };
               }
               const data = await resp.json();
+              if (mode === 'transit' && !data.routes?.length) {
+                console.log('[Transit] TRANSIT returned no route (may be too short / no transit data in area)', data);
+              }
               const route = data.routes?.[0];
               if (!route) return { mode, minutes: null };
               const seconds = parseInt(route.duration?.replace('s', '') || '0');
