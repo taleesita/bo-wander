@@ -3609,11 +3609,15 @@
               );
             })}
 
-            {/* Place search results */}
-            {placeResults.length > 0 && (
+            {/* Place search results — exclude places already in Your Places */}
+            {(() => {
+              const savedNames = new Set(matchingPins.map(p => p.name.toLowerCase().trim()));
+              const dedupedResults = placeResults.filter(r => !savedNames.has(r.name.toLowerCase().trim()));
+              return (<>
+            {dedupedResults.length > 0 && (
               <div className="px-2.5 py-1 text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide bg-gray-50 dark:bg-slate-750">Search results</div>
             )}
-            {placeResults.map((r, i) => (
+            {dedupedResults.map((r, i) => (
               <button
                 key={`place-${i}`}
                 className="w-full text-left px-2.5 py-1.5 hover:bg-blue-50 dark:hover:bg-slate-700 transition flex items-center gap-2 border-b dark:border-slate-700"
@@ -3631,6 +3635,7 @@
             ))}
 
             {searching && <div className="px-3 py-3 text-sm text-gray-400 text-center animate-pulse">Searching places...</div>}
+              </>); })()}
           </div>
 
           {/* Action row at bottom */}
