@@ -1556,52 +1556,68 @@
       const dayOfWeek = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][now.getDay()];
       const currentHours = openingHours[dayOfWeek];
 
-      if (!currentHours || currentHours === 'Closed') {
+      if (!currentHours || /^(closed|close)$/i.test(String(currentHours).trim())) {
         return { status: 'closed', label: 'Closed', hoursText: currentHours || 'Closed' };
       }
 
-      // Always run the time-range check against `now` (whether passed in or current real time)
-      if (currentHours && currentHours !== 'Closed') {
-        const timeMatch = currentHours.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)?\s*[-–]\s*(\d{1,2}):?(\d{2})?\s*(am|pm)?/i);
-        if (timeMatch) {
-          let openH = parseInt(timeMatch[1]);
-          const openM = parseInt(timeMatch[2] || '0');
-          const openAmPm = (timeMatch[3] || '').toLowerCase();
-          let closeH = parseInt(timeMatch[4]);
-          const closeM = parseInt(timeMatch[5] || '0');
-          const closeAmPm = (timeMatch[6] || '').toLowerCase();
+      const hoursStr = String(currentHours);
 
-          if (openAmPm === 'pm' && openH < 12) openH += 12;
-          if (openAmPm === 'am' && openH === 12) openH = 0;
-          if (closeAmPm === 'pm' && closeH < 12) closeH += 12;
-          if (closeAmPm === 'am' && closeH === 12) closeH = 0;
+      // "Open 24 hours", "24 hours", "24/7", "Open 24/7"
+      if (/\b(24\s*hours?|24\s*\/\s*7|open\s*24)/i.test(hoursStr)) {
+        return { status: 'open', label: 'Open 24 hours', hoursText: hoursStr };
+      }
 
-          const checkTime = now.getHours() * 60 + now.getMinutes();
-          const openTime = openH * 60 + openM;
-          const closeTime = closeH * 60 + closeM;
+      // Normalize various dash characters to '-' for easier matching
+      const normalized = hoursStr.replace(/[\u2010-\u2015\u2212\u007E~]/g, '-');
+      // Split on comma to support multiple ranges per day (e.g. "11am-2pm, 5pm-10pm")
+      const ranges = normalized.split(/,|;/).map(s => s.trim()).filter(Boolean);
 
-          if (closeTime > openTime) {
-            if (checkTime >= openTime && checkTime <= closeTime) {
-              return { status: 'open', label: 'Open', hoursText: currentHours };
-            } else {
-              return { status: 'closed', label: 'Closed', hoursText: currentHours };
-            }
-          } else {
-            // Wraps past midnight
-            if (checkTime >= openTime || checkTime <= closeTime) {
-              return { status: 'open', label: 'Open', hoursText: currentHours };
-            } else {
-              return { status: 'closed', label: 'Closed', hoursText: currentHours };
-            }
-          }
+      const checkTime = now.getHours() * 60 + now.getMinutes();
+      let anyParsed = false;
+      let isOpen = false;
+
+      // Matches "12:00 PM", "12pm", "12", "12:30pm", etc.
+      const rangeRe = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i;
+
+      for (const range of ranges) {
+        const m = range.match(rangeRe);
+        if (!m) continue;
+        anyParsed = true;
+        let openH = parseInt(m[1]);
+        const openM = parseInt(m[2] || '0');
+        let openAmPm = (m[3] || '').toLowerCase();
+        let closeH = parseInt(m[4]);
+        const closeM = parseInt(m[5] || '0');
+        const closeAmPm = (m[6] || '').toLowerCase();
+
+        // If only the close side has am/pm, assume open side shares it
+        // (common Google format: "12:00 – 7:00 PM" -> both noon and 7pm)
+        if (!openAmPm && closeAmPm) openAmPm = closeAmPm;
+
+        if (openAmPm === 'pm' && openH < 12) openH += 12;
+        if (openAmPm === 'am' && openH === 12) openH = 0;
+        if (closeAmPm === 'pm' && closeH < 12) closeH += 12;
+        if (closeAmPm === 'am' && closeH === 12) closeH = 0;
+
+        const openTime = openH * 60 + openM;
+        const closeTime = closeH * 60 + closeM;
+
+        if (closeTime > openTime) {
+          if (checkTime >= openTime && checkTime < closeTime) isOpen = true;
+        } else {
+          // Wraps past midnight
+          if (checkTime >= openTime || checkTime < closeTime) isOpen = true;
         }
       }
 
-      if (currentHours && currentHours !== 'Closed') {
-        return { status: 'open', label: 'Open', hoursText: currentHours };
+      if (anyParsed) {
+        return isOpen
+          ? { status: 'open', label: 'Open', hoursText: hoursStr }
+          : { status: 'closed', label: 'Closed', hoursText: hoursStr };
       }
 
-      return { status: 'unknown', label: 'Hours not available', hoursText: '' };
+      // Could not parse — don't falsely claim open
+      return { status: 'unknown', label: 'Hours unknown', hoursText: hoursStr };
     };
 
     const isAscii = (str) => /^[\x00-\x7F]*$/.test(str);
@@ -2076,7 +2092,7 @@
       });
     };
 
-    const InlineEditableText = ({ label, value, onSave, placeholder, emptyText, showBorder = true }) => {
+    const InlineEditableText = ({ label, value, onSave, placeholder, emptyText, showBorder = true, headerAction = null }) => {
       const [editing, setEditing] = useState(false);
       const [draft, setDraft] = useState(value);
       const textareaRef = useRef(null);
@@ -2107,7 +2123,10 @@
       if (!editing) {
         return (
           <div className={`space-y-1 ${showBorder ? 'border-t dark:border-slate-700 pt-2' : ''}`}>
-            <label className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</label>
+              {headerAction}
+            </div>
             {value ? (
               <div className="text-sm text-gray-700 dark:text-gray-300 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800 rounded p-1 -m-1 transition" onClick={() => setEditing(true)} title="Click to edit">
                 <SimpleMarkdown text={value} />
@@ -2121,7 +2140,10 @@
 
       return (
         <div className={`space-y-2 ${showBorder ? 'border-t dark:border-slate-700 pt-2' : ''}`}>
-          <label className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</label>
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-xs font-semibold text-gray-600 dark:text-gray-400">{label}</label>
+            {headerAction}
+          </div>
           <textarea
             ref={textareaRef}
             value={draft}
@@ -2241,7 +2263,8 @@
     };
 
     // ---- Info Photo Section (upload guidebook pages, OCR, append to description) ----
-    const InfoPhotoSection = ({ pin, onUpdate, isDarkMode }) => {
+    // mode: "full" (default — button + thumbnails) | "button" (just the upload button, compact) | "thumbnails" (just thumbnails + viewer)
+    const InfoPhotoSection = ({ pin, onUpdate, isDarkMode, mode = 'full' }) => {
       const [processing, setProcessing] = useState(false);
       const [expanded, setExpanded] = useState(false);
       const [viewingPhoto, setViewingPhoto] = useState(null);
@@ -2404,10 +2427,10 @@
         setConfirmRemove(null);
       };
 
-      return (
-        <div className="space-y-2">
-          {/* Upload button */}
-          <div className="flex items-center gap-2">
+      // Compact button-only render — used inline next to the Description label
+      if (mode === 'button') {
+        return (
+          <>
             <input
               ref={fileInputRef}
               type="file"
@@ -2419,19 +2442,50 @@
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={processing}
-              title="Add info from photo (OCR)"
-              className="flex items-center gap-1 px-2 py-1 text-[11px] text-gray-500 dark:text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 transition disabled:opacity-50"
+              title={processing ? 'OCR processing…' : 'Add info from photo (OCR)'}
+              className="relative flex items-center justify-center w-6 h-6 text-sm text-gray-500 dark:text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 transition disabled:opacity-50"
             >
-              {processing ? (
-                <><span className="animate-spin">⏳</span> OCR processing...</>
-              ) : (
-                <><span>📷</span> Add info from photo</>
+              {processing ? <span className="animate-spin text-xs">⏳</span> : <span>📷</span>}
+              {infoPhotos.length > 0 && (
+                <span className="absolute -top-1 -right-1 bg-blue-500 text-white rounded-full text-[9px] leading-none px-1 py-0.5 min-w-[14px] text-center">
+                  {infoPhotos.length}
+                </span>
               )}
             </button>
-            {infoPhotos.length > 0 && (
-              <span className="text-xs text-gray-400">{infoPhotos.length} photo{infoPhotos.length !== 1 ? 's' : ''}</span>
-            )}
-          </div>
+          </>
+        );
+      }
+
+      return (
+        <div className="space-y-2">
+          {/* Upload button (hidden in "thumbnails" mode since the compact button is rendered elsewhere) */}
+          {mode !== 'thumbnails' && (
+            <div className="flex items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={processing}
+                title="Add info from photo (OCR)"
+                className="flex items-center gap-1 px-2 py-1 text-[11px] text-gray-500 dark:text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 transition disabled:opacity-50"
+              >
+                {processing ? (
+                  <><span className="animate-spin">⏳</span> OCR processing...</>
+                ) : (
+                  <><span>📷</span> Add info from photo</>
+                )}
+              </button>
+              {infoPhotos.length > 0 && (
+                <span className="text-xs text-gray-400">{infoPhotos.length} photo{infoPhotos.length !== 1 ? 's' : ''}</span>
+              )}
+            </div>
+          )}
 
           {/* Photo thumbnails */}
           {infoPhotos.length > 0 && (
@@ -2538,6 +2592,7 @@
           category: pin.category || 'other',
           personal_notes: pin.personal_notes || '',
           emoji: pin.emoji || '📍',
+          is_vegetarian: !!pin.is_vegetarian,
         });
         setEditing(true);
       };
@@ -2721,8 +2776,8 @@
                   {Object.keys(pin.opening_hours || {}).length > 0 && (
                     <div>
                       <button onClick={() => setShowHours(!showHours)} className="flex items-center gap-2 w-full text-left">
-                        <span className={`inline-block w-2 h-2 rounded-full ${openStatus.status === 'open' ? 'bg-green-500' : 'bg-red-500'}`} />
-                        <span className={`text-xs font-semibold ${openStatus.status === 'open' ? 'text-green-600' : 'text-red-600'}`}>
+                        <span className={`inline-block w-2 h-2 rounded-full ${openStatus.status === 'open' ? 'bg-green-500' : openStatus.status === 'closed' ? 'bg-red-500' : 'bg-gray-400'}`} />
+                        <span className={`text-xs font-semibold ${openStatus.status === 'open' ? 'text-green-600' : openStatus.status === 'closed' ? 'text-red-600' : 'text-gray-500'}`}>
                           {openStatus.label}
                         </span>
                         <span className="text-xs text-gray-400">{showHours ? '▲' : '▼'}</span>
@@ -2854,6 +2909,14 @@
                 placeholder="What's special about this place?"
                 emptyText="No description — tap to add"
                 showBorder={false}
+                headerAction={
+                  <InfoPhotoSection
+                    pin={pin}
+                    onUpdate={(updatedPin) => onInlineUpdate?.(updatedPin)}
+                    isDarkMode={isDarkMode}
+                    mode="button"
+                  />
+                }
               />
             )}
             {translated && (
@@ -2862,12 +2925,13 @@
               </p>
             )}
 
-            {/* Info Photos — uploaded guidebook pages, screenshots, etc. */}
+            {/* Info Photo thumbnails — uploaded guidebook pages, screenshots, etc. (upload button lives in Description header) */}
             {!editing && (
               <InfoPhotoSection
                 pin={pin}
                 onUpdate={(updatedPin) => onInlineUpdate?.(updatedPin)}
                 isDarkMode={isDarkMode}
+                mode="thumbnails"
               />
             )}
 
@@ -7934,18 +7998,21 @@
       return <div ref={mapRef} style={{ width: '100%', height: '100%' }} />;
     };
 
-    const ListView = ({ pins, collections, onSelectPin, isDarkMode, onEdit, onDelete }) => {
+    const ListView = ({ pins, collections, onSelectPin, isDarkMode, onEdit, onDelete, filters: filtersProp, setFilters: setFiltersProp }) => {
       const [sortBy, setSortBy] = useState('name');
       const [expandedCategories, setExpandedCategories] = useState({});
-      const [filters, setFilters] = useState({
+      // Allow filters to be controlled from parent (so the map can use the same filter set)
+      const [localFilters, setLocalFilters] = useState({
         openNow: false,
-        openAt: null, // { day: 'mon', time: '12:00' }
+        openAt: null,
         category: null,
         source: null,
         myRating: null,
         googleRating: null,
         vegetarian: false,
       });
+      const filters = filtersProp || localFilters;
+      const setFilters = setFiltersProp || setLocalFilters;
       const [showOpenAtPicker, setShowOpenAtPicker] = useState(false);
       const [openAtDay, setOpenAtDay] = useState('mon');
       const [openAtTime, setOpenAtTime] = useState('12:00');
@@ -10423,6 +10490,16 @@
         hashView === 'collection' && hashCollection ? hashCollection : 'tokyo'
       );
       const [searchQuery, setSearchQuery] = useState('');
+      // Filters lifted up from ListView so they also apply to map pins
+      const [listFilters, setListFilters] = useState({
+        openNow: false,
+        openAt: null,
+        category: null,
+        source: null,
+        myRating: null,
+        googleRating: null,
+        vegetarian: false,
+      });
       const [editingPin, setEditingPin] = useState(null);
       const [showAddMenu, setShowAddMenu] = useState(false);
       const pendingDeletesRef = useRef(new Set()); // Guard against snapshot re-adding deleted pins
@@ -10606,8 +10683,33 @@
           );
         }
 
+        // Apply list-filter bar filters to the map pins too
+        if (listFilters.openNow) {
+          result = result.filter(p => {
+            const status = getOpenStatus(p.opening_hours || {});
+            return status.status === 'open';
+          });
+        }
+        if (listFilters.openAt) {
+          result = result.filter(p => {
+            const dayIndex = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].indexOf(listFilters.openAt.day);
+            const [h, m] = listFilters.openAt.time.split(':').map(Number);
+            const targetDate = new Date();
+            const currentDay = targetDate.getDay();
+            targetDate.setDate(targetDate.getDate() + (dayIndex - currentDay));
+            targetDate.setHours(h, m, 0, 0);
+            const status = getOpenStatus(p.opening_hours || {}, targetDate);
+            return status.status === 'open';
+          });
+        }
+        if (listFilters.category) result = result.filter(p => p.category === listFilters.category);
+        if (listFilters.vegetarian) result = result.filter(p => !!p.is_vegetarian);
+        if (listFilters.source) result = result.filter(p => p.source_name === listFilters.source);
+        if (listFilters.myRating) result = result.filter(p => (p.personal_rating || 0) >= listFilters.myRating);
+        if (listFilters.googleRating) result = result.filter(p => (p.google_rating || 0) >= listFilters.googleRating);
+
         return result;
-      }, [pins, activeCollection, searchQuery]);
+      }, [pins, activeCollection, searchQuery, listFilters]);
 
       // Auto-fetch ratings from Google and Yelp for a pin
       const fetchRatingsForPin = async (pinData) => {
@@ -10982,6 +11084,8 @@
                     isDarkMode={darkMode}
                     onEdit={setEditingPin}
                     onDelete={handleDeletePin}
+                    filters={listFilters}
+                    setFilters={setListFilters}
                   />
                 </div>
               )}
@@ -11015,6 +11119,8 @@
                     isDarkMode={darkMode}
                     onEdit={setEditingPin}
                     onDelete={handleDeletePin}
+                    filters={listFilters}
+                    setFilters={setListFilters}
                   />
                 </div>
               )}
