@@ -3669,7 +3669,7 @@
                 setQuery('');
               }}
             >
-              📋 Paste text
+              <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAADWElEQVR42tWWwWscdRTHv+/9fpOd7DZu02kT2ixJrD20FWMLkSK0iQgiSECw1myLCJ56CBRJD73UesgfYIsEg7ee6iEqioq4eGh7ECGQi3jLstaK2DTtJLuTzO7MvOdhE7Hb2aw0XnyXxzA/3uf3vu87jwE6h6FmPnuwN7vuWv4WgAOA8R8EKUD9QC7rmLu/ffCavjM6qADOWiYAsJ0KdLoFWyb9Ezj10qF9A4WDXqN4rKAAzqkCAHTHgPj9MQvg5KmnPUUY49n+HtrVZY4lqrkzZ5pd7gQQOTO3YiIcefnQPkLG8uDAbhzu69mfzaLn888o6QQw7bTfzP2iKAKY7M127f7l1wf4qbKCm0vLdG81MqoIANzZDtLuhWWiWFRniof7Lr848BSWa3UQgEai6Mt1SS0W/nDh7rJfjwcJCLVZS/+tRPTD2Jh1HCd3oMeN71QbkXUc7OrOIGJGBCK/kSRD+azm83n3yjZSp3VgmDkxzIjieOrkXuejo142iUWtNYwoUbiWZK0hfGNp7WcBnrPGIE4SA0Bau7ApwERE9orIm/Pz8883BPrQ9w0RYXV1DaoCYoZlxhtDQ/HF6fcuVSqVWwB+7GhZVSUAF0ZGRv6Ym5vT1Igjra8HulGrahSGWiqVdGJiQl3X/aK7u/vA5iWpVSJmZhGRoeHh4crCwgI8z4uu3/iUl1fuG2KGqoI3c71eRxiGAKCvjo8nL4yOYnp62s7Ozs4YY66kSWIBxGkSublcLvY8z7x7/rx98NWX9MrRI4g2QjBtmYTgECFvGEG9QW9fu2a/u307KhQKCQD3MTu2PKuIsKrSUrmsF48fx+vjY0AQAPRPPzRBEMH12Y9xb2WFoLo15G0BTd2IkMlksLoeIK5W0QgCGKLHzogIYAystW1d2XYbqiqYCJYZwpwOaB6Eqj7xLtpx/P8BbWfAzE2dVSEp09syLTM/GaAWBJAkBlsLlxl4pJACxIAqarXatkO2KRbVKIpQPH0an1y9itLX3yCJYrR+BYYZ61EDz5w4geFCAaV6XdPWdRrAqCouTE3hrWIRfrX694poDd/3sb+3F96ePdjcY047gIoIAfi9XC7fnJycHHddVx1ryRrTtv0wDBFsbKjjOLy4uOgD+F5EHvkZ+AscIn4SwL19bAAAAABJRU5ErkJggg==" alt="" className="w-4 h-4 inline" /> Paste text
             </button>
             <button
               className="flex-1 px-3 py-2 text-xs text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center justify-center gap-1 border-l dark:border-slate-700"
@@ -3715,10 +3715,10 @@
                 <div className="flex items-center flex-shrink-0 border-l dark:border-slate-600" style={{ marginLeft: 2 }}>
                   <button
                     onClick={() => { onPasteText(); setIsFocused(false); setQuery(''); }}
-                    className="px-2.5 py-2.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm border-r dark:border-slate-600"
+                    className="px-2.5 py-2.5 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm border-r dark:border-slate-600 flex items-center justify-center"
                     title="Paste text to import"
                   >
-                    📋
+                    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAADWElEQVR42tWWwWscdRTHv+/9fpOd7DZu02kT2ixJrD20FWMLkSK0iQgiSECw1myLCJ56CBRJD73UesgfYIsEg7ee6iEqioq4eGh7ECGQi3jLstaK2DTtJLuTzO7MvOdhE7Hb2aw0XnyXxzA/3uf3vu87jwE6h6FmPnuwN7vuWv4WgAOA8R8EKUD9QC7rmLu/ffCavjM6qADOWiYAsJ0KdLoFWyb9Ezj10qF9A4WDXqN4rKAAzqkCAHTHgPj9MQvg5KmnPUUY49n+HtrVZY4lqrkzZ5pd7gQQOTO3YiIcefnQPkLG8uDAbhzu69mfzaLn888o6QQw7bTfzP2iKAKY7M127f7l1wf4qbKCm0vLdG81MqoIANzZDtLuhWWiWFRniof7Lr848BSWa3UQgEai6Mt1SS0W/nDh7rJfjwcJCLVZS/+tRPTD2Jh1HCd3oMeN71QbkXUc7OrOIGJGBCK/kSRD+azm83n3yjZSp3VgmDkxzIjieOrkXuejo142iUWtNYwoUbiWZK0hfGNp7WcBnrPGIE4SA0Bau7ApwERE9orIm/Pz8883BPrQ9w0RYXV1DaoCYoZlxhtDQ/HF6fcuVSqVWwB+7GhZVSUAF0ZGRv6Ym5vT1Igjra8HulGrahSGWiqVdGJiQl3X/aK7u/vA5iWpVSJmZhGRoeHh4crCwgI8z4uu3/iUl1fuG2KGqoI3c71eRxiGAKCvjo8nL4yOYnp62s7Ozs4YY66kSWIBxGkSublcLvY8z7x7/rx98NWX9MrRI4g2QjBtmYTgECFvGEG9QW9fu2a/u307KhQKCQD3MTu2PKuIsKrSUrmsF48fx+vjY0AQAPRPPzRBEMH12Y9xb2WFoLo15G0BTd2IkMlksLoeIK5W0QgCGKLHzogIYAystW1d2XYbqiqYCJYZwpwOaB6Eqj7xLtpx/P8BbWfAzE2dVSEp09syLTM/GaAWBJAkBlsLlxl4pJACxIAqarXatkO2KRbVKIpQPH0an1y9itLX3yCJYrR+BYYZ61EDz5w4geFCAaV6XdPWdRrAqCouTE3hrWIRfrX694poDd/3sb+3F96ePdjcY047gIoIAfi9XC7fnJycHHddVx1ryRrTtv0wDBFsbKjjOLy4uOgD+F5EHvkZ+AscIn4SwL19bAAAAABJRU5ErkJggg==" alt="Paste" className="w-5 h-5" style={{ opacity: 0.65 }} />
                   </button>
                   <button
                     onClick={() => { onUploadConfirmation(); setIsFocused(false); setQuery(''); }}
