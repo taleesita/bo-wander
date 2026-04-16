@@ -3926,7 +3926,8 @@
         const knownCities = /\b(tokyo|kyoto|osaka|paris|london|rome|milan|florence|venice|nyc|new[- ]york|brooklyn|manhattan|queens|bronx|los[- ]angeles|la|san[- ]francisco|sf|chicago|seattle|portland|boston|philadelphia|philly|miami|austin|dallas|houston|atlanta|nashville|asheville|charlotte|raleigh|savannah|new[- ]orleans|nola|denver|phoenix|san[- ]diego|washington|dc|berlin|munich|hamburg|barcelona|madrid|seville|lisbon|porto|amsterdam|rotterdam|copenhagen|stockholm|oslo|helsinki|reykjavik|dublin|edinburgh|glasgow|sydney|melbourne|brisbane|perth|auckland|wellington|hong[- ]kong|singapore|bangkok|chiang[- ]mai|phuket|bali|ubud|seoul|busan|taipei|kyoto|sapporo|okinawa|mexico[- ]city|oaxaca|cancun|tulum|buenos[- ]aires|rio|sao[- ]paulo|lima|cusco|cartagena|medellin|istanbul|dubai|abu[- ]dhabi|marrakech|fez|cape[- ]town|johannesburg|nairobi|japan|france|italy|spain|portugal|germany|netherlands|thailand|vietnam|indonesia|philippines|korea|morocco|greece|turkey|peru|colombia|brazil|argentina|iceland|ireland|scotland|norway|sweden|denmark|finland)\b/i;
         let hint = '';
         if (url) {
-          const u = url.toLowerCase();
+          // Replace underscores with dashes so word boundaries work for URL slugs like nishiki_market_kyoto
+          const u = url.toLowerCase().replace(/_/g, '-');
           // Known city anywhere in URL
           const m = u.match(knownCities);
           if (m) hint = m[1];
@@ -3940,7 +3941,7 @@
             try {
               const path = new URL(url).pathname.toLowerCase();
               const last = path.split('/').filter(Boolean).pop() || '';
-              const parts = last.replace(/\.[a-z]+$/, '').split('-').filter(Boolean);
+              const parts = last.replace(/\.[a-z]+$/, '').split(/[-_]/).filter(Boolean);
               const tail = parts[parts.length - 1] || '';
               if (tail.length >= 4 && /^[a-z]+$/.test(tail) && !/^(guide|best|tips|list|shops|bars|food|cafes|coffee|restaurants|things|tour|tours|place|places|spots|review|reviews|2024|2025|2026)$/.test(tail)) {
                 hint = tail;
@@ -4339,9 +4340,11 @@
           // Match lines like:  __Name__ — description   OR   **Name** — description   OR   Name: description
           // Dash variations: — – - :  with optional whitespace
           const boldDashRegex = /^\s*(?:__|\*\*)\s*([^_*\n]{2,80}?)\s*(?:__|\*\*)\s*[—–\-:]\s*(.+)$/;
-          // Also handle plain "Name — description" only if Name is Title Case short (risky — only accept with strong dash)
-          const plainDashRegex = /^\s*([A-Z][A-Za-z0-9'&\. ]{2,60}?)\s+[—–]\s+(.{30,})$/;
-          for (const line of lines) {
+          // Also handle plain "Name — description" or "Name (Japanese) – Subtitle"
+          // Accepts Title Case names, names with parenthesized foreign text, accented chars
+          const plainDashRegex = /^\s*([A-Z\u00C0-\u024F][\w\u00C0-\u024F\u3000-\u9fff'&.\- ]*(?:\([^)]*\)\s*)?)\s*[—–]\s+(.+)$/;
+          for (let li = 0; li < lines.length; li++) {
+            const line = lines[li];
             if (!line) continue;
             let name = '', desc = '';
             const mb = line.match(boldDashRegex);
@@ -4354,11 +4357,23 @@
             }
             if (!name) continue;
             name = stripPhotoCredit(name);
-            if (name.length < 2 || name.length > 80) continue;
+            if (name.length < 2 || name.length > 100) continue;
             if (skipPatterns.test(name)) continue;
             if (junkContent.test(name)) continue;
             if (articleTitleLike.test(name)) continue;
             if (!isLikelyPlaceName(name)) continue;
+            // If inline desc is short (subtitle only), look ahead for real description
+            if (desc.length < 20) {
+              for (let j = li + 1; j < lines.length && j < li + 20; j++) {
+                if (!lines[j]) continue;
+                // Stop at next heading-like line
+                if (lines[j].match(boldDashRegex) || lines[j].match(plainDashRegex) || lines[j].match(/^\d{1,2}[\.\)\-–—:]\s+/)) break;
+                if (lines[j].length > 30 && !junkContent.test(lines[j]) && !altTextLike(lines[j]) && !visualLang.test(lines[j])) {
+                  desc = lines[j].substring(0, 300);
+                  break;
+                }
+              }
+            }
             if (desc.length < 20) continue;
             if (junkContent.test(desc)) continue;
             inlineStyle.push({ name, description: desc.slice(0, 1500), checked: true, loading: false, placeData: null });
@@ -4383,15 +4398,15 @@
           let candidate = blockLines[0].replace(/^\d{1,2}[\.\)\-–—:]\s*/, '').trim();
           // Strip common list bullets
           candidate = candidate.replace(/^[•·\-\*]\s+/, '').trim();
-          if (candidate.length < 3 || candidate.length > 60) continue;
+          if (candidate.length < 3 || candidate.length > 100) continue;
           if (candidate.includes('?')) continue;
-          if (/[.!;]$/.test(candidate)) continue; // sentence-like
+          if (/[.;]$/.test(candidate)) continue; // sentence-like (allow ! for emphasis like "Yuba!")
           if (skipPatterns.test(candidate)) continue;
           if (junkContent.test(candidate)) continue;
           if (articleTitleLike.test(candidate)) continue;
           if (!isLikelyPlaceName(candidate)) continue;
           const wc = candidate.split(/\s+/).length;
-          if (wc > 8 || wc < 1) continue;
+          if (wc > 10 || wc < 1) continue;
           // Require description in same block OR NEXT FEW blocks — skip photo captions / alt text.
           // Look ahead up to 3 blocks in case the first one is a caption+credit pair.
           const candidateLines = [...blockLines.slice(1)];
@@ -4598,14 +4613,15 @@
               if (isArticleDomain) {
                 // Try to narrow to article content area first
                 let articleHtml = html;
-                const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i)
+                // Use greedy match for <article> to get full content (non-greedy can truncate)
+                const articleMatch = html.match(/<article[^>]*>([\s\S]*)<\/article>/i)
                   || html.match(/<div[^>]*class="[^"]*(?:entry-content|post-content|article-body|article-content|main-content|blog-content|single-content)[^"]*"[^>]*>([\s\S]*?)<\/div>\s*(?:<\/div>|<div[^>]*class="[^"]*(?:comment|related|sidebar|footer|widget|share|social))/i);
                 if (articleMatch) {
                   articleHtml = articleMatch[1] || articleMatch[0];
                 }
 
-                // Extract headings (h2, h3) from article content
-                const headingRegex = /<h[23][^>]*>([\s\S]*?)<\/h[23]>/gi;
+                // Extract headings (h2, h3, h4) from article content
+                const headingRegex = /<h[234][^>]*>([\s\S]*?)<\/h[234]>/gi;
                 const rawHeadings = [];
                 let hMatch;
                 while ((hMatch = headingRegex.exec(articleHtml)) !== null) {
@@ -4613,6 +4629,41 @@
                   text = text.replace(/^[\s#]*\d{1,2}[\.\)\-–—:\s]+\s*/, '').trim();
                   text = stripPhotoCredit(text);
                   if (text) rawHeadings.push(text);
+                }
+
+                // Fallback: detect <strong>/<b> pseudo-headings common in food/travel blogs
+                // Pattern: <p><strong>Name (Japanese) – Subtitle</strong></p> or similar
+                if (rawHeadings.length < 3) {
+                  const boldHeadingRegex = /<p[^>]*>\s*<(?:strong|b)[^>]*>([\s\S]*?)<\/(?:strong|b)>\s*<\/p>/gi;
+                  let bMatch;
+                  while ((bMatch = boldHeadingRegex.exec(articleHtml)) !== null) {
+                    let text = htmlDecode(bMatch[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')).trim();
+                    text = text.replace(/^[\s#]*\d{1,2}[\.\)\-–—:\s]+\s*/, '').trim();
+                    text = stripPhotoCredit(text);
+                    // Only accept if it looks like a place name (not a full sentence)
+                    if (text && text.length >= 3 && text.length <= 100 && text.split(/\s+/).length <= 12 && !/[.!]\s+\w/.test(text)) {
+                      rawHeadings.push(text);
+                    }
+                  }
+                }
+
+                // Fallback 2: detect "Name (Japanese) – Subtitle" pattern in standalone bold/strong inline
+                // Some blogs put <strong> inside <p> with trailing text as description
+                if (rawHeadings.length < 3) {
+                  const inlineBoldRegex = /<(?:strong|b)[^>]*>([^<]{3,80}?(?:\([^)]*\))?[^<]{0,40}?)<\/(?:strong|b)>/gi;
+                  const seenBold = new Set(rawHeadings.map(h => h.toLowerCase()));
+                  let ibMatch;
+                  while ((ibMatch = inlineBoldRegex.exec(articleHtml)) !== null) {
+                    let text = htmlDecode(ibMatch[1].replace(/\s+/g, ' ')).trim();
+                    text = text.replace(/^[\s#]*\d{1,2}[\.\)\-–—:\s]+\s*/, '').trim();
+                    text = stripPhotoCredit(text);
+                    // Accept if it has a "Name – Subtitle" or "Name (foreign)" pattern
+                    const looksLikePlace = /[—–\-]\s*\w/.test(text) || /\([^\)]*[\u3000-\u9fff]/.test(text) || /^[A-Z]/.test(text);
+                    if (text && text.length >= 3 && text.length <= 100 && !seenBold.has(text.toLowerCase()) && looksLikePlace && text.split(/\s+/).length <= 12 && !/[.]\s+[A-Z]/.test(text)) {
+                      rawHeadings.push(text);
+                      seenBold.add(text.toLowerCase());
+                    }
+                  }
                 }
 
                 // Aggressive filtering for junk headings
@@ -4625,18 +4676,19 @@
                 // Obvious cross-article contamination (other city refs, ad/corp names)
                 const looksLikeOtherArticle = /\b(nyc tour|tour guide|book exchange|locks?\s*&\s*alarm|mobile audio|upper east side|farewell|summit one)\b/i;
                 const placeHeadings = rawHeadings.filter(h => {
-                  if (h.length < 3 || h.length > 60) return false;
+                  if (h.length < 3 || h.length > 100) return false;
                   if (skipPatterns.test(h)) return false;
                   if (junkContent.test(h)) return false;
                   if (articleTitleLike.test(h)) return false;
                   if (ctaLike.test(h)) return false;
                   if (looksLikeOtherArticle.test(h)) return false;
                   if (/^\d+$/.test(h)) return false;
-                  if (h.includes('©') || h.includes('?')) return false;
+                  if (h.includes('©')) return false;
                   // Reject headings that are mostly ALL-CAPS nav items
                   if (h === h.toUpperCase() && h.split(/\s+/).length <= 3 && /^[A-Z\s&]+$/.test(h)) return false;
-                  // Skip if it looks like a full sentence (too many words)
-                  if (h.split(/\s+/).length > 8) return false;
+                  // Skip if it looks like a full sentence (too many words) — but allow more for non-Latin
+                  const wordCount = h.split(/\s+/).length;
+                  if (wordCount > 10) return false;
                   // Skip if it exactly matches or closely matches the page title
                   if (earlyTitle && h.length > 10 && earlyTitle.toLowerCase().includes(h.toLowerCase())) return false;
                   return true;
@@ -4653,8 +4705,13 @@
                   const places = uniqueHeadings.map(name => {
                     const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                     // Find the section after this heading — grab all <p> tags until the next heading
-                    const sectionRegex = new RegExp(escapedName + '[\\s\\S]*?<\\/h[23]>([\\s\\S]*?)(?=<h[23]|$)', 'i');
-                    const sectionMatch = html.match(sectionRegex);
+                    const sectionRegex = new RegExp(escapedName + '[\\s\\S]*?<\\/h[234]>([\\s\\S]*?)(?=<h[234]|$)', 'i');
+                    let sectionMatch = html.match(sectionRegex);
+                    // Fallback for bold pseudo-headings: find content after the bold text until next bold block
+                    if (!sectionMatch) {
+                      const boldSectionRegex = new RegExp(escapedName + '<\\/(?:strong|b)>[\\s\\S]*?<\\/p>([\\s\\S]*?)(?=<p[^>]*>\\s*<(?:strong|b)|<h[234]|$)', 'i');
+                      sectionMatch = html.match(boldSectionRegex);
+                    }
                     let desc = '';
                     if (sectionMatch) {
                       // Extract ALL substantial paragraphs from the section, not just the first
@@ -4692,7 +4749,7 @@
                               'X-Goog-Api-Key': apiKey,
                               'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours,places.businessStatus'
                             },
-                            body: JSON.stringify({ textQuery: place.name + (locationHint ? ' ' + locationHint : ''), maxResultCount: 1 })
+                            body: JSON.stringify({ textQuery: place.name.replace(/\s*[—–]\s*[^()]*$/, '').trim() + (locationHint ? ' ' + locationHint : ''), maxResultCount: 1 })
                           });
                           const pData = await resp.json();
                           const gp = pData.places?.[0];
