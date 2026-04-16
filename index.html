@@ -596,7 +596,7 @@
 
     const PIN_CATEGORIES = {
       restaurant: { label: 'Restaurant', icon: '🍽️', color: '#2D8A4E' },
-      cafe: { label: 'Coffee', icon: '☕', color: '#4A90D9' },
+      cafe: { label: 'Coffee', icon: '☕', color: '#C4A47A' },
       treats: { label: 'Treats', icon: '🧁', color: '#D94A4A' },
       bar: { label: 'Bar', icon: '🍺', color: '#7B4AD9' },
       beach: { label: 'Beach', icon: '🏖️', color: '#D4A843' },
@@ -605,11 +605,11 @@
       culture: { label: 'Culture/Museum', icon: '🏛️', color: '#795548' },
       shrine: { label: 'Shrine/Temple', icon: '⛩️', color: '#9C27B0' },
       hotel: { label: 'Hotel', icon: '🏨', color: '#607D8B' },
-      shopping: { label: 'Shopping', icon: '🛍️', color: '#E91E63' },
+      shopping: { label: 'Shopping', icon: '🛍️', color: '#AB47BC' },
       viewpoint: { label: 'Viewpoint', icon: '🌅', color: '#FF9800' },
       activity: { label: 'Activity', icon: '🎫', color: '#00BCD4' },
       transport: { label: 'Transport', icon: '✈️', color: '#2196F3' },
-      other: { label: 'Other', icon: '📍', color: '#9E9E9E' }
+      other: { label: 'Other', icon: '📍', color: '#F9A825' }
     };
 
     const SAMPLE_COLLECTIONS = [
@@ -2684,18 +2684,25 @@
                           🌱 Veg
                         </span>
                       )}
-                      {/* Recommender chip (who suggested it) */}
-                      {pin.source_name && (
-                        <span className="inline-block bg-gray-600 text-white px-1.5 py-px rounded-full" style={{ fontSize: '10px' }} title="Recommender">
-                          {pin.source_name}
-                        </span>
-                      )}
-                      {/* Source link chips (articles / reviews) */}
+                      {/* Source link chips (articles / reviews) + recommender */}
                       {(() => {
                         const links = Array.isArray(pin.sources) && pin.sources.length
                           ? pin.sources.filter(s => s.url)
                           : (pin.source_url ? [{ label: '', url: pin.source_url }] : []);
-                        return links.map((s, i) => (
+                        // Check if recommender name already appears as a source link label or domain
+                        const recommenderDuped = pin.source_name && links.some(s => {
+                          const label = (s.label || '').toLowerCase();
+                          let domain = ''; try { domain = new URL(s.url).hostname.replace('www.','').toLowerCase(); } catch {}
+                          const rn = pin.source_name.toLowerCase();
+                          return label === rn || domain === rn || label.includes(rn) || rn.includes(domain);
+                        });
+                        return (<>
+                          {pin.source_name && !recommenderDuped && (
+                            <span className="inline-block bg-gray-600 text-white px-1.5 py-px rounded-full" style={{ fontSize: '10px' }} title="Recommender">
+                              {pin.source_name}
+                            </span>
+                          )}
+                          {links.map((s, i) => (
                           <a
                             key={`src-${i}`}
                             href={s.url}
@@ -2707,7 +2714,8 @@
                           >
                             {s.label || (() => { try { return new URL(s.url).hostname.replace('www.',''); } catch { return s.url; } })()} ↗
                           </a>
-                        ));
+                        ))}
+                        </>);
                       })()}
                     </div>
                   )}
@@ -3829,7 +3837,7 @@
       const [preview, setPreview] = useState(null); // { name, description, source_name, source_url }
       const [bulkPlaces, setBulkPlaces] = useState(null); // [{ name, description, checked, loading, placeData }]
       const [bulkSource, setBulkSource] = useState(null); // { source_name, source_url }
-      const [bulkExpandedIdx, setBulkExpandedIdx] = useState(null);
+      const [bulkExpandedSet, setBulkExpandedSet] = useState(new Set());
       const [error, setError] = useState('');
       const [pasteMode, setPasteMode] = useState(startInPasteMode);
       const [pasteText, setPasteText] = useState('');
@@ -3901,12 +3909,12 @@
         setNameSearchResults([]);
       };
 
-      // Clear search results when switching rows
+      // Clear search results when expanded set changes
       React.useEffect(() => {
         setNameSearchResults([]);
         setSearchingName(false);
         if (nameSearchTimerRef.current) clearTimeout(nameSearchTimerRef.current);
-      }, [bulkExpandedIdx]);
+      }, [bulkExpandedSet]);
 
       // Infer a location hint (city/region) from URL + article text, used to bias Google Places lookups.
       // Handles patterns like exploreasheville.com/article/best-coffee-shops-asheville (→ "asheville"),
@@ -4925,7 +4933,7 @@
                     {bulkPlaces.map((place, idx) => {
                       if (place.duplicate) return null; // hide duplicates entirely
                       const cat = guessEmojiAndCategory(place.placeData?.displayName || place.name, place.placeData?.types?.join(',') || '');
-                      const isExpanded = bulkExpandedIdx === idx;
+                      const isExpanded = bulkExpandedSet.has(idx);
                       return (
                         <div
                           key={idx}
@@ -4969,8 +4977,8 @@
                               )}
                             </div>
                             <button
-                              onClick={(e) => { e.stopPropagation(); setBulkExpandedIdx(isExpanded ? null : idx); }}
-                              className="text-xs text-gray-400 hover:text-blue-500 px-1 mt-0.5 flex-shrink-0"
+                              onClick={(e) => { e.stopPropagation(); setBulkExpandedSet(prev => { const next = new Set(prev); if (next.has(idx)) next.delete(idx); else next.add(idx); return next; }); }}
+                              className="w-9 h-9 flex items-center justify-center text-sm text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-slate-700 rounded-lg flex-shrink-0 -mr-1 transition"
                               title="Edit details"
                             >
                               {isExpanded ? '▲' : <span style={{ display: 'inline-block', transform: 'scaleX(-1)' }}>✏️</span>}
@@ -5019,19 +5027,14 @@
                               </div>
                               <div>
                                 <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Category</label>
-                                <div className="flex flex-wrap gap-1 mt-1">
-                                  {Object.entries(PIN_CATEGORIES).map(([id, c]) => (
-                                    <button key={id}
-                                      onClick={() => setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, _category: id } : p))}
-                                      className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-xs transition ${
-                                        (place._category || cat.category) === id
-                                          ? 'ring-1 ring-blue-500 text-white' : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300'
-                                      }`}
-                                      style={(place._category || cat.category) === id ? { backgroundColor: c.color } : {}}
-                                    >
-                                      <span>{c.icon}</span> {c.label}
-                                    </button>
-                                  ))}
+                                <div className="mt-1">
+                                  <CategoryField
+                                    value={place._category || cat.category}
+                                    onChange={newCat => {
+                                      const newIcon = (PIN_CATEGORIES[newCat] || PIN_CATEGORIES.other).icon;
+                                      setBulkPlaces(prev => prev.map((p, i) => i === idx ? { ...p, _category: newCat, _emoji: newIcon } : p));
+                                    }}
+                                  />
                                 </div>
                               </div>
                               {/* Vegetarian-friendly toggle */}
@@ -5199,7 +5202,7 @@
                       onClick={() => {
                         setBulkPlaces(prev => {
                           const newIdx = prev.length;
-                          setTimeout(() => setBulkExpandedIdx(newIdx), 0);
+                          setTimeout(() => setBulkExpandedSet(prev => new Set([...prev, newIdx])), 0);
                           return [...prev, {
                             name: '',
                             description: '',
@@ -5231,7 +5234,7 @@
                             description: p.description,
                             source_name: bulkSource.source_name,
                             source_url: bulkSource.source_url,
-                            emoji: (PIN_CATEGORIES[p._category] || {}).icon || c.emoji,
+                            emoji: p._emoji || (PIN_CATEGORIES[p._category] || {}).icon || c.emoji,
                             category: p._category || c.category,
                             lat: p.placeData?.lat || 0,
                             lng: p.placeData?.lng || 0,
