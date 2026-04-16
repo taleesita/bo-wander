@@ -150,8 +150,8 @@
       overflow-y: auto;
       z-index: 1000;
       box-shadow: -4px 0 20px rgba(0, 0, 0, 0.1);
-      /* Clear the floating search bar (~64px) at the top of the map */
-      padding-top: 72px;
+      /* Match the left sidebar's pt-16 (64px) so both panels start at the same horizontal line */
+      padding-top: 64px;
     }
 
     .dark-mode {
@@ -8030,9 +8030,15 @@
         }
         if (filters.openAt) {
           result = result.filter(p => {
-            const dayIndex = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].indexOf(filters.openAt.day);
+            const day = filters.openAt.day;
+            const hours = (p.opening_hours || {})[day];
+            // No time specified → just check the place has any hours that day
+            if (!filters.openAt.time) {
+              if (!hours) return false;
+              return !/^(closed|close)$/i.test(String(hours).trim());
+            }
+            const dayIndex = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].indexOf(day);
             const [h, m] = filters.openAt.time.split(':').map(Number);
-            // Create a date object for the target day/time
             const targetDate = new Date();
             const currentDay = targetDate.getDay();
             const diff = dayIndex - currentDay;
@@ -8150,16 +8156,6 @@
               <label className="text-xs font-semibold text-gray-600 dark:text-gray-400 block">Filters</label>
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={() => setFilters(f => ({ ...f, openNow: !f.openNow, openAt: f.openNow ? f.openAt : null }))}
-                  className={`px-3 py-1 rounded-full text-xs font-medium transition ${
-                    filters.openNow
-                      ? 'bg-green-600 text-white'
-                      : 'bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
-                  }`}
-                >
-                  Open Now
-                </button>
-                <button
                   onClick={() => setFilters(f => ({ ...f, vegetarian: !f.vegetarian }))}
                   className={`px-3 py-1 rounded-full text-xs font-medium transition ${
                     filters.vegetarian
@@ -8169,23 +8165,6 @@
                   title="Only show vegetarian-friendly pins"
                 >
                   🌱 Veg
-                </button>
-                <button
-                  onClick={() => {
-                    if (filters.openAt) {
-                      setFilters(f => ({ ...f, openAt: null }));
-                      setShowOpenAtPicker(false);
-                    } else {
-                      setShowOpenAtPicker(!showOpenAtPicker);
-                    }
-                  }}
-                  className={`px-3 py-1 rounded-full text-xs font-medium transition ${
-                    filters.openAt
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
-                  }`}
-                >
-                  {filters.openAt ? `Open ${filters.openAt.day.toUpperCase()} ${filters.openAt.time}` : 'Open at...'}
                 </button>
                 {sources.length > 0 && (
                   <select
@@ -8250,6 +8229,34 @@
                   <option value="4">4+ ★</option>
                   <option value="4.5">4.5+ ★</option>
                 </select>
+                {/* Time-based filters last so the day/time picker that expands below sits directly beneath them */}
+                <button
+                  onClick={() => setFilters(f => ({ ...f, openNow: !f.openNow, openAt: f.openNow ? f.openAt : null }))}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                    filters.openNow
+                      ? 'bg-green-600 text-white'
+                      : 'bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
+                  }`}
+                >
+                  Open Now
+                </button>
+                <button
+                  onClick={() => {
+                    if (filters.openAt) {
+                      setFilters(f => ({ ...f, openAt: null }));
+                      setShowOpenAtPicker(false);
+                    } else {
+                      setShowOpenAtPicker(!showOpenAtPicker);
+                    }
+                  }}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                    filters.openAt
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
+                  }`}
+                >
+                  {filters.openAt ? `Open ${filters.openAt.day.toUpperCase()}${filters.openAt.time ? ' ' + filters.openAt.time : ''}` : 'Open at...'}
+                </button>
                 {(filters.openNow || filters.openAt || filters.category || filters.source || filters.myRating || filters.googleRating || filters.vegetarian) && (
                   <button
                     onClick={() => { setFilters({ openNow: false, openAt: null, category: null, source: null, myRating: null, googleRating: null, vegetarian: false }); setShowOpenAtPicker(false); }}
@@ -8260,7 +8267,7 @@
                 )}
               </div>
               {showOpenAtPicker && !filters.openAt && (
-                <div className={`flex items-center gap-2 p-2 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-gray-100'}`}>
+                <div className={`flex flex-wrap items-center gap-2 p-2 rounded-lg ${isDarkMode ? 'bg-slate-800' : 'bg-gray-100'}`}>
                   <select
                     value={openAtDay}
                     onChange={e => setOpenAtDay(e.target.value)}
@@ -8270,15 +8277,27 @@
                       <option key={d} value={d}>{dayName(d)}</option>
                     ))}
                   </select>
-                  <input
-                    type="time"
-                    value={openAtTime}
-                    onChange={e => setOpenAtTime(e.target.value)}
-                    className="px-2 py-1 rounded text-xs border dark:bg-slate-700 dark:border-slate-600 dark:text-white"
-                  />
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="time"
+                      value={openAtTime || ''}
+                      onChange={e => setOpenAtTime(e.target.value)}
+                      placeholder="Any time"
+                      className="px-2 py-1 rounded text-xs border dark:bg-slate-700 dark:border-slate-600 dark:text-white"
+                    />
+                    {openAtTime && (
+                      <button
+                        onClick={() => setOpenAtTime('')}
+                        title="Clear time (just search by day)"
+                        className="text-xs text-gray-500 dark:text-gray-400 hover:text-red-500 px-1"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                   <button
                     onClick={() => {
-                      setFilters(f => ({ ...f, openNow: false, openAt: { day: openAtDay, time: openAtTime } }));
+                      setFilters(f => ({ ...f, openNow: false, openAt: { day: openAtDay, time: openAtTime || null } }));
                       setShowOpenAtPicker(false);
                     }}
                     className="px-3 py-1 rounded bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition"
@@ -10692,7 +10711,13 @@
         }
         if (listFilters.openAt) {
           result = result.filter(p => {
-            const dayIndex = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].indexOf(listFilters.openAt.day);
+            const day = listFilters.openAt.day;
+            const hours = (p.opening_hours || {})[day];
+            if (!listFilters.openAt.time) {
+              if (!hours) return false;
+              return !/^(closed|close)$/i.test(String(hours).trim());
+            }
+            const dayIndex = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].indexOf(day);
             const [h, m] = listFilters.openAt.time.split(':').map(Number);
             const targetDate = new Date();
             const currentDay = targetDate.getDay();
