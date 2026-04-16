@@ -2148,9 +2148,9 @@
             ref={textareaRef}
             value={draft}
             onChange={e => { setDraft(e.target.value); autoGrow(e.target); }}
-            className="w-full px-3 py-2 border rounded dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 resize-none overflow-hidden"
+            className="w-full px-3 py-2 border rounded dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 resize-y overflow-auto"
             placeholder={placeholder || `Add ${label.toLowerCase()}...`}
-            style={{ minHeight: 140 }}
+            style={{ minHeight: 140, maxHeight: 480 }}
           />
           <div className="flex gap-2">
             <button
