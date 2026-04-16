@@ -150,8 +150,8 @@
       overflow-y: auto;
       z-index: 1000;
       box-shadow: -4px 0 20px rgba(0, 0, 0, 0.1);
-      /* Match the left sidebar's pt-16 (64px) so both panels start at the same horizontal line */
-      padding-top: 64px;
+      /* The inner content wrapper already adds p-4 (16px) on top, so 48 + 16 = 64px total — matches the left sidebar's pt-16. */
+      padding-top: 48px;
     }
 
     .dark-mode {
