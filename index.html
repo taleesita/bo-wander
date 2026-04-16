@@ -3416,7 +3416,7 @@
     };
 
     // Unified search bar — searches existing pins + Photon (Komoot) for places/businesses
-    const UnifiedSearchBar = ({ pins, onSelectPin, onAddPlace, onUploadConfirmation, onAddFromLink, isDarkMode, isMobile, activeCollection, collections, mapCenter }) => {
+    const UnifiedSearchBar = ({ pins, onSelectPin, onAddPlace, onUploadConfirmation, onAddFromLink, onPasteText, isDarkMode, isMobile, activeCollection, collections, mapCenter }) => {
       const [query, setQuery] = useState('');
       const [placeResults, setPlaceResults] = useState([]);
       const [searching, setSearching] = useState(false);
@@ -3653,6 +3653,16 @@
             <button
               className="flex-1 px-3 py-2 text-xs text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center justify-center gap-1 border-l dark:border-slate-700"
               onClick={() => {
+                onPasteText();
+                setIsFocused(false);
+                setQuery('');
+              }}
+            >
+              📋 Paste text
+            </button>
+            <button
+              className="flex-1 px-3 py-2 text-xs text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center justify-center gap-1 border-l dark:border-slate-700"
+              onClick={() => {
                 onUploadConfirmation();
                 setIsFocused(false);
                 setQuery('');
@@ -3813,7 +3823,7 @@
       );
     };
 
-    const AddFromLinkModal = ({ onSelect, onBulkSelect, onClose, isDarkMode }) => {
+    const AddFromLinkModal = ({ onSelect, onBulkSelect, onClose, isDarkMode, startInPasteMode = false }) => {
       const [url, setUrl] = useState('');
       const [fetching, setFetching] = useState(false);
       const [preview, setPreview] = useState(null); // { name, description, source_name, source_url }
@@ -3821,7 +3831,7 @@
       const [bulkSource, setBulkSource] = useState(null); // { source_name, source_url }
       const [bulkExpandedIdx, setBulkExpandedIdx] = useState(null);
       const [error, setError] = useState('');
-      const [pasteMode, setPasteMode] = useState(false);
+      const [pasteMode, setPasteMode] = useState(startInPasteMode);
       const [pasteText, setPasteText] = useState('');
       const [pasteSourceUrl, setPasteSourceUrl] = useState('');
       // Per-row Name-as-search state (only tracks the currently expanded row)
@@ -10530,6 +10540,7 @@
       const [navigationPin, setNavigationPin] = useState(null);
       const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
       const [showAddFromLink, setShowAddFromLink] = useState(false);
+      const [showPasteText, setShowPasteText] = useState(false);
       const [toast, setToast] = useState(null); // { message, type }
       const showToast = (message, type = 'success') => {
         setToast({ message, type });
@@ -11037,6 +11048,7 @@
                 });
               }}
               onAddFromLink={() => setShowAddFromLink(true)}
+              onPasteText={() => setShowPasteText(true)}
               onUploadConfirmation={() => setShowUploadConfirmation(true)}
                 />
               </div>
@@ -11368,6 +11380,97 @@
                 }
               }}
               onClose={() => setShowAddFromLink(false)}
+              isDarkMode={darkMode}
+            />
+          )}
+
+          {/* Paste Text Modal — same as Add from Link but starts in paste mode */}
+          {showPasteText && (
+            <AddFromLinkModal
+              startInPasteMode={true}
+              onSelect={(data) => {
+                const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
+                const newPin = {
+                  name: data.name, address: data.address || '', description: data.description || '',
+                  emoji: data.emoji, category: guessEmojiAndCategory(data.name, '').category,
+                  source_name: data.source_name, source_url: data.source_url,
+                  sources: data.source_url || data.source_name ? [{ label: data.source_name || '', url: data.source_url || '' }] : [],
+                  collection_id: defaultCollection, photos: [], opening_hours: data.opening_hours || {},
+                  lat: data.lat || 0, lng: data.lng || 0, rating: data.rating || null,
+                };
+                if (data.lat && data.lng) {
+                  setMapPanTarget({ lat: data.lat, lng: data.lng, _t: Date.now() });
+                  setPreviewPin({ lat: data.lat, lng: data.lng, name: data.name, emoji: data.emoji });
+                }
+                setEditingPin(newPin);
+                setShowPasteText(false);
+              }}
+              onBulkSelect={(places) => {
+                const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
+                let addedCount = 0, mergedCount = 0;
+                let workingPins = [...pins];
+                const findDuplicate = (data) => {
+                  const nameKey = (data.name || '').trim().toLowerCase();
+                  const lat = parseFloat(data.lat); const lng = parseFloat(data.lng);
+                  const hasCoords = !isNaN(lat) && !isNaN(lng) && (lat !== 0 || lng !== 0);
+                  const latKey = hasCoords ? lat.toFixed(4) : null;
+                  const lngKey = hasCoords ? lng.toFixed(4) : null;
+                  return workingPins.find(p => {
+                    if (nameKey && p.name && p.name.trim().toLowerCase() === nameKey) return true;
+                    if (hasCoords && p.lat != null && p.lng != null) {
+                      if (parseFloat(p.lat).toFixed(4) === latKey && parseFloat(p.lng).toFixed(4) === lngKey) return true;
+                    }
+                    return false;
+                  });
+                };
+                const updates = [], additions = [];
+                places.forEach((data, idx) => {
+                  const lat = data.lat || 0, lng = data.lng || 0;
+                  let desc = data.description || '';
+                  const dup = findDuplicate(data);
+                  if (dup) {
+                    const merged = { ...dup, description: dup.description || desc, address: dup.address || data.address || '',
+                      lat: dup.lat || lat, lng: dup.lng || lng,
+                      opening_hours: (dup.opening_hours && Object.keys(dup.opening_hours).length) ? dup.opening_hours : (data.opening_hours || {}),
+                      google_rating: dup.google_rating || data.rating || null,
+                      is_vegetarian: !!(dup.is_vegetarian || data.is_vegetarian),
+                    };
+                    MockFirebase.savePin(merged);
+                    updates.push(merged);
+                    workingPins = workingPins.map(p => p.id === merged.id ? merged : p);
+                    mergedCount++;
+                  } else {
+                    const cat = guessEmojiAndCategory(data.name, '');
+                    const newPin = {
+                      id: (Date.now() + idx).toString(), name: data.name, address: data.address || '', description: desc,
+                      emoji: data.emoji || cat.emoji, category: data.category || cat.category,
+                      source_name: data.source_name, source_url: data.source_url,
+                      sources: data.source_url ? [{ label: data.source_name || '', url: data.source_url }] : [],
+                      collection_id: defaultCollection, photos: [], opening_hours: data.opening_hours || {},
+                      lat, lng, google_rating: data.rating || null, is_vegetarian: !!data.is_vegetarian,
+                      created_at: new Date().toISOString(),
+                    };
+                    MockFirebase.savePin(newPin);
+                    additions.push(newPin);
+                    workingPins.push(newPin);
+                    addedCount++;
+                    setTimeout(() => fetchRatingsForPin(newPin), 500 + idx * 300);
+                  }
+                });
+                setPins(prev => {
+                  const updMap = {}; updates.forEach(u => { updMap[u.id] = u; });
+                  return [...prev.map(p => updMap[p.id] || p), ...additions];
+                });
+                setShowPasteText(false);
+                if (addedCount > 0 || mergedCount > 0) {
+                  setSelectedPin(null);
+                  const parts = [];
+                  if (addedCount > 0) parts.push(`Added ${addedCount} place${addedCount === 1 ? '' : 's'}`);
+                  if (mergedCount > 0) parts.push(`merged ${mergedCount} duplicate${mergedCount === 1 ? '' : 's'}`);
+                  showToast(parts.join(', '));
+                }
+              }}
+              onClose={() => setShowPasteText(false)}
               isDarkMode={darkMode}
             />
           )}
