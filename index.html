@@ -3598,11 +3598,11 @@
             };
           }).filter(r => r.name && r.lat && r.lng);
 
-          // Merge: Google first (better for businesses), then Photon, deduplicate
+          // Merge: Google first (better for businesses), then Photon, deduplicate by name+address
           const seen = new Set();
           const merged = [];
           for (const r of [...googleResults, ...photonResults]) {
-            const key = r.name.toLowerCase().trim();
+            const key = `${r.name.toLowerCase().trim()}|${(r.address || '').toLowerCase().trim()}`;
             if (!seen.has(key)) {
               seen.add(key);
               merged.push(r);
@@ -7193,30 +7193,6 @@
       });
     };
 
-    // Migrate pin emojis to match current PIN_CATEGORIES definitions
-    // (e.g. treats 🧁→🥐). Runs once per version bump.
-    const EMOJI_MIGRATION_VERSION = 2;
-    const migratePinEmojis = (pins) => {
-      const migVer = parseInt(localStorage.getItem('bo_emoji_migration') || '0');
-      if (migVer >= EMOJI_MIGRATION_VERSION) return pins;
-      let changed = false;
-      const updated = pins.map(pin => {
-        if (pin.category && PIN_CATEGORIES[pin.category]) {
-          const expected = PIN_CATEGORIES[pin.category].icon;
-          // Only migrate if the pin's emoji matches a known OLD default for this category
-          const OLD_DEFAULTS = { treats: '🧁' };
-          if (OLD_DEFAULTS[pin.category] && pin.emoji === OLD_DEFAULTS[pin.category]) {
-            changed = true;
-            const migrated = { ...pin, emoji: expected };
-            try { MockFirebase.savePin(migrated); } catch {}
-            return migrated;
-          }
-        }
-        return pin;
-      });
-      localStorage.setItem('bo_emoji_migration', String(EMOJI_MIGRATION_VERSION));
-      return changed ? updated : pins;
-    };
 
     const CATEGORY_COLORS = ['#2D8A4E', '#4A90D9', '#D94A4A', '#7B4AD9', '#D4A843', '#6B8E23', '#2196F3', '#795548', '#9C27B0', '#607D8B', '#E91E63', '#FF9800', '#00BCD4', '#FF5722', '#8BC34A', '#3F51B5', '#009688', '#F44336'];
 
@@ -11412,8 +11388,22 @@
               const filtered = firestorePins.filter(p => !pendingDeletesRef.current.has(p.id));
               // Auto-register any categories from pins that aren't in the dropdown yet
               registerMissingCategories(filtered);
-              const migrated = migratePinEmojis(filtered);
-              setPins(migrated);
+              // Fix stale emojis: if a pin's emoji doesn't match its category's current icon, update it
+              const STALE_EMOJI_MAP = { '🧁': { category: 'treats', newEmoji: '🥐' } };
+              const toResave = [];
+              const fixed = filtered.map(pin => {
+                const rule = STALE_EMOJI_MAP[pin.emoji];
+                if (rule && pin.category === rule.category) {
+                  const updated = { ...pin, emoji: rule.newEmoji };
+                  toResave.push(updated);
+                  return updated;
+                }
+                return pin;
+              });
+              if (toResave.length > 0) {
+                toResave.forEach(p => { try { MockFirebase.savePin(p); } catch {} });
+              }
+              setPins(fixed);
             });
             unsubCollections = MockFirebase.onCollectionsSnapshot(firestoreCols => {
               setCollections(firestoreCols);
