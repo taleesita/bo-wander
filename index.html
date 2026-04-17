@@ -3706,10 +3706,13 @@
               );
             })}
 
-            {/* Place search results — exclude places already in Your Places */}
+            {/* Place search results — exclude places already in Your Places (match by name + address, not just name) */}
             {(() => {
-              const savedNames = new Set(matchingPins.map(p => p.name.toLowerCase().trim()));
-              const dedupedResults = placeResults.filter(r => !savedNames.has(r.name.toLowerCase().trim()));
+              const savedKeys = new Set(matchingPins.map(p => `${p.name.toLowerCase().trim()}|${(p.address || '').toLowerCase().trim()}`));
+              const dedupedResults = placeResults.filter(r => {
+                const key = `${r.name.toLowerCase().trim()}|${(r.address || '').toLowerCase().trim()}`;
+                return !savedKeys.has(key);
+              });
               return (<>
             {dedupedResults.length > 0 && (
               <div className="px-2.5 py-1 text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide bg-gray-50 dark:bg-slate-750">Search results</div>
@@ -7188,6 +7191,31 @@
           saveCustomCategory(pin.category, { label, icon, color });
         }
       });
+    };
+
+    // Migrate pin emojis to match current PIN_CATEGORIES definitions
+    // (e.g. treats 🧁→🥐). Runs once per version bump.
+    const EMOJI_MIGRATION_VERSION = 2;
+    const migratePinEmojis = (pins) => {
+      const migVer = parseInt(localStorage.getItem('bo_emoji_migration') || '0');
+      if (migVer >= EMOJI_MIGRATION_VERSION) return pins;
+      let changed = false;
+      const updated = pins.map(pin => {
+        if (pin.category && PIN_CATEGORIES[pin.category]) {
+          const expected = PIN_CATEGORIES[pin.category].icon;
+          // Only migrate if the pin's emoji matches a known OLD default for this category
+          const OLD_DEFAULTS = { treats: '🧁' };
+          if (OLD_DEFAULTS[pin.category] && pin.emoji === OLD_DEFAULTS[pin.category]) {
+            changed = true;
+            const migrated = { ...pin, emoji: expected };
+            try { MockFirebase.savePin(migrated); } catch {}
+            return migrated;
+          }
+        }
+        return pin;
+      });
+      localStorage.setItem('bo_emoji_migration', String(EMOJI_MIGRATION_VERSION));
+      return changed ? updated : pins;
     };
 
     const CATEGORY_COLORS = ['#2D8A4E', '#4A90D9', '#D94A4A', '#7B4AD9', '#D4A843', '#6B8E23', '#2196F3', '#795548', '#9C27B0', '#607D8B', '#E91E63', '#FF9800', '#00BCD4', '#FF5722', '#8BC34A', '#3F51B5', '#009688', '#F44336'];
@@ -11384,7 +11412,8 @@
               const filtered = firestorePins.filter(p => !pendingDeletesRef.current.has(p.id));
               // Auto-register any categories from pins that aren't in the dropdown yet
               registerMissingCategories(filtered);
-              setPins(filtered);
+              const migrated = migratePinEmojis(filtered);
+              setPins(migrated);
             });
             unsubCollections = MockFirebase.onCollectionsSnapshot(firestoreCols => {
               setCollections(firestoreCols);
