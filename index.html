@@ -3629,17 +3629,16 @@
       const matchingPins = useMemo(() => {
         if (!query || query.length < 2) return [];
         const q = query.toLowerCase();
-        const matches = pins.filter(p =>
+        // Only show saved places from the active collection
+        const collectionPins = activeCollection && activeCollection !== 'all'
+          ? pins.filter(p => p.collection_id === activeCollection)
+          : pins;
+        const matches = collectionPins.filter(p =>
           p.name.toLowerCase().includes(q) ||
           p.address?.toLowerCase().includes(q) ||
           p.source_name?.toLowerCase().includes(q)
         );
-        // Sort: current collection first, then alphabetical
         matches.sort((a, b) => {
-          const aInCollection = a.collection_id === activeCollection ? 0 : 1;
-          const bInCollection = b.collection_id === activeCollection ? 0 : 1;
-          if (aInCollection !== bInCollection) return aInCollection - bInCollection;
-          // Within same group, prefer name match over address/source match
           const aNameMatch = a.name.toLowerCase().includes(q) ? 0 : 1;
           const bNameMatch = b.name.toLowerCase().includes(q) ? 0 : 1;
           if (aNameMatch !== bNameMatch) return aNameMatch - bNameMatch;
