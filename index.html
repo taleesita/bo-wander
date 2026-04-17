@@ -3967,12 +3967,83 @@
       );
     };
 
-    const AddFromLinkModal = ({ onSelect, onBulkSelect, onClose, isDarkMode, startInPasteMode = false }) => {
+    // ---- KML/KMZ import (Google My Maps) — shared by AddFromLinkModal and UploadConfirmationModal ----
+    const KML_FOLDER_CATEGORY_MAP = {
+      hotel: 'hotel', hotels: 'hotel', accommodation: 'hotel', lodging: 'hotel', 'where to stay': 'hotel', stays: 'hotel',
+      food: 'restaurant', restaurant: 'restaurant', restaurants: 'restaurant', dining: 'restaurant', 'where to eat': 'restaurant', eats: 'restaurant', meals: 'restaurant',
+      coffee: 'coffee', cafe: 'coffee', cafes: 'coffee', 'coffee shops': 'coffee',
+      treats: 'treats', dessert: 'treats', desserts: 'treats', sweets: 'treats', bakery: 'treats', bakeries: 'treats', 'ice cream': 'treats',
+      bar: 'bar', bars: 'bar', drinks: 'bar', nightlife: 'bar', cocktails: 'bar', brewery: 'bar', breweries: 'bar', pub: 'bar', pubs: 'bar',
+      beach: 'beach', beaches: 'beach',
+      hike: 'nature', hikes: 'nature', hiking: 'nature', 'hikes & walks': 'nature', nature: 'nature', walks: 'nature', trails: 'nature', 'nature/hike': 'nature', parks: 'park', park: 'park',
+      'water activity': 'water_activity', snorkel: 'water_activity', snorkeling: 'water_activity', diving: 'water_activity', surf: 'water_activity', surfing: 'water_activity', kayak: 'water_activity', water: 'water_activity',
+      culture: 'culture', museum: 'culture', museums: 'culture', 'culture/museum': 'culture', history: 'culture', art: 'culture',
+      shrine: 'shrine_temple', temple: 'shrine_temple', temples: 'shrine_temple', shrines: 'shrine_temple', 'shrine/temple': 'shrine_temple',
+      shopping: 'shopping', shops: 'shopping', markets: 'shopping', market: 'food_market',
+      viewpoint: 'viewpoint', viewpoints: 'viewpoint', views: 'viewpoint', lookout: 'viewpoint', scenic: 'viewpoint',
+      activity: 'activity', activities: 'activity', tours: 'activity', 'things to do': 'activity', excursions: 'activity', adventure: 'activity',
+      transport: 'transport', transit: 'transport', transportation: 'transport',
+      wildlife: 'activity', animals: 'activity',
+      boba: 'boba', 'bubble tea': 'boba',
+      tea: 'tea',
+      mochi: 'mochi',
+    };
+
+    const parseKMLData = (xmlString) => {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xmlString, 'text/xml');
+      const mapName = doc.querySelector('Document > name')?.textContent?.trim() || 'Google My Maps';
+      const places = [];
+      const folders = doc.querySelectorAll('Folder');
+      const processPlacemarks = (placemarks, folderName) => {
+        const folderKey = (folderName || '').toLowerCase().trim();
+        const mappedCategory = KML_FOLDER_CATEGORY_MAP[folderKey] || null;
+        placemarks.forEach(pm => {
+          const nameEl = pm.querySelector('name');
+          const descEl = pm.querySelector('description');
+          const coordsEl = pm.querySelector('Point > coordinates');
+          if (!nameEl || !coordsEl) return;
+          const name = nameEl.textContent.trim();
+          if (!name) return;
+          let description = '';
+          if (descEl) {
+            let raw = descEl.textContent.trim();
+            const tmp = document.createElement('div');
+            tmp.innerHTML = raw;
+            description = (tmp.textContent || tmp.innerText || '').trim().replace(/\s+/g, ' ').trim();
+          }
+          const coordsText = coordsEl.textContent.trim();
+          const parts = coordsText.split(',');
+          const lng = parseFloat(parts[0]);
+          const lat = parseFloat(parts[1]);
+          if (isNaN(lat) || isNaN(lng)) return;
+          const guessed = guessEmojiAndCategory(name, '');
+          const category = mappedCategory || guessed.category;
+          const emoji = (PIN_CATEGORIES[category] || PIN_CATEGORIES[mappedCategory] || {}).icon || guessed.emoji;
+          places.push({
+            name, description, lat, lng, checked: true, loading: false,
+            _kmlFolder: folderName || '', _category: category, _emoji: emoji,
+            placeData: { lat, lng, address: '', rating: null, types: [], displayName: name, opening_hours: {} },
+          });
+        });
+      };
+      if (folders.length > 0) {
+        folders.forEach(folder => {
+          const folderName = folder.querySelector(':scope > name')?.textContent?.trim() || '';
+          processPlacemarks(folder.querySelectorAll(':scope > Placemark'), folderName);
+        });
+      }
+      const topLevelPlacemarks = doc.querySelectorAll('Document > Placemark');
+      if (topLevelPlacemarks.length > 0) processPlacemarks(topLevelPlacemarks, '');
+      return { mapName, places };
+    };
+
+    const AddFromLinkModal = ({ onSelect, onBulkSelect, onClose, isDarkMode, startInPasteMode = false, initialBulkData = null }) => {
       const [url, setUrl] = useState('');
       const [fetching, setFetching] = useState(false);
       const [preview, setPreview] = useState(null); // { name, description, source_name, source_url }
-      const [bulkPlaces, setBulkPlaces] = useState(null); // [{ name, description, checked, loading, placeData }]
-      const [bulkSource, setBulkSource] = useState(null); // { source_name, source_url }
+      const [bulkPlaces, setBulkPlaces] = useState(initialBulkData?.places || null); // [{ name, description, checked, loading, placeData }]
+      const [bulkSource, setBulkSource] = useState(initialBulkData?.source || null); // { source_name, source_url }
       const [bulkExpandedSet, setBulkExpandedSet] = useState(new Set());
       const [error, setError] = useState('');
       const [pasteMode, setPasteMode] = useState(startInPasteMode);
@@ -4163,113 +4234,6 @@
             }
           }, idx * 200);
         });
-      };
-
-      // ---- KML/KMZ import (Google My Maps) ----
-      // Map Google My Maps folder names to Bo Wander categories
-      const KML_FOLDER_CATEGORY_MAP = {
-        hotel: 'hotel', hotels: 'hotel', accommodation: 'hotel', lodging: 'hotel', 'where to stay': 'hotel', stays: 'hotel',
-        food: 'restaurant', restaurant: 'restaurant', restaurants: 'restaurant', dining: 'restaurant', 'where to eat': 'restaurant', eats: 'restaurant', meals: 'restaurant',
-        coffee: 'coffee', cafe: 'coffee', cafes: 'coffee', 'coffee shops': 'coffee',
-        treats: 'treats', dessert: 'treats', desserts: 'treats', sweets: 'treats', bakery: 'treats', bakeries: 'treats', 'ice cream': 'treats',
-        bar: 'bar', bars: 'bar', drinks: 'bar', nightlife: 'bar', cocktails: 'bar', brewery: 'bar', breweries: 'bar', pub: 'bar', pubs: 'bar',
-        beach: 'beach', beaches: 'beach',
-        hike: 'nature', hikes: 'nature', hiking: 'nature', 'hikes & walks': 'nature', nature: 'nature', walks: 'nature', trails: 'nature', 'nature/hike': 'nature', parks: 'park', park: 'park',
-        'water activity': 'water_activity', snorkel: 'water_activity', snorkeling: 'water_activity', diving: 'water_activity', surf: 'water_activity', surfing: 'water_activity', kayak: 'water_activity', water: 'water_activity',
-        culture: 'culture', museum: 'culture', museums: 'culture', 'culture/museum': 'culture', history: 'culture', art: 'culture',
-        shrine: 'shrine_temple', temple: 'shrine_temple', temples: 'shrine_temple', shrines: 'shrine_temple', 'shrine/temple': 'shrine_temple',
-        shopping: 'shopping', shops: 'shopping', markets: 'shopping', market: 'food_market',
-        viewpoint: 'viewpoint', viewpoints: 'viewpoint', views: 'viewpoint', lookout: 'viewpoint', scenic: 'viewpoint',
-        activity: 'activity', activities: 'activity', tours: 'activity', 'things to do': 'activity', excursions: 'activity', adventure: 'activity',
-        transport: 'transport', transit: 'transport', transportation: 'transport',
-        wildlife: 'activity', animals: 'activity',
-        boba: 'boba', 'bubble tea': 'boba',
-        tea: 'tea',
-        mochi: 'mochi',
-      };
-
-      const parseKMLData = (xmlString) => {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(xmlString, 'text/xml');
-        const mapName = doc.querySelector('Document > name')?.textContent?.trim() || 'Google My Maps';
-        const places = [];
-
-        // Process each Folder (layer) in the KML
-        const folders = doc.querySelectorAll('Folder');
-        const processPlacemarks = (placemarks, folderName) => {
-          const folderKey = (folderName || '').toLowerCase().trim();
-          const mappedCategory = KML_FOLDER_CATEGORY_MAP[folderKey] || null;
-
-          placemarks.forEach(pm => {
-            const nameEl = pm.querySelector('name');
-            const descEl = pm.querySelector('description');
-            const coordsEl = pm.querySelector('Point > coordinates');
-            if (!nameEl || !coordsEl) return;
-
-            const name = nameEl.textContent.trim();
-            if (!name) return;
-
-            let description = '';
-            if (descEl) {
-              // Description may contain HTML (CDATA) — strip tags
-              let raw = descEl.textContent.trim();
-              // Strip HTML tags
-              const tmp = document.createElement('div');
-              tmp.innerHTML = raw;
-              description = (tmp.textContent || tmp.innerText || '').trim();
-              // Clean up whitespace
-              description = description.replace(/\s+/g, ' ').trim();
-            }
-
-            const coordsText = coordsEl.textContent.trim();
-            const parts = coordsText.split(',');
-            const lng = parseFloat(parts[0]);
-            const lat = parseFloat(parts[1]);
-            if (isNaN(lat) || isNaN(lng)) return;
-
-            // Guess category from folder name, then fallback to name-based guessing
-            const guessed = guessEmojiAndCategory(name, '');
-            const category = mappedCategory || guessed.category;
-            const emoji = (PIN_CATEGORIES[category] || PIN_CATEGORIES[mappedCategory] || {}).icon || guessed.emoji;
-
-            places.push({
-              name,
-              description,
-              lat,
-              lng,
-              checked: true,
-              loading: false,
-              _kmlFolder: folderName || '',
-              _category: category,
-              _emoji: emoji,
-              placeData: {
-                lat,
-                lng,
-                address: '',
-                rating: null,
-                types: [],
-                displayName: name,
-                opening_hours: {},
-              },
-            });
-          });
-        };
-
-        if (folders.length > 0) {
-          folders.forEach(folder => {
-            const folderName = folder.querySelector(':scope > name')?.textContent?.trim() || '';
-            const placemarks = folder.querySelectorAll(':scope > Placemark');
-            processPlacemarks(placemarks, folderName);
-          });
-        }
-
-        // Also catch any Placemarks not inside a Folder
-        const topLevelPlacemarks = doc.querySelectorAll('Document > Placemark');
-        if (topLevelPlacemarks.length > 0) {
-          processPlacemarks(topLevelPlacemarks, '');
-        }
-
-        return { mapName, places };
       };
 
       const handleKMLFile = async (file) => {
@@ -6256,7 +6220,7 @@
       );
     };
 
-    const UploadConfirmationModal = ({ onSelect, onClose, isDarkMode, onMapCenter, onPreviewPin }) => {
+    const UploadConfirmationModal = ({ onSelect, onClose, isDarkMode, onMapCenter, onPreviewPin, onKMLImport }) => {
       const [step, setStep] = useState('upload'); // 'upload' | 'review'
       const [bookingType, setBookingTypeRaw] = useState('hotel'); // 'hotel' | 'activity'
       const [dragging, setDragging] = useState(false);
@@ -6539,11 +6503,47 @@
         reader.readAsDataURL(file);
       };
 
+      const [kmlError, setKmlError] = useState('');
+
       const processFile = async (file) => {
-        // Redirect KML/KMZ files — they belong in the Add from Link bulk importer
+        // Handle KML/KMZ files — parse and hand off to bulk importer
         if (file.name.toLowerCase().endsWith('.kml') || file.name.toLowerCase().endsWith('.kmz')) {
+          setProcessing(true);
+          setKmlError('');
+          try {
+            const isKMZ = file.name.toLowerCase().endsWith('.kmz');
+            let kmlString = '';
+            if (isKMZ) {
+              if (typeof JSZip === 'undefined') {
+                setKmlError('KMZ support is still loading — please try again in a moment.');
+                setProcessing(false);
+                return;
+              }
+              const zip = await JSZip.loadAsync(file);
+              const kmlFile = zip.file('doc.kml') || zip.file(/\.kml$/i)[0];
+              if (!kmlFile) {
+                setKmlError('No KML file found inside this KMZ archive.');
+                setProcessing(false);
+                return;
+              }
+              kmlString = await kmlFile.async('string');
+            } else {
+              kmlString = await file.text();
+            }
+            const { mapName, places } = parseKMLData(kmlString);
+            if (places.length === 0) {
+              setKmlError('No places found in this file.');
+              setProcessing(false);
+              return;
+            }
+            const srcName = mapName || file.name.replace(/\.(kmz|kml)$/i, '');
+            if (onKMLImport) {
+              onKMLImport({ places, source: { source_name: `Google My Maps: ${srcName}`, source_url: '' } });
+            }
+          } catch (err) {
+            setKmlError('Failed to parse file: ' + err.message);
+          }
           setProcessing(false);
-          alert('To import a Google My Maps file (.kml/.kmz), use the "Add from Link" button instead — it has a dedicated Google My Maps importer.');
           return;
         }
         setProcessing(true);
@@ -6801,7 +6801,7 @@
                       ref={fileInputRef}
                       type="file"
                       className="hidden"
-                      accept="image/*,.pdf,.txt,.html,.htm,.eml,text/*"
+                      accept="image/*,.pdf,.txt,.html,.htm,.eml,.kml,.kmz,text/*"
                       onChange={e => handleFiles(e.target.files)}
                     />
                     {processing ? (
@@ -6818,11 +6818,14 @@
                         </p>
                         <p className="text-xs text-gray-400">or click to browse</p>
                         <p className="text-xs text-gray-400 mt-2">
-                          Supports: PDF, images, text, HTML emails
+                          Supports: PDF, images, text, HTML emails, KML/KMZ
                         </p>
                       </div>
                     )}
                   </div>
+                  {kmlError && (
+                    <p className="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">{kmlError}</p>
+                  )}
 
                   <button
                     onClick={() => setStep('review')}
@@ -11183,6 +11186,7 @@
         });
       };
       const [showUploadConfirmation, setShowUploadConfirmation] = useState(false);
+      const [kmlBulkData, setKmlBulkData] = useState(null);
       const [showDocCenter, setShowDocCenter] = useState(false);
       const [showItinerary, setShowItinerary] = useState(false);
 
@@ -11983,8 +11987,9 @@
                   showToast(parts.join(', '));
                 }
               }}
-              onClose={() => setShowAddFromLink(false)}
+              onClose={() => { setShowAddFromLink(false); setKmlBulkData(null); }}
               isDarkMode={darkMode}
+              initialBulkData={kmlBulkData}
             />
           )}
 
@@ -12133,6 +12138,11 @@
               isDarkMode={darkMode}
               onMapCenter={(coords, zoom) => setMapPanTarget({ lat: coords[0], lng: coords[1], _t: Date.now() })}
               onPreviewPin={(pin) => setPreviewPin({ lat: pin.lat, lng: pin.lng, name: pin.name, emoji: '🏨' })}
+              onKMLImport={({ places, source }) => {
+                setShowUploadConfirmation(false);
+                setKmlBulkData({ places, source });
+                setShowAddFromLink(true);
+              }}
             />
           )}
 
