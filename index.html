@@ -41,6 +41,8 @@
 
   <!-- PDF.js for PDF text extraction -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <!-- JSZip for KMZ import (Google My Maps) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script>if(window.pdfjsLib)pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
 
   <!-- Firebase SDK (compat for non-module usage) -->
@@ -956,9 +958,52 @@
       }
     });
 
+    // Safe localStorage helper — silently handles QuotaExceededError
+    const safeSetItem = (key, value) => {
+      try {
+        localStorage.setItem(key, value);
+      } catch (e) {
+        console.warn(`[BoWander] localStorage quota exceeded for "${key}" — clearing cache`);
+        // Try to free space by clearing the largest items first
+        try {
+          localStorage.removeItem('boWanderPins'); // pins are the biggest item
+          localStorage.setItem(key, value); // retry
+        } catch (e2) {
+          console.warn('[BoWander] Still over quota after clearing pins cache:', e2.message);
+        }
+      }
+    };
+
+    // Strip large data (photos, attachments, base64) before caching pins to localStorage
+    const stripLargeData = (pins) => {
+      return pins.map(p => {
+        const slim = { ...p };
+        // Remove base64 photo data — keep photo metadata but not the actual data URLs
+        if (slim.photos && Array.isArray(slim.photos)) {
+          slim.photos = slim.photos.map(ph => {
+            if (typeof ph === 'string' && ph.startsWith('data:')) return '[photo]';
+            if (ph && typeof ph === 'object' && ph.url && ph.url.startsWith('data:')) return { ...ph, url: '[photo]' };
+            return ph;
+          });
+        }
+        // Remove attachment file data
+        if (slim.attachment && slim.attachment.dataUrl) {
+          slim.attachment = { ...slim.attachment, dataUrl: '[stripped]' };
+        }
+        // Remove info_photos data URLs
+        if (slim.info_photos && Array.isArray(slim.info_photos)) {
+          slim.info_photos = slim.info_photos.map(ip => {
+            if (ip && ip.dataUrl) return { ...ip, dataUrl: '[stripped]' };
+            return ip;
+          });
+        }
+        return slim;
+      });
+    };
+
     // Save initial pins to localStorage if not already saved
     if (!localStorage.getItem('boWanderPins')) {
-      localStorage.setItem('boWanderPins', JSON.stringify(SAMPLE_PINS));
+      safeSetItem('boWanderPins', JSON.stringify(SAMPLE_PINS));
     }
 
     // ==================== FIREBASE SERVICE ====================
@@ -1024,7 +1069,7 @@
           const idx = cached.findIndex(p => p.id === pin.id);
           if (idx > -1) cached[idx] = pinData;
           else cached.push(pinData);
-          localStorage.setItem('boWanderPins', JSON.stringify(cached));
+          safeSetItem('boWanderPins', JSON.stringify(stripLargeData(cached)));
         } catch {}
         return Promise.resolve();
       },
@@ -1034,7 +1079,7 @@
         await db.collection('pins').doc(pinId).delete();
         try {
           const cached = JSON.parse(localStorage.getItem('boWanderPins') || '[]');
-          localStorage.setItem('boWanderPins', JSON.stringify(cached.filter(p => p.id !== pinId)));
+          safeSetItem('boWanderPins', JSON.stringify(stripLargeData(cached.filter(p => p.id !== pinId))));
         } catch {}
         return Promise.resolve();
       },
@@ -1062,7 +1107,7 @@
           const snap = await db.collection('pins').get();
           const pins = [];
           snap.forEach(doc => pins.push({ id: doc.id, ...doc.data() }));
-          localStorage.setItem('boWanderPins', JSON.stringify(pins));
+          safeSetItem('boWanderPins', JSON.stringify(stripLargeData(pins)));
           return pins;
         } catch (e) {
           console.warn('Firestore load failed, using localStorage:', e);
@@ -1079,7 +1124,7 @@
           const cols = [];
           snap.forEach(doc => cols.push({ id: doc.id, ...doc.data() }));
           if (cols.length > 0) {
-            localStorage.setItem('boWanderCollections', JSON.stringify(cols));
+            safeSetItem('boWanderCollections', JSON.stringify(cols));
             return cols;
           }
         } catch (e) {
@@ -1098,7 +1143,7 @@
         return db.collection('pins').onSnapshot(snap => {
           const pins = [];
           snap.forEach(doc => pins.push({ id: doc.id, ...doc.data() }));
-          localStorage.setItem('boWanderPins', JSON.stringify(pins));
+          safeSetItem('boWanderPins', JSON.stringify(stripLargeData(pins)));
           callback(pins);
         }, err => {
           console.warn('Pins snapshot error:', err);
@@ -1111,7 +1156,7 @@
           const cols = [];
           snap.forEach(doc => cols.push({ id: doc.id, ...doc.data() }));
           if (cols.length > 0) {
-            localStorage.setItem('boWanderCollections', JSON.stringify(cols));
+            safeSetItem('boWanderCollections', JSON.stringify(cols));
             callback(cols);
           }
         }, err => {
@@ -4120,6 +4165,148 @@
         });
       };
 
+      // ---- KML/KMZ import (Google My Maps) ----
+      // Map Google My Maps folder names to Bo Wander categories
+      const KML_FOLDER_CATEGORY_MAP = {
+        hotel: 'hotel', hotels: 'hotel', accommodation: 'hotel', lodging: 'hotel', 'where to stay': 'hotel', stays: 'hotel',
+        food: 'restaurant', restaurant: 'restaurant', restaurants: 'restaurant', dining: 'restaurant', 'where to eat': 'restaurant', eats: 'restaurant', meals: 'restaurant',
+        coffee: 'coffee', cafe: 'coffee', cafes: 'coffee', 'coffee shops': 'coffee',
+        treats: 'treats', dessert: 'treats', desserts: 'treats', sweets: 'treats', bakery: 'treats', bakeries: 'treats', ice cream: 'treats',
+        bar: 'bar', bars: 'bar', drinks: 'bar', nightlife: 'bar', cocktails: 'bar', brewery: 'bar', breweries: 'bar', pub: 'bar', pubs: 'bar',
+        beach: 'beach', beaches: 'beach',
+        hike: 'nature', hikes: 'nature', hiking: 'nature', 'hikes & walks': 'nature', nature: 'nature', walks: 'nature', trails: 'nature', 'nature/hike': 'nature', parks: 'park', park: 'park',
+        'water activity': 'water_activity', snorkel: 'water_activity', snorkeling: 'water_activity', diving: 'water_activity', surf: 'water_activity', surfing: 'water_activity', kayak: 'water_activity', water: 'water_activity',
+        culture: 'culture', museum: 'culture', museums: 'culture', 'culture/museum': 'culture', history: 'culture', art: 'culture',
+        shrine: 'shrine_temple', temple: 'shrine_temple', temples: 'shrine_temple', shrines: 'shrine_temple', 'shrine/temple': 'shrine_temple',
+        shopping: 'shopping', shops: 'shopping', markets: 'shopping', market: 'food_market',
+        viewpoint: 'viewpoint', viewpoints: 'viewpoint', views: 'viewpoint', lookout: 'viewpoint', scenic: 'viewpoint',
+        activity: 'activity', activities: 'activity', tours: 'activity', 'things to do': 'activity', excursions: 'activity', adventure: 'activity',
+        transport: 'transport', transit: 'transport', transportation: 'transport',
+        wildlife: 'activity', animals: 'activity',
+        boba: 'boba', 'bubble tea': 'boba',
+        tea: 'tea',
+        mochi: 'mochi',
+      };
+
+      const parseKMLData = (xmlString) => {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(xmlString, 'text/xml');
+        const mapName = doc.querySelector('Document > name')?.textContent?.trim() || 'Google My Maps';
+        const places = [];
+
+        // Process each Folder (layer) in the KML
+        const folders = doc.querySelectorAll('Folder');
+        const processPlacemarks = (placemarks, folderName) => {
+          const folderKey = (folderName || '').toLowerCase().trim();
+          const mappedCategory = KML_FOLDER_CATEGORY_MAP[folderKey] || null;
+
+          placemarks.forEach(pm => {
+            const nameEl = pm.querySelector('name');
+            const descEl = pm.querySelector('description');
+            const coordsEl = pm.querySelector('Point > coordinates');
+            if (!nameEl || !coordsEl) return;
+
+            const name = nameEl.textContent.trim();
+            if (!name) return;
+
+            let description = '';
+            if (descEl) {
+              // Description may contain HTML (CDATA) — strip tags
+              let raw = descEl.textContent.trim();
+              // Strip HTML tags
+              const tmp = document.createElement('div');
+              tmp.innerHTML = raw;
+              description = (tmp.textContent || tmp.innerText || '').trim();
+              // Clean up whitespace
+              description = description.replace(/\s+/g, ' ').trim();
+            }
+
+            const coordsText = coordsEl.textContent.trim();
+            const parts = coordsText.split(',');
+            const lng = parseFloat(parts[0]);
+            const lat = parseFloat(parts[1]);
+            if (isNaN(lat) || isNaN(lng)) return;
+
+            // Guess category from folder name, then fallback to name-based guessing
+            const guessed = guessEmojiAndCategory(name, '');
+            const category = mappedCategory || guessed.category;
+            const emoji = (PIN_CATEGORIES[category] || PIN_CATEGORIES[mappedCategory] || {}).icon || guessed.emoji;
+
+            places.push({
+              name,
+              description,
+              lat,
+              lng,
+              checked: true,
+              loading: false,
+              _kmlFolder: folderName || '',
+              _category: category,
+              _emoji: emoji,
+              placeData: {
+                lat,
+                lng,
+                address: '',
+                rating: null,
+                types: [],
+                displayName: name,
+                opening_hours: {},
+              },
+            });
+          });
+        };
+
+        if (folders.length > 0) {
+          folders.forEach(folder => {
+            const folderName = folder.querySelector(':scope > name')?.textContent?.trim() || '';
+            const placemarks = folder.querySelectorAll(':scope > Placemark');
+            processPlacemarks(placemarks, folderName);
+          });
+        }
+
+        // Also catch any Placemarks not inside a Folder
+        const topLevelPlacemarks = doc.querySelectorAll('Document > Placemark');
+        if (topLevelPlacemarks.length > 0) {
+          processPlacemarks(topLevelPlacemarks, '');
+        }
+
+        return { mapName, places };
+      };
+
+      const handleKMLFile = async (file) => {
+        const isKMZ = file.name.toLowerCase().endsWith('.kmz');
+        let kmlString = '';
+
+        if (isKMZ) {
+          // KMZ is a ZIP file containing doc.kml
+          if (typeof JSZip === 'undefined') {
+            setError('KMZ support is loading — please try again in a moment.');
+            return;
+          }
+          const zip = await JSZip.loadAsync(file);
+          // Find the KML file inside the archive
+          const kmlFile = zip.file('doc.kml') || zip.file(/\.kml$/i)[0];
+          if (!kmlFile) {
+            setError('No KML file found inside this KMZ archive.');
+            return;
+          }
+          kmlString = await kmlFile.async('string');
+        } else {
+          kmlString = await file.text();
+        }
+
+        const { mapName, places } = parseKMLData(kmlString);
+        if (places.length === 0) {
+          setError('No places found in this file. Make sure it contains placemarks with coordinates.');
+          return;
+        }
+
+        // Derive a source label from the map name / file name
+        const srcName = mapName || file.name.replace(/\.(kmz|kml)$/i, '');
+        setBulkPlaces(places);
+        setBulkSource({ source_name: `Google My Maps: ${srcName}`, source_url: '' });
+        setError('');
+      };
+
       // Parse plain pasted text into candidate places
       const parsePastedText = (text) => {
         const skipPatterns = /^(introduction|getting there|getting around|how to get|tips|map|related|about|author|comment|share|conclusion|summary|faq|where to stay|where to eat|when to visit|final thoughts|more|other|the bottom line|pin this|you may also|read more|subscribe|newsletter|what to|why|the best|a guide|welcome|table of contents|contents|overview|highlights|navigation|menu|sidebar|footer|header|contact|resources|disclosure|disclaimer|affiliate|write a comment|cancel reply|leave a reply|save my name|planning a trip|are you booking|book your|use my|ps\s*[—–\-]|related posts|popular posts|recent posts|you might also|join our|sign up|follow us|connect with|advertisement|skip to|jump to|go to|search|home|log in|sign in|register|my account|wishlist|cart|categories?|tags?|filed under|posted in|share this|print this|email this|save this|bookmark|more from|read next|up next|trending|recommended|sponsored|advertisement|made in \w+|top stories|latest|popular|features?|sections?|site map|terms|privacy|cookie|©|copyright|all rights reserved|explore cities|time out markets|facebook|twitter|pinterest|instagram|speciality stores|one-stop shops|more great|popular on|back to top|digital edition|magazine subscription|time out (group|products|worldwide|tokyo|london|new york))/i;
@@ -5065,8 +5252,8 @@
               {bulkPlaces ? (
                 <div className="space-y-3">
                   <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3">
-                    <p className="text-xs text-blue-600 dark:text-blue-400 truncate">🔗 {bulkSource?.source_url}</p>
-                    <p className="text-xs text-blue-500 mt-0.5">Source: {bulkSource?.source_name} · {bulkPlaces.filter(p => !p.duplicate).length} places found</p>
+                    {bulkSource?.source_url && <p className="text-xs text-blue-600 dark:text-blue-400 truncate">🔗 {bulkSource.source_url}</p>}
+                    <p className="text-xs text-blue-500 mt-0.5">{bulkSource?.source_url ? 'Source: ' : '🗺️ '}{bulkSource?.source_name} · {bulkPlaces.filter(p => !p.duplicate).length} places found</p>
                   </div>
                   <div className="flex items-center justify-between">
                     <button
@@ -5103,8 +5290,13 @@
                             </div>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="text-sm">{cat.emoji}</span>
+                                <span className="text-sm">{place._emoji || cat.emoji}</span>
                                 <span className="font-medium text-sm dark:text-white truncate">{place.placeData?.displayName || place.name}</span>
+                                {place._kmlFolder && (
+                                  <span className="text-[10px] font-medium bg-gray-100 dark:bg-slate-700 text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded-full flex-shrink-0">
+                                    {place._kmlFolder}
+                                  </span>
+                                )}
                                 {place.placeData?.businessStatus === 'CLOSED_PERMANENTLY' && (
                                   <span className="text-[10px] font-semibold bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 px-1.5 py-0.5 rounded-full flex-shrink-0" title="Google reports this place as permanently closed — auto-unchecked">
                                     Permanently closed
@@ -5472,6 +5664,34 @@
                   >
                     {fetching ? 'Fetching...' : 'Fetch & Preview'}
                   </button>
+                  {/* KML/KMZ file import */}
+                  <div className="relative border-t dark:border-slate-700 pt-3">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">Or import from a file</p>
+                    <label className="flex items-center justify-center gap-2 px-4 py-2.5 border-2 border-dashed border-gray-300 dark:border-slate-600 rounded-lg cursor-pointer hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/10 transition">
+                      <input
+                        type="file"
+                        accept=".kml,.kmz"
+                        className="hidden"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          if (!file) return;
+                          setFetching(true);
+                          setError('');
+                          try {
+                            await handleKMLFile(file);
+                          } catch (err) {
+                            setError('Failed to parse file: ' + err.message);
+                          }
+                          setFetching(false);
+                        }}
+                      />
+                      <span className="text-sm">🗺️</span>
+                      <span className="text-sm font-medium text-gray-600 dark:text-gray-300">
+                        {fetching ? 'Importing...' : 'Import Google My Maps (.kmz/.kml)'}
+                      </span>
+                    </label>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -6320,6 +6540,12 @@
       };
 
       const processFile = async (file) => {
+        // Redirect KML/KMZ files — they belong in the Add from Link bulk importer
+        if (file.name.toLowerCase().endsWith('.kml') || file.name.toLowerCase().endsWith('.kmz')) {
+          setProcessing(false);
+          alert('To import a Google My Maps file (.kml/.kmz), use the "Add from Link" button instead — it has a dedicated Google My Maps importer.');
+          return;
+        }
         setProcessing(true);
         setFileName(file.name);
         storeFile(file);
@@ -8812,6 +9038,7 @@
       const [coverSearchResults, setCoverSearchResults] = useState([]);
       const [coverSearching, setCoverSearching] = useState(false);
       const coverFileRef = useRef(null);
+      const coverAutoSearchedRef = useRef(null);
 
       // Curated cover photos for popular destinations
       // Multiple cover options per destination for shuffle support
@@ -8862,6 +9089,50 @@
         'peru': [U('photo-1526392060635-9d6019884377'), U('photo-1580619305218-8423a7ef79b4')],
         'vietnam': [U('photo-1528127269322-539152af5929'), U('photo-1583417319070-4a69db38a482')],
         'thailand': [U('photo-1552465011-b4e21bf6e79a'), U('photo-1528181304800-259b08848526')],
+        'maui': [U('photo-1507876466758-bc54f384809c'), U('photo-1542259009477-d625272157b7'), U('photo-1505852679233-d9fd70aff56d'), U('photo-1544550581-5f7ceaf7f740')],
+        'asheville': [U('photo-1558349699-1e1c97df9e9b'), U('photo-1508739773434-c26b3d09e071'), U('photo-1507003211169-0a1dd7228f2d')],
+        'nashville': [U('photo-1545419913-775e4b1e8bf6'), U('photo-1581447109200-bf2769116351')],
+        'austin': [U('photo-1531218150217-54595bc2b934'), U('photo-1588369571370-83f0a5483cd3')],
+        'denver': [U('photo-1546156929-a4c0ac411f47'), U('photo-1603033156614-3c7a0beb0f1a')],
+        'colorado': [U('photo-1546156929-a4c0ac411f47'), U('photo-1506905925346-21bda4d32df4')],
+        'portland': [U('photo-1555099962-4199c345e5dd'), U('photo-1541625602330-2277a4c46182')],
+        'new orleans': [U('photo-1568402102990-bc541580b59f'), U('photo-1558365849-6ebd8b0b9808')],
+        'chicago': [U('photo-1477959858617-67f85cf4f1df'), U('photo-1494522855154-9297ac14b55f')],
+        'boston': [U('photo-1572152099757-8d8c7e6aaee0'), U('photo-1558642452-9d2a7deb7f62')],
+        'washington dc': [U('photo-1557160854-e1e89fdd3286'), U('photo-1501466044931-62695aada8e9')],
+        'dc': [U('photo-1557160854-e1e89fdd3286'), U('photo-1501466044931-62695aada8e9')],
+        'montreal': [U('photo-1519178614-68673b201f36'), U('photo-1558489580-fad8ed4b4e04')],
+        'vancouver': [U('photo-1559511260-66a68e7c6e8f'), U('photo-1508185159346-bb1c5e93ebb4')],
+        'cancun': [U('photo-1510097467424-192d713fd8b2'), U('photo-1552074284-5e88ef1aef18')],
+        'tulum': [U('photo-1504019347908-b45f9b0b8dd5'), U('photo-1585464231875-d9ef1f5ad396')],
+        'puerto rico': [U('photo-1580818221343-ff2c605ee498'), U('photo-1541748603027-cbfefa3a6c8f')],
+        'scotland': [U('photo-1506377585622-bedcbb027afc'), U('photo-1513635269975-59663e0ac1ad')],
+        'ireland': [U('photo-1564959130747-897a8e5b39c7'), U('photo-1590089415225-401ed6f9db8e')],
+        'dublin': [U('photo-1549918864-48ac978761a4'), U('photo-1564959130747-897a8e5b39c7')],
+        'copenhagen': [U('photo-1513622470522-26c3c8a854bc'), U('photo-1552560095-967e0f5b7b25')],
+        'stockholm': [U('photo-1509356843151-3e7643f09f91'), U('photo-1577741314755-048d8525d31e')],
+        'norway': [U('photo-1531366936337-7c912a4589a7'), U('photo-1520769669658-f07657e5b307')],
+        'switzerland': [U('photo-1527668752968-14dc70a27c95'), U('photo-1531973576160-7125cd663d86')],
+        'amalfi': [U('photo-1534113414509-0eec2bfb493f'), U('photo-1455587734955-081b22074882')],
+        'amalfi coast': [U('photo-1534113414509-0eec2bfb493f'), U('photo-1455587734955-081b22074882')],
+        'cinque terre': [U('photo-1516483638261-f4dbaf036963'), U('photo-1534113414509-0eec2bfb493f')],
+        'florence': [U('photo-1543429258-e0c1e9f3ab76'), U('photo-1541370976299-4d24ebbc9077')],
+        'nice': [U('photo-1491166617655-0723a0999cfc'), U('photo-1533929736458-ca588d08c8be')],
+        'provence': [U('photo-1502602898657-3e91760cbb34'), U('photo-1595586964632-b215d1ea44c5')],
+        'marrakech': [U('photo-1489749798305-4fea3ae63d43'), U('photo-1539020140153-e479b8c22e70')],
+        'cape town': [U('photo-1580060839134-75a5edca2e99'), U('photo-1576485290814-1c72aa4bbb8e')],
+        'south africa': [U('photo-1580060839134-75a5edca2e99'), U('photo-1516026672322-bc52d61a55d5')],
+        'new zealand': [U('photo-1469521669194-babb45599def'), U('photo-1507699622108-4be3abd695ad')],
+        'fiji': [U('photo-1505881502353-a1986add3762'), U('photo-1469521669194-babb45599def')],
+        'maldives': [U('photo-1514282401047-d79a71a590e8'), U('photo-1573843981267-be1999ff37cd')],
+        'sri lanka': [U('photo-1586041828039-b8d193d6d1dc'), U('photo-1506953823645-58d81b6a8e0a')],
+        'taiwan': [U('photo-1470004914212-05527e49370b'), U('photo-1553650618-a3a41e49ca81')],
+        'taipei': [U('photo-1470004914212-05527e49370b'), U('photo-1553650618-a3a41e49ca81')],
+        'okinawa': [U('photo-1590559899731-a382839e5549'), U('photo-1528360983277-13d401cdc186')],
+        'osaka': [U('photo-1590559899731-a382839e5549'), U('photo-1493976040374-85c8e12f0c0e')],
+        'north carolina': [U('photo-1558349699-1e1c97df9e9b'), U('photo-1508739773434-c26b3d09e071')],
+        'miami': [U('photo-1506966953602-c20cc11f75e3'), U('photo-1535498730771-e735b998cd64')],
+        'seattle': [U('photo-1502175353174-a7a70e73b362'), U('photo-1516820612845-a13894592046')],
       };
 
       const getCoverForName = (name, index = 0) => {
@@ -8897,11 +9168,13 @@
 
       const [photoResults, setPhotoResults] = useState([]);
       const [mapTileResults, setMapTileResults] = useState([]);
+      const [googlePhotoResults, setGooglePhotoResults] = useState([]);
 
-      // Build cover photo options from curated Unsplash covers + map tiles
+      // Build cover photo options from curated Unsplash covers + Google Places photos + map tiles
       const searchCoverPhotos = (query) => {
         if (!query || query.length < 2) return;
         setCoverSearching(true);
+        setGooglePhotoResults([]);
 
         // Get curated Unsplash covers for this destination
         const covers = getCoversForName(query);
@@ -8909,6 +9182,43 @@
           url, thumb: url, label: `${query} — option ${i + 1}`, credit: 'Unsplash',
         }));
         setPhotoResults(photos);
+
+        // Google Places Photos — search for the destination and pull photos
+        const apiKey = getGoogleApiKey();
+        if (apiKey) {
+          fetch('https://places.googleapis.com/v1/places:searchText', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Goog-Api-Key': apiKey,
+              'X-Goog-FieldMask': 'places.photos,places.displayName',
+            },
+            body: JSON.stringify({ textQuery: query + ' tourist attraction', maxResultCount: 5 }),
+          })
+            .then(r => r.ok ? r.json() : Promise.reject())
+            .then(data => {
+              const gPhotos = [];
+              const seen = new Set();
+              (data.places || []).forEach(place => {
+                (place.photos || []).slice(0, 2).forEach(photo => {
+                  if (seen.has(photo.name)) return;
+                  seen.add(photo.name);
+                  const photoUrl = `https://places.googleapis.com/v1/${photo.name}/media?maxWidthPx=600&maxHeightPx=400&key=${apiKey}`;
+                  gPhotos.push({
+                    url: photoUrl,
+                    thumb: photoUrl,
+                    label: place.displayName?.text || query,
+                    credit: photo.authorAttributions?.[0]?.displayName || 'Google',
+                  });
+                });
+              });
+              setGooglePhotoResults(gPhotos.slice(0, 9));
+            })
+            .catch(() => setGooglePhotoResults([]))
+            .finally(() => setCoverSearching(false));
+        } else {
+          setCoverSearching(false);
+        }
 
         // Also get map tile options
         fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=2`)
@@ -8928,16 +9238,42 @@
             });
             setMapTileResults(results);
           })
-          .catch(() => setMapTileResults([]))
-          .finally(() => setCoverSearching(false));
+          .catch(() => setMapTileResults([]));
       };
+
+      // Auto-search when cover picker opens
+      useEffect(() => {
+        if (editingCover?.name && coverAutoSearchedRef.current !== editingCover.id) {
+          coverAutoSearchedRef.current = editingCover.id;
+          setCoverSearchQuery(editingCover.name);
+          searchCoverPhotos(editingCover.name);
+        }
+        if (!editingCover) {
+          coverAutoSearchedRef.current = null;
+        }
+      }, [editingCover]);
 
       const handleCoverUpload = (file) => {
         if (!file || !editingCover) return;
+        // Resize to max 600px wide to avoid localStorage quota issues
         const reader = new FileReader();
         reader.onload = (e) => {
-          onCreateCollection({ id: editingCover.id, cover_image: e.target.result, _update: true });
-          setEditingCover(null);
+          const img = new Image();
+          img.onload = () => {
+            const maxW = 600, maxH = 300;
+            let w = img.width, h = img.height;
+            if (w > maxW) { h = h * maxW / w; w = maxW; }
+            if (h > maxH) { w = w * maxH / h; h = maxH; }
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, w, h);
+            const resized = canvas.toDataURL('image/jpeg', 0.8);
+            onCreateCollection({ id: editingCover.id, cover_image: resized, _update: true });
+            setEditingCover(null);
+          };
+          img.src = e.target.result;
         };
         reader.readAsDataURL(file);
       };
@@ -8949,6 +9285,9 @@
         setCoverUrl('');
         setCoverSearchResults([]);
         setCoverSearchQuery('');
+        setGooglePhotoResults([]);
+        setPhotoResults([]);
+        setMapTileResults([]);
       };
 
       const handleCreateCollection = () => {
@@ -9222,7 +9561,7 @@
                           value={coverSearchQuery}
                           onChange={e => setCoverSearchQuery(e.target.value)}
                           onKeyDown={e => e.key === 'Enter' && searchCoverPhotos(coverSearchQuery)}
-                          placeholder="Search photos (e.g. Tel Aviv beach, skyline...)"
+                          placeholder="Search photos (e.g. Maui beach, Asheville skyline...)"
                           className="flex-1 px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
                         />
                         <button
@@ -9235,10 +9574,29 @@
 
                       {coverSearching && <p className="text-sm text-gray-400 text-center animate-pulse">Searching photos...</p>}
 
-                      {/* Photo results */}
+                      {/* Google Places photos */}
+                      {googlePhotoResults.length > 0 && (
+                        <div>
+                          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Google Photos ({googlePhotoResults.length})</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            {googlePhotoResults.map((r, i) => (
+                              <button
+                                key={`gphoto-${i}`}
+                                onClick={() => handleCoverSave(r.url)}
+                                className="rounded-lg overflow-hidden border-2 border-transparent hover:border-blue-500 transition relative group"
+                              >
+                                <img src={r.thumb} alt={r.label || ''} className="w-full h-20 object-cover" loading="lazy" />
+                                <span className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-50 text-white px-1 py-0.5 truncate opacity-0 group-hover:opacity-100 transition" style={{ fontSize: '9px' }}>{r.label}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Curated Unsplash photos */}
                       {photoResults.length > 0 && (
                         <div>
-                          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Photos</p>
+                          <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Curated Photos</p>
                           <div className="grid grid-cols-3 gap-2">
                             {photoResults.map((r, i) => (
                               <button
@@ -9273,6 +9631,11 @@
                             ))}
                           </div>
                         </div>
+                      )}
+
+                      {/* No results hint */}
+                      {!coverSearching && googlePhotoResults.length === 0 && photoResults.length === 0 && mapTileResults.length === 0 && coverSearchQuery && (
+                        <p className="text-xs text-gray-400 text-center py-2">No photos found. Try a different search term or upload your own.</p>
                       )}
 
                       {/* Upload or paste URL */}
@@ -11194,7 +11557,7 @@
           } else {
             updated = [...prev, colData];
           }
-          localStorage.setItem('boWanderCollections', JSON.stringify(updated));
+          safeSetItem('boWanderCollections', JSON.stringify(updated));
           return updated;
         });
         // Save to Firestore — find the full collection object to persist
@@ -11210,7 +11573,7 @@
       const handleDeleteCollection = (collectionId) => {
         setCollections(prev => {
           const updated = prev.filter(c => c.id !== collectionId);
-          localStorage.setItem('boWanderCollections', JSON.stringify(updated));
+          safeSetItem('boWanderCollections', JSON.stringify(updated));
           return updated;
         });
         setPins(prev => prev.filter(p => p.collection_id !== collectionId));
