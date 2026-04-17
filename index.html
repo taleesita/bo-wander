@@ -7337,6 +7337,8 @@
       // OCR-from-photo state: { imageSrc, fileName } while crop modal is open
       const [ocrCropPending, setOcrCropPending] = useState(null);
       const [ocrRunning, setOcrRunning] = useState(false);
+      // Hotel details section — default open if existing pin already has reservation_details
+      const [showHotelDetails, setShowHotelDetails] = useState(!!(pin.reservation_details && Object.keys(pin.reservation_details).some(k => pin.reservation_details[k])));
 
       const handleChange = (field, value) => {
         setFormData(prev => ({ ...prev, [field]: value }));
@@ -7493,6 +7495,85 @@
                     <span className="text-sm dark:text-gray-200">🌱 Vegetarian-friendly</span>
                   </label>
 
+                  {/* Hotel Details — collapsible, only for hotel category */}
+                  {formData.category === 'hotel' && (() => {
+                    const rd = formData.reservation_details || {};
+                    const updateRD = (field, value) => {
+                      setFormData(prev => ({
+                        ...prev,
+                        reservation_details: { ...(prev.reservation_details || {}), [field]: value }
+                      }));
+                    };
+                    const fieldClass = "w-full px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm";
+                    const labelClass = "text-xs font-medium text-gray-600 dark:text-gray-400 block mb-0.5";
+                    return (
+                      <div className="border border-gray-200 dark:border-slate-700 rounded-lg overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => setShowHotelDetails(prev => !prev)}
+                          className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 text-sm font-semibold text-gray-700 dark:text-gray-300"
+                        >
+                          <span>🏨 Hotel Details</span>
+                          <span className={`transform transition-transform ${showHotelDetails ? 'rotate-180' : ''}`}>▾</span>
+                        </button>
+                        {showHotelDetails && (
+                          <div className="p-3 space-y-3 border-t border-gray-200 dark:border-slate-700">
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className={labelClass}>Check-in date</label>
+                                <input type="date" value={rd.check_in || ''} onChange={e => updateRD('check_in', e.target.value)} className={fieldClass} />
+                              </div>
+                              <div>
+                                <label className={labelClass}>Check-out date</label>
+                                <input type="date" value={rd.check_out || ''} onChange={e => updateRD('check_out', e.target.value)} className={fieldClass} />
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className={labelClass}>Check-in time</label>
+                                <input type="time" value={rd.check_in_time || ''} onChange={e => updateRD('check_in_time', e.target.value)} className={fieldClass} />
+                              </div>
+                              <div>
+                                <label className={labelClass}>Check-out time</label>
+                                <input type="time" value={rd.check_out_time || ''} onChange={e => updateRD('check_out_time', e.target.value)} className={fieldClass} />
+                              </div>
+                            </div>
+                            <div>
+                              <label className={labelClass}>Room type</label>
+                              <input type="text" value={rd.room_type || ''} onChange={e => updateRD('room_type', e.target.value)} className={fieldClass} placeholder="e.g. King Suite, Double Queen" />
+                            </div>
+                            <div>
+                              <label className={labelClass}>Confirmation #</label>
+                              <input type="text" value={rd.confirmation_number || ''} onChange={e => updateRD('confirmation_number', e.target.value)} className={fieldClass} placeholder="Optional" data-1p-ignore data-lpignore="true" data-form-type="other" autoComplete="off" />
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div>
+                                <label className={labelClass}>Price</label>
+                                <input type="text" value={rd.price || ''} onChange={e => updateRD('price', e.target.value)} className={fieldClass} placeholder="e.g. $150/night" />
+                              </div>
+                              <div>
+                                <label className={labelClass}>Breakfast</label>
+                                <select value={rd.includes_breakfast || ''} onChange={e => updateRD('includes_breakfast', e.target.value)} className={fieldClass}>
+                                  <option value="">Unknown</option>
+                                  <option value="yes">Included</option>
+                                  <option value="no">Not included</option>
+                                </select>
+                              </div>
+                            </div>
+                            <div>
+                              <label className={labelClass}>Booking source</label>
+                              <input type="text" value={rd.booking_source || ''} onChange={e => updateRD('booking_source', e.target.value)} className={fieldClass} placeholder="e.g. Booking.com, direct" />
+                            </div>
+                            <div>
+                              <label className={labelClass}>PIN / access code</label>
+                              <input type="text" value={rd.pin || ''} onChange={e => updateRD('pin', e.target.value)} className={fieldClass} placeholder="Optional" data-1p-ignore data-lpignore="true" data-form-type="other" autoComplete="off" />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   <div>
                     <div className="flex items-center justify-between mb-1 gap-2">
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300">Description</label>
@@ -7627,21 +7708,30 @@
                   <button
                     onClick={() => {
                       if (!formData.name) { alert('Please enter a name'); return; }
-                      if (!formData.lat && formData.address) {
+                      // Clean up reservation_details — remove if all fields are empty
+                      let dataToSave = { ...formData };
+                      if (dataToSave.reservation_details) {
+                        const rd = dataToSave.reservation_details;
+                        const hasAnyValue = Object.values(rd).some(v => v && v !== '');
+                        if (!hasAnyValue) {
+                          delete dataToSave.reservation_details;
+                        }
+                      }
+                      if (!dataToSave.lat && dataToSave.address) {
                         // Geocode the address if no lat/lng
-                        fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(formData.address)}&limit=1`)
+                        fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(dataToSave.address)}&limit=1`)
                           .then(r => r.json())
                           .then(data => {
                             const f = data.features?.[0];
                             if (f && f.geometry?.coordinates) {
-                              onSave({ ...formData, lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] });
+                              onSave({ ...dataToSave, lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] });
                             } else {
-                              onSave(formData);
+                              onSave(dataToSave);
                             }
                           })
-                          .catch(() => onSave(formData));
+                          .catch(() => onSave(dataToSave));
                       } else {
-                        onSave(formData);
+                        onSave(dataToSave);
                       }
                     }}
                     className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
