@@ -10837,21 +10837,8 @@
         }
       }, [days, items]);
 
-      // Debounced transit recalculation when items change.
-      // Use a stable signature of items (id + lat/lng + order) so reorders, lat updates, and adds all trigger.
-      const itemsSig = items.map(i => `${i.id}:${i.day_id}:${i.lat || 0},${i.lng || 0}:${i.order_in_day || 0}`).join('|');
-      const daysSig = days.map(d => `${d.id}:${d.starting_point?.lat || 0},${d.starting_point?.lng || 0}`).join('|');
-      useEffect(() => {
-        if (!activeItinerary) return;
-        if (transitDebounceRef.current) clearTimeout(transitDebounceRef.current);
-        transitDebounceRef.current = setTimeout(() => {
-          // Calculate for all expanded days
-          Object.keys(expandedDays).forEach(dayId => {
-            if (expandedDays[dayId]) calculateTransitForDay(dayId);
-          });
-        }, 1500); // 1.5s debounce
-        return () => { if (transitDebounceRef.current) clearTimeout(transitDebounceRef.current); };
-      }, [itemsSig, daysSig, expandedDays, activeItinerary?.id]);
+      // Transit is now manual-only — use the "🔄 Travel times" button on each day card.
+      // This avoids burning Routes API calls while you're still arranging stops.
 
       // Handle pending add from PinDetailSheet
       useEffect(() => {
