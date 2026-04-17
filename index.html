@@ -3688,6 +3688,20 @@
         document.body
       ) : null;
 
+      const [showMoreMenu, setShowMoreMenu] = useState(false);
+      const moreMenuRef = useRef(null);
+      useEffect(() => {
+        if (!showMoreMenu) return;
+        const handler = (e) => {
+          if (moreMenuRef.current && !moreMenuRef.current.contains(e.target)) setShowMoreMenu(false);
+        };
+        document.addEventListener('mousedown', handler);
+        document.addEventListener('touchstart', handler);
+        return () => { document.removeEventListener('mousedown', handler); document.removeEventListener('touchstart', handler); };
+      }, [showMoreMenu]);
+
+      const pasteIconSrc = "data:image/png;base64,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";
+
       return (
         <div className="w-full" ref={containerRef}>
           <div className="relative w-full" ref={inputWrapRef}>
@@ -3712,7 +3726,8 @@
                 <button onClick={() => { setQuery(''); setPlaceResults([]); }} className="px-1 text-gray-400 hover:text-gray-600 text-xs flex-shrink-0">✕</button>
               )}
               {searching && <span className="px-1 text-gray-400 text-xs animate-pulse flex-shrink-0">...</span>}
-              {/* Desktop inline action buttons — partitioned into the search bar */}
+
+              {/* Desktop: inline action buttons partitioned into the search bar */}
               {!isMobile && (
                 <div className="flex items-center flex-shrink-0 border-l dark:border-slate-600" style={{ marginLeft: 2 }}>
                   <button
@@ -3720,7 +3735,7 @@
                     className="px-2.5 py-2.5 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm border-r dark:border-slate-600 flex items-center justify-center"
                     title="Paste text to import"
                   >
-                    <img src="data:image/png;base64,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" alt="Paste" className="w-5 h-5" style={{ opacity: 0.65 }} />
+                    <img src={pasteIconSrc} alt="Paste" className="w-5 h-5" style={{ opacity: 0.65 }} />
                   </button>
                   <button
                     onClick={() => { onUploadConfirmation(); setIsFocused(false); setQuery(''); }}
@@ -3736,6 +3751,44 @@
                   >
                     🔗
                   </button>
+                </div>
+              )}
+
+              {/* Mobile: ⋯ overflow menu for import actions */}
+              {isMobile && (
+                <div className="relative flex-shrink-0" ref={moreMenuRef}>
+                  <button
+                    onClick={() => setShowMoreMenu(!showMoreMenu)}
+                    className={`px-3 py-2.5 text-gray-400 dark:text-gray-500 text-lg font-bold leading-none ${showDropdown ? '' : 'rounded-r-full'} hover:bg-gray-100 dark:hover:bg-slate-700 transition`}
+                    title="Import options"
+                  >
+                    ⋯
+                  </button>
+                  {showMoreMenu && (
+                    <div className="absolute right-0 top-full mt-1 bg-white dark:bg-slate-800 rounded-xl shadow-xl border dark:border-slate-700 overflow-hidden" style={{ zIndex: 10003, minWidth: 180 }}>
+                      <button
+                        className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-slate-700 transition"
+                        onClick={() => { onPasteText(); setShowMoreMenu(false); setIsFocused(false); setQuery(''); }}
+                      >
+                        <img src={pasteIconSrc} alt="" className="w-4 h-4" style={{ opacity: 0.7 }} />
+                        <span>Paste text</span>
+                      </button>
+                      <button
+                        className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-slate-700 transition border-t dark:border-slate-700"
+                        onClick={() => { onUploadConfirmation(); setShowMoreMenu(false); setIsFocused(false); setQuery(''); }}
+                      >
+                        <span className="text-base">⬆️</span>
+                        <span>Upload file</span>
+                      </button>
+                      <button
+                        className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-slate-700 transition border-t dark:border-slate-700"
+                        onClick={() => { onAddFromLink(); setShowMoreMenu(false); setIsFocused(false); setQuery(''); }}
+                      >
+                        <span className="text-base">🔗</span>
+                        <span>Add from link</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -11159,12 +11212,12 @@
               </div>
             </div>
 
-            {/* Floating action icons (right side, vertical column) —
-                hide whenever a right-side panel (pin, itinerary, doc center) is open or list view is open on mobile */}
-            <div className={`absolute right-3 sm:right-4 top-16 sm:top-20 flex flex-col items-end gap-2 pointer-events-auto ${
-              (selectedPin || showItinerary || showDocCenter || (isMobile && showList)) ? 'hidden' : ''
-            }`}>
-              {!isMobile && (
+            {/* Floating action icons (right side, vertical column) — desktop only
+                (mobile uses bottom chip bar + search bar ⋯ menu instead) */}
+            {!isMobile && (
+              <div className={`absolute right-3 sm:right-4 top-16 sm:top-20 flex flex-col items-end gap-2 pointer-events-auto ${
+                (selectedPin || showItinerary || showDocCenter) ? 'hidden' : ''
+              }`}>
                 <div className="flex bg-white dark:bg-slate-800 rounded-full shadow-lg p-1">
                   <button
                     onClick={() => setShowList(false)}
@@ -11183,39 +11236,22 @@
                     📋 List
                   </button>
                 </div>
-              )}
-              {/* On mobile, show link/upload as floating buttons (on desktop they're in the search bar) */}
-              {isMobile && (<>
                 <button
-                  onClick={() => setShowAddFromLink(true)}
+                  onClick={() => setShowDocCenter(true)}
                   className="w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-base transition"
-                  title="Add from URL"
+                  title="Document Center"
                 >
-                  🔗
+                  📄
                 </button>
                 <button
-                  onClick={() => setShowUploadConfirmation(true)}
-                  className="w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-base transition"
-                  title="Upload confirmation"
+                  onClick={() => setShowItinerary(!showItinerary)}
+                  className={`w-10 h-10 flex items-center justify-center rounded-full shadow-lg text-base transition ${showItinerary ? 'bg-blue-600 text-white' : 'bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                  title="Itinerary Planner"
                 >
-                  ⬆️
+                  🗓️
                 </button>
-              </>)}
-              <button
-                onClick={() => setShowDocCenter(true)}
-                className="w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-base transition"
-                title="Document Center"
-              >
-                📄
-              </button>
-              <button
-                onClick={() => setShowItinerary(!showItinerary)}
-                className={`w-10 h-10 flex items-center justify-center rounded-full shadow-lg text-base transition ${showItinerary ? 'bg-blue-600 text-white' : 'bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
-                title="Itinerary Planner"
-              >
-                🗓️
-              </button>
-            </div>
+              </div>
+            )}
           </div>
 
           {/* Main Content (full viewport now that toolbar floats) */}
@@ -11667,10 +11703,10 @@
 
           {/* Floating bottom buttons (Mobile) */}
           {isMobile && view === 'collection' && !selectedPin && !editingPin && (
-            <div className="fixed bottom-4 left-0 right-0 flex justify-center gap-3" style={{ zIndex: 500 }}>
+            <div className="fixed bottom-4 left-0 right-0 flex justify-center gap-2" style={{ zIndex: 500 }}>
               <button
                 onClick={() => setShowList(!showList)}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-full shadow-lg text-sm font-medium transition ${
+                className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-full shadow-lg text-sm font-medium transition ${
                   showList
                     ? 'bg-blue-600 text-white'
                     : 'bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 border dark:border-slate-600'
@@ -11678,7 +11714,26 @@
               >
                 {showList ? <><span className="text-base">🗺️</span> Map</> : <><span className="text-base">📋</span> List</>}
               </button>
-              {/* Home button removed — same action as top-left back arrow */}
+              <button
+                onClick={() => setShowDocCenter(true)}
+                className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-full shadow-lg text-sm font-medium transition ${
+                  showDocCenter
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 border dark:border-slate-600'
+                }`}
+              >
+                <span className="text-base">📄</span> Docs
+              </button>
+              <button
+                onClick={() => setShowItinerary(!showItinerary)}
+                className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-full shadow-lg text-sm font-medium transition ${
+                  showItinerary
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 border dark:border-slate-600'
+                }`}
+              >
+                <span className="text-base">🗓️</span> Plan
+              </button>
             </div>
           )}
 
