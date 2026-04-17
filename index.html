@@ -112,6 +112,32 @@
       appearance: auto;
     }
 
+    /* Blue dot pulse for user location */
+    @keyframes location-pulse {
+      0% { transform: scale(1); opacity: 0.6; }
+      70% { transform: scale(3); opacity: 0; }
+      100% { transform: scale(3); opacity: 0; }
+    }
+    .user-location-pulse {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #4285F4;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+    }
+    .user-location-pulse::after {
+      content: '';
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      background: #4285F4;
+      animation: location-pulse 2s ease-out infinite;
+    }
+
     .bottom-sheet {
       position: fixed;
       bottom: 0;
@@ -8179,7 +8205,14 @@
         setTimeout(() => { map.invalidateSize(); if (pendingFlyRef.current) { const { lat, lng, zoom, opts } = pendingFlyRef.current; pendingFlyRef.current = null; safeFlyTo(map, [lat, lng], zoom, opts); } }, 300);
         setTimeout(() => { map.invalidateSize(); if (pendingFlyRef.current) { const { lat, lng, zoom, opts } = pendingFlyRef.current; pendingFlyRef.current = null; safeFlyTo(map, [lat, lng], zoom, opts); } }, 600);
 
-        // Request user location and show blue dot
+        // Create a dedicated pane for user location so it always renders above pin markers
+        if (!map.getPane('userLocationPane')) {
+          map.createPane('userLocationPane');
+          map.getPane('userLocationPane').style.zIndex = 650; // above markerPane (600)
+          map.getPane('userLocationPane').style.pointerEvents = 'none';
+        }
+
+        // Request user location and show blue dot with pulse
         let geoWatchId = null;
         if ('geolocation' in navigator) {
           geoWatchId = navigator.geolocation.watchPosition(
@@ -8187,8 +8220,10 @@
               const { latitude, longitude, accuracy } = pos.coords;
               if (userLocationRef.current && userLocationRef.current._map) {
                 userLocationRef.current.setLatLng([latitude, longitude]);
-                userAccuracyRef.current.setLatLng([latitude, longitude]);
-                userAccuracyRef.current.setRadius(accuracy);
+                if (userAccuracyRef.current) {
+                  userAccuracyRef.current.setLatLng([latitude, longitude]);
+                  userAccuracyRef.current.setRadius(accuracy);
+                }
               } else {
                 // Remove stale markers if they exist but aren't on this map
                 if (userLocationRef.current) { try { map.removeLayer(userLocationRef.current); } catch(e){} }
@@ -8196,22 +8231,25 @@
                 userAccuracyRef.current = L.circle([latitude, longitude], {
                   radius: accuracy,
                   fillColor: '#4285F4',
-                  fillOpacity: 0.1,
+                  fillOpacity: 0.08,
                   color: '#4285F4',
                   weight: 1,
-                  opacity: 0.3,
-                  interactive: false
+                  opacity: 0.25,
+                  interactive: false,
+                  pane: 'userLocationPane'
                 }).addTo(map);
-                userLocationRef.current = L.circleMarker([latitude, longitude], {
-                  radius: 7,
-                  fillColor: '#4285F4',
-                  color: '#fff',
-                  weight: 2.5,
-                  fillOpacity: 1,
-                  pane: 'markerPane' // ensure it renders above tile & overlay panes
+                const locIcon = L.divIcon({
+                  html: '<div class="user-location-pulse"></div>',
+                  iconSize: [20, 20],
+                  iconAnchor: [10, 10],
+                  className: ''
+                });
+                userLocationRef.current = L.marker([latitude, longitude], {
+                  icon: locIcon,
+                  interactive: false,
+                  pane: 'userLocationPane',
+                  zIndexOffset: 10000
                 }).addTo(map);
-                // Bring blue dot to front so it's visible above other markers
-                try { userLocationRef.current.bringToFront(); } catch(e){}
               }
             },
             (err) => { console.log('[Map] Geolocation error:', err.message); },
@@ -8520,7 +8558,36 @@
         }
       }, [selectedPin, sidebarWidth]);
 
-      return <div ref={mapRef} style={{ width: '100%', height: '100%' }} />;
+      return (
+        <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+          <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
+          {/* Locate me button — above Leaflet zoom controls */}
+          <button
+            onClick={() => {
+              const map = mapInstanceRef.current;
+              if (!map) return;
+              if (userLocationRef.current) {
+                const ll = userLocationRef.current.getLatLng();
+                safeFlyTo(map, [ll.lat, ll.lng], 16);
+              } else if ('geolocation' in navigator) {
+                navigator.geolocation.getCurrentPosition(
+                  (pos) => safeFlyTo(map, [pos.coords.latitude, pos.coords.longitude], 16),
+                  () => {},
+                  { enableHighAccuracy: true, timeout: 8000 }
+                );
+              }
+            }}
+            className="absolute bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-md shadow-lg flex items-center justify-center"
+            style={{ right: 10, bottom: 90, zIndex: 1000, width: 34, height: 34 }}
+            title="Go to my location"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-700 dark:text-gray-200">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
+            </svg>
+          </button>
+        </div>
+      );
     };
 
     const ListView = ({ pins, collections, onSelectPin, isDarkMode, onEdit, onDelete, filters: filtersProp, setFilters: setFiltersProp }) => {
@@ -11132,6 +11199,52 @@
         window.matchMedia('(prefers-color-scheme: dark)').matches
       );
 
+      // ---- Offline detection & sync-on-reconnect ----
+      const [isOffline, setIsOffline] = useState(!navigator.onLine);
+      const [pendingSyncCount, setPendingSyncCount] = useState(0);
+      const [showBackOnline, setShowBackOnline] = useState(false);
+
+      useEffect(() => {
+        const goOffline = () => setIsOffline(true);
+        const goOnline = () => {
+          setIsOffline(false);
+          setShowBackOnline(true);
+          // Auto-dismiss "back online" banner after 3s
+          setTimeout(() => setShowBackOnline(false), 3000);
+          // Sync cached data to Firestore on reconnect
+          syncToFirestore();
+        };
+        window.addEventListener('offline', goOffline);
+        window.addEventListener('online', goOnline);
+        return () => {
+          window.removeEventListener('offline', goOffline);
+          window.removeEventListener('online', goOnline);
+        };
+      }, []);
+
+      const syncToFirestore = async () => {
+        try {
+          // Re-push pins from localStorage to Firestore
+          const cachedPins = JSON.parse(localStorage.getItem('boWanderPins') || '[]');
+          const cachedCollections = JSON.parse(localStorage.getItem('boWanderCollections') || '[]');
+          let synced = 0;
+          if (cachedPins.length > 0 && MockFirebase.currentUser) {
+            for (const pin of cachedPins) {
+              try { await MockFirebase.savePin(pin); synced++; } catch {}
+            }
+          }
+          if (cachedCollections.length > 0 && MockFirebase.currentUser) {
+            for (const col of cachedCollections) {
+              try { await MockFirebase.saveCollection(col); } catch {}
+            }
+          }
+          setPendingSyncCount(0);
+          if (synced > 0) console.log(`[Sync] Pushed ${synced} pins to Firestore`);
+        } catch (e) {
+          console.warn('[Sync] Failed:', e);
+        }
+      };
+
       // Restore view state from URL hash on load (e.g. #collection/nyc)
       const initialHash = window.location.hash.replace('#', '');
       const [hashView, hashCollection] = initialHash.includes('/') ? initialHash.split('/') : [initialHash || 'home', ''];
@@ -11614,6 +11727,17 @@
       if (view === 'home') {
         return (
           <div className={`${darkMode ? 'dark' : ''} h-screen w-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-white overflow-hidden`}>
+            {/* Offline / Back Online banner */}
+            {isOffline && (
+              <div className="absolute top-0 left-0 right-0 bg-amber-500 text-white text-center text-xs py-1.5 font-medium" style={{ zIndex: 99999 }}>
+                📡 You're offline — changes are saved locally and will sync when you reconnect
+              </div>
+            )}
+            {showBackOnline && !isOffline && (
+              <div className="absolute top-0 left-0 right-0 bg-green-500 text-white text-center text-xs py-1.5 font-medium transition-opacity" style={{ zIndex: 99999 }}>
+                ✓ Back online — syncing your changes
+              </div>
+            )}
             <HomePage
               collections={collections}
               pins={pins}
@@ -11634,6 +11758,18 @@
       // Collection view (map + list)
       return (
         <div className={`${darkMode ? 'dark' : ''} h-screen w-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-white overflow-hidden`}>
+          {/* Offline / Back Online banner */}
+          {isOffline && (
+            <div className="absolute top-0 left-0 right-0 bg-amber-500 text-white text-center text-xs py-1.5 font-medium" style={{ zIndex: 99999 }}>
+              📡 You're offline — changes are saved locally and will sync when you reconnect
+            </div>
+          )}
+          {showBackOnline && !isOffline && (
+            <div className="absolute top-0 left-0 right-0 bg-green-500 text-white text-center text-xs py-1.5 font-medium transition-opacity" style={{ zIndex: 99999 }}>
+              ✓ Back online — syncing your changes
+            </div>
+          )}
+
           {/* (Floating map-name chip removed — collection name is shown in back-arrow tooltip and elsewhere) */}
 
           {/* Floating top controls (Google Maps style) — overlay on map, no fixed bar */}
@@ -12293,43 +12429,111 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v1';
-const urlsToCache = [
-  '/',
-  '/index.html'
+const CACHE_NAME = 'bo-wander-v3';
+const TILE_CACHE = 'bo-wander-tiles-v1';
+const MAX_TILE_CACHE = 2000;
+
+const CDN_URLS = [
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
+  'https://cdn.tailwindcss.com',
+  'https://unpkg.com/react@18/umd/react.production.min.js',
+  'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
+  'https://unpkg.com/@babel/standalone/babel.min.js',
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+  'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js',
+  'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js',
+  'https://cdn.jsdelivr.net/npm/cropperjs@1.6.1/dist/cropper.min.css',
+  'https://cdn.jsdelivr.net/npm/cropperjs@1.6.1/dist/cropper.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+  'https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js',
+  'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js',
+  'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js',
 ];
 
 self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(urlsToCache).catch(() => {}))
+    caches.open(CACHE_NAME).then(cache => {
+      // Cache app shell
+      cache.addAll(['/', '/index.html']).catch(() => {});
+      // Cache CDN resources individually (don't fail install if one CDN is slow)
+      return Promise.allSettled(
+        CDN_URLS.map(url => cache.add(url).catch(() => console.log('[SW] Failed to cache:', url)))
+      );
+    })
   );
   self.skipWaiting();
 });
 
 self.addEventListener('activate', event => {
-  self.clients.matchAll().then(clients => {
-    clients.forEach(client => client.postMessage({ type: 'SKIP_WAITING' }));
-  });
-  event.waitUntil(caches.keys().then(cacheNames => {
-    return Promise.all(
-      cacheNames.map(cacheName => {
-        if (cacheName !== CACHE_NAME) {
-          return caches.delete(cacheName);
-        }
-      })
-    );
-  }));
+  event.waitUntil(
+    caches.keys().then(names =>
+      Promise.all(names.map(n => {
+        if (n !== CACHE_NAME && n !== TILE_CACHE) return caches.delete(n);
+      }))
+    )
+  );
+  self.clients.claim();
 });
 
+// Detect map tile requests
+function isTileRequest(url) {
+  return url.includes('tile.openstreetmap.org') || url.includes('tile.') || url.match(/\\/\\d+\\/\\d+\\/\\d+\\.png/);
+}
+
+// Detect API calls that should never be cached
+function isApiCall(url) {
+  return url.includes('googleapis.com') || url.includes('firestore.googleapis.com')
+      || url.includes('firebase') || url.includes('photon.komoot.io')
+      || url.includes('allorigins') || url.includes('corsproxy');
+}
+
 self.addEventListener('fetch', event => {
-  if (event.request.method === 'GET') {
+  if (event.request.method !== 'GET') return;
+  const url = event.request.url;
+
+  // API calls: network only, no caching
+  if (isApiCall(url)) return;
+
+  // Map tiles: cache-first with LRU eviction
+  if (isTileRequest(url)) {
     event.respondWith(
-      caches.match(event.request)
-        .then(response => response || fetch(event.request))
-        .catch(() => caches.match(event.request))
+      caches.open(TILE_CACHE).then(cache =>
+        cache.match(event.request).then(cached => {
+          if (cached) return cached;
+          return fetch(event.request).then(resp => {
+            if (resp.ok) {
+              cache.put(event.request, resp.clone());
+              // Evict old tiles if cache is too large
+              cache.keys().then(keys => {
+                if (keys.length > MAX_TILE_CACHE) {
+                  const toDelete = keys.slice(0, keys.length - MAX_TILE_CACHE);
+                  toDelete.forEach(k => cache.delete(k));
+                }
+              });
+            }
+            return resp;
+          }).catch(() => cached || new Response('', { status: 408 }));
+        })
+      )
     );
+    return;
   }
+
+  // CDN + app shell: stale-while-revalidate
+  // Serve from cache immediately, update in background
+  event.respondWith(
+    caches.match(event.request).then(cached => {
+      const fetchPromise = fetch(event.request).then(resp => {
+        if (resp.ok) {
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, resp.clone()));
+        }
+        return resp;
+      }).catch(() => cached);
+      return cached || fetchPromise;
+    })
+  );
 });
   \`;
                   const blob = new Blob([swCode], { type: 'application/javascript' });
