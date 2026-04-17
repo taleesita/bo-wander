@@ -2636,9 +2636,10 @@
         : 'bottom-sheet dark:bg-slate-900';
 
       const inputClass = "w-full px-3 py-1.5 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none";
+      const inputProps = { autoComplete: 'off', 'data-1p-ignore': true, 'data-lpignore': 'true', 'data-form-type': 'other' };
 
       return (
-        <Container className={containerClass}>
+        <Container className={containerClass} data-1p-ignore data-lpignore="true" data-form-type="other">
           {!isDesktop && <div className="bottom-sheet-handle" />}
 
           <div className="p-4 space-y-2.5">
@@ -2668,6 +2669,7 @@
                       onChange={e => setEditData(d => ({ ...d, name: e.target.value }))}
                       className={inputClass + " font-bold"}
                       placeholder="Place name"
+                      {...inputProps}
                     />
                   ) : (
                     <h2 className="text-lg font-bold dark:text-white truncate">{pin.name}</h2>
@@ -6994,6 +6996,10 @@
             onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
             className="w-full px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white"
             placeholder="Start typing an address..."
+            autoComplete="off"
+            data-1p-ignore
+            data-lpignore="true"
+            data-form-type="other"
           />
           {showSuggestions && ReactDOM.createPortal(
             <div
@@ -7769,34 +7775,41 @@
         setTimeout(() => { map.invalidateSize(); if (pendingFlyRef.current) { const { lat, lng, zoom, opts } = pendingFlyRef.current; pendingFlyRef.current = null; safeFlyTo(map, [lat, lng], zoom, opts); } }, 600);
 
         // Request user location and show blue dot
+        let geoWatchId = null;
         if ('geolocation' in navigator) {
-          navigator.geolocation.watchPosition(
+          geoWatchId = navigator.geolocation.watchPosition(
             (pos) => {
               const { latitude, longitude, accuracy } = pos.coords;
-              if (userLocationRef.current) {
+              if (userLocationRef.current && userLocationRef.current._map) {
                 userLocationRef.current.setLatLng([latitude, longitude]);
                 userAccuracyRef.current.setLatLng([latitude, longitude]);
                 userAccuracyRef.current.setRadius(accuracy);
               } else {
+                // Remove stale markers if they exist but aren't on this map
+                if (userLocationRef.current) { try { map.removeLayer(userLocationRef.current); } catch(e){} }
+                if (userAccuracyRef.current) { try { map.removeLayer(userAccuracyRef.current); } catch(e){} }
                 userAccuracyRef.current = L.circle([latitude, longitude], {
                   radius: accuracy,
                   fillColor: '#4285F4',
                   fillOpacity: 0.1,
                   color: '#4285F4',
                   weight: 1,
-                  opacity: 0.3
+                  opacity: 0.3,
+                  interactive: false
                 }).addTo(map);
                 userLocationRef.current = L.circleMarker([latitude, longitude], {
                   radius: 7,
                   fillColor: '#4285F4',
                   color: '#fff',
                   weight: 2.5,
-                  fillOpacity: 1
+                  fillOpacity: 1,
+                  pane: 'markerPane' // ensure it renders above tile & overlay panes
                 }).addTo(map);
-                userLocationRef.current.setZIndex(1000);
+                // Bring blue dot to front so it's visible above other markers
+                try { userLocationRef.current.bringToFront(); } catch(e){}
               }
             },
-            () => {},
+            (err) => { console.log('[Map] Geolocation error:', err.message); },
             { enableHighAccuracy: true, maximumAge: 30000, timeout: 10000 }
           );
         }
@@ -7823,6 +7836,9 @@
 
         return () => {
           window.removeEventListener('resize', handleResize);
+          if (geoWatchId != null) navigator.geolocation.clearWatch(geoWatchId);
+          userLocationRef.current = null;
+          userAccuracyRef.current = null;
           map.remove();
           mapInstanceRef.current = null;
         };
