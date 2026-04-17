@@ -632,13 +632,15 @@
     const PIN_CATEGORIES = {
       restaurant: { label: 'Restaurant', icon: '🍽️', color: '#2D8A4E' },
       cafe: { label: 'Coffee', icon: '☕', color: '#C4A47A' },
-      treats: { label: 'Treats', icon: '🧁', color: '#D94A4A' },
+      treats: { label: 'Treats', icon: '🥐', color: '#D94A4A' },
       bar: { label: 'Bar', icon: '🍺', color: '#7B4AD9' },
       beach: { label: 'Beach', icon: '🏖️', color: '#D4A843' },
       nature: { label: 'Nature/Hike', icon: '🥾', color: '#6B8E23' },
       water: { label: 'Water Activity', icon: '💧', color: '#2196F3' },
       culture: { label: 'Culture/Museum', icon: '🏛️', color: '#795548' },
       shrine: { label: 'Shrine/Temple', icon: '⛩️', color: '#9C27B0' },
+      synagogue: { label: 'Synagogue', icon: '🕍', color: '#1565C0' },
+      jewish: { label: 'Jewish', icon: '✡️', color: '#1565C0' },
       hotel: { label: 'Hotel', icon: '🏨', color: '#607D8B' },
       shopping: { label: 'Shopping', icon: '🛍️', color: '#AB47BC' },
       viewpoint: { label: 'Viewpoint', icon: '🌅', color: '#FF9800' },
@@ -1796,7 +1798,7 @@
       // Boba/bubble tea
       if (combined.match(/boba|bubble.?tea/)) return { emoji: '🧋', category: 'cafe' };
       // Bakery/bread/treats
-      if (combined.match(/bakery|bread|pastry|bombolona|croissant|donut|donuts|cinnamon roll|bake/)) return { emoji: '🧁', category: 'treats' };
+      if (combined.match(/bakery|bread|pastry|bombolona|croissant|donut|donuts|cinnamon roll|bake/)) return { emoji: '🥐', category: 'treats' };
       // Ice cream/treats
       if (combined.match(/ice.?cream|gelato|shave ice|frozen/)) return { emoji: '🍦', category: 'treats' };
       // Ramen/noodle
@@ -1821,6 +1823,10 @@
       if (combined.match(/park|garden|botanical|arboretum|forest|hike|trail|mountain|canyon|national park/)) return { emoji: '🥾', category: 'nature' };
       // Museum
       if (combined.match(/museum|gallery|art/)) return { emoji: '🏛️', category: 'culture' };
+      // Synagogue
+      if (combined.match(/synagogue|shul|beit.?midrash/)) return { emoji: '🕍', category: 'synagogue' };
+      // Jewish/Judaica
+      if (combined.match(/jewish|judaica|kosher|chabad/)) return { emoji: '✡️', category: 'jewish' };
       // Shrine
       if (combined.match(/shrine/)) return { emoji: '⛩️', category: 'shrine' };
       // Temple/church/cathedral
@@ -4013,6 +4019,8 @@
       boba: 'boba', 'bubble tea': 'boba',
       tea: 'tea',
       mochi: 'mochi',
+      synagogue: 'synagogue', synagogues: 'synagogue', shul: 'synagogue',
+      jewish: 'jewish', judaica: 'jewish', kosher: 'jewish',
     };
 
     const parseKMLData = (xmlString) => {
@@ -8552,7 +8560,23 @@
                 safeFlyTo(map, [sLat, sLng], targetZoom, { duration: 0.4 });
               }
             } else {
-              safeFlyTo(map, [sLat, sLng], targetZoom, { duration: 0.4 });
+              // Mobile: offset pin upward so it's visible above the bottom sheet
+              // The sheet covers roughly the bottom 55% of the screen
+              try {
+                const size = map.getSize();
+                if (size && size.x > 0 && size.y > 0 && size.x < 768) {
+                  const targetPoint = map.project([sLat, sLng], targetZoom);
+                  // Push the pin into the top third of the screen by shifting center down
+                  const sheetOffset = size.y * 0.3;
+                  const offsetPoint = L.point(targetPoint.x, targetPoint.y + sheetOffset);
+                  const offsetLatLng = map.unproject(offsetPoint, targetZoom);
+                  safeFlyTo(map, offsetLatLng, targetZoom, { duration: 0.4 });
+                } else {
+                  safeFlyTo(map, [sLat, sLng], targetZoom, { duration: 0.4 });
+                }
+              } catch (e) {
+                safeFlyTo(map, [sLat, sLng], targetZoom, { duration: 0.4 });
+              }
             }
           } catch (e) { console.warn('MapView flyTo error:', e); }
         }
@@ -12322,7 +12346,7 @@
 
           {/* Floating bottom buttons (Mobile) */}
           {isMobile && view === 'collection' && !selectedPin && !editingPin && (
-            <div className="fixed bottom-4 left-0 right-0 flex justify-center gap-2" style={{ zIndex: 500 }}>
+            <div className="fixed bottom-4 flex justify-center gap-2" style={{ zIndex: 500, left: '50%', transform: 'translateX(-50%)' }}>
               <button
                 onClick={() => setShowList(!showList)}
                 className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-full shadow-lg text-sm font-medium transition ${
