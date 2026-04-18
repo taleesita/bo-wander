@@ -58,6 +58,10 @@
       width: 100%;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     }
+    .dark-mode html, .dark-mode body, .dark-mode #root,
+    html.dark, html.dark body, html.dark #root {
+      background: #0f172a;
+    }
 
     input[type="search"]::-webkit-search-cancel-button,
     input[type="search"]::-webkit-search-decoration {
@@ -11745,21 +11749,26 @@
         missingCoords.forEach((pin, i) => setTimeout(() => repair(pin), i * 500));
       }, [pins.length]); // Only re-run when total pin count changes
 
-      // Sync URL hash with current view state
+      // Sync URL hash with current view state (skip listener via flag)
+      const programmaticHashChange = useRef(false);
       useEffect(() => {
+        programmaticHashChange.current = true;
         if (view === 'collection' && activeCollection) {
           window.location.hash = `collection/${activeCollection}`;
         } else {
           window.location.hash = 'home';
         }
+        // Reset flag after the hashchange event has had a chance to fire
+        requestAnimationFrame(() => { programmaticHashChange.current = false; });
       }, [view, activeCollection]);
 
-      // Listen for browser back/forward
+      // Listen for browser back/forward only (ignore our own programmatic hash changes)
       useEffect(() => {
         const onHashChange = () => {
+          if (programmaticHashChange.current) return; // our own change, skip
           const hash = window.location.hash.replace('#', '');
           const [hView, hCol] = hash.includes('/') ? hash.split('/') : [hash || 'home', ''];
-          // Always clear pin drawer / editing state on navigation
+          // Clear pin drawer / editing state on real navigation changes
           setSelectedPin(null); setCoLocatedPins([]); setPreviewPin(null); setEditingPin(null);
           if (hView === 'collection' && hCol) {
             setView('collection');
