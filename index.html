@@ -3728,8 +3728,10 @@
                 }}
               >
                 <span className="text-gray-400 text-sm flex-shrink-0">📍</span>
-                <span className="font-medium text-sm dark:text-white truncate">{r.name}</span>
-                <span className="text-xs text-gray-400 truncate ml-auto flex-shrink-0">{r.address.split(',').slice(0, 2).join(',')}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-sm dark:text-white truncate">{r.name}</div>
+                  <div className="text-[11px] text-gray-400 truncate">{r.address.split(',').slice(0, 2).join(',')}</div>
+                </div>
               </button>
             ))}
 
@@ -8081,9 +8083,32 @@
               onCancel={() => setOcrCropPending(null)}
               onApply={async (croppedCanvas) => {
                 const fileName = ocrCropPending.fileName;
+                const originalSrc = ocrCropPending.imageSrc;
                 setOcrCropPending(null);
                 setOcrRunning(true);
                 handleChange('description', (formData.description || '') + '\n\n📷 Reading photo…');
+
+                // Save the cropped image as a photo record (thumbnail + full)
+                const savePhoto = (ocrText) => {
+                  try {
+                    // Create thumbnail (200px wide)
+                    const thumbCanvas = document.createElement('canvas');
+                    const thumbScale = Math.min(200 / croppedCanvas.width, 200 / croppedCanvas.height, 1);
+                    thumbCanvas.width = Math.round(croppedCanvas.width * thumbScale);
+                    thumbCanvas.height = Math.round(croppedCanvas.height * thumbScale);
+                    thumbCanvas.getContext('2d').drawImage(croppedCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+                    const thumb = thumbCanvas.toDataURL('image/jpeg', 0.6);
+                    const full = croppedCanvas.toDataURL('image/jpeg', 0.85);
+                    const newPhoto = {
+                      id: Math.random().toString(36).substr(2, 9),
+                      thumbnail: thumb, full: full, name: fileName,
+                      ocr_text: ocrText || '',
+                      added_at: new Date().toISOString(),
+                    };
+                    handleChange('info_photos', [...(formData.info_photos || []), newPhoto]);
+                  } catch (e) { console.warn('Could not save photo to info_photos:', e); }
+                };
+
                 try {
                   // Upscale small crops so Tesseract gets enough pixels
                   const longSide = Math.max(croppedCanvas.width, croppedCanvas.height) || 1;
@@ -8121,14 +8146,17 @@
                   const wordChars = (cleanedText.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]{2,}/g) || []).length;
                   if (!cleanedText || confidence < 40 || wordChars < 3) {
                     handleChange('description', existing);
-                    alert(`Couldn't reliably read text from this crop (confidence ${Math.round(confidence)}%). Try cropping tighter to just the text.`);
+                    // Still save the photo even if OCR failed
+                    savePhoto('');
                   } else {
                     handleChange('description', `${existing}${divider}📷 From ${fileName}:\n${cleanedText}`);
+                    savePhoto(cleanedText);
                   }
                 } catch (err) {
                   console.warn('OCR failed:', err);
                   handleChange('description', (formData.description || '').replace(/\n\n📷 Reading photo…$/, ''));
-                  alert(`Could not read text: ${err?.message || 'unknown error'}`);
+                  // Still save the photo even on OCR error
+                  savePhoto('');
                 }
                 setOcrRunning(false);
               }}
