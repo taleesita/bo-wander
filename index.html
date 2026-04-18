@@ -11749,26 +11749,23 @@
         missingCoords.forEach((pin, i) => setTimeout(() => repair(pin), i * 500));
       }, [pins.length]); // Only re-run when total pin count changes
 
-      // Sync URL hash with current view state (skip listener via flag)
-      const programmaticHashChange = useRef(false);
+      // Sync URL hash with current view state — use history.replaceState to avoid
+      // triggering hashchange/popstate (we only want popstate from real browser back/forward)
       useEffect(() => {
-        programmaticHashChange.current = true;
-        if (view === 'collection' && activeCollection) {
-          window.location.hash = `collection/${activeCollection}`;
-        } else {
-          window.location.hash = 'home';
+        const newHash = (view === 'collection' && activeCollection)
+          ? `#collection/${activeCollection}`
+          : '#home';
+        if (window.location.hash !== newHash) {
+          history.replaceState(null, '', newHash);
         }
-        // Reset flag after the hashchange event has had a chance to fire
-        requestAnimationFrame(() => { programmaticHashChange.current = false; });
       }, [view, activeCollection]);
 
-      // Listen for browser back/forward only (ignore our own programmatic hash changes)
+      // Listen for browser back/forward via popstate (only fires on real user navigation)
       useEffect(() => {
-        const onHashChange = () => {
-          if (programmaticHashChange.current) return; // our own change, skip
+        const onPopState = () => {
           const hash = window.location.hash.replace('#', '');
           const [hView, hCol] = hash.includes('/') ? hash.split('/') : [hash || 'home', ''];
-          // Clear pin drawer / editing state on real navigation changes
+          // Clear pin drawer / editing state on navigation
           setSelectedPin(null); setCoLocatedPins([]); setPreviewPin(null); setEditingPin(null);
           if (hView === 'collection' && hCol) {
             setView('collection');
@@ -11777,8 +11774,8 @@
             setView('home');
           }
         };
-        window.addEventListener('hashchange', onHashChange);
-        return () => window.removeEventListener('hashchange', onHashChange);
+        window.addEventListener('popstate', onPopState);
+        return () => window.removeEventListener('popstate', onPopState);
       }, []);
 
       useEffect(() => {
@@ -12100,7 +12097,7 @@
                 headers: {
                   'Content-Type': 'application/json',
                   'X-Goog-Api-Key': apiKey,
-                  'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.userRatingCount,places.priceLevel,places.currentOpeningHours,places.websiteUri,places.googleMapsUri'
+                  'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.userRatingCount,places.priceLevel,places.regularOpeningHours,places.websiteUri,places.googleMapsUri'
                 },
                 body: JSON.stringify({
                   textQuery: placeName,
@@ -12132,14 +12129,13 @@
             added_at: new Date().toISOString(),
           };
 
-          // Parse opening hours if available
+          // Parse opening hours if available (use abbreviated day keys to match rest of app)
           const openingHours = {};
-          if (placeData?.currentOpeningHours?.weekdayDescriptions) {
-            const dayMap = { Sunday: 'sunday', Monday: 'monday', Tuesday: 'tuesday', Wednesday: 'wednesday', Thursday: 'thursday', Friday: 'friday', Saturday: 'saturday' };
-            placeData.currentOpeningHours.weekdayDescriptions.forEach(line => {
-              const [dayName, ...rest] = line.split(': ');
-              const key = dayMap[dayName.trim()];
-              if (key) openingHours[key] = rest.join(': ').trim();
+          if (placeData?.regularOpeningHours?.weekdayDescriptions) {
+            const dayAbbrev = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun' };
+            placeData.regularOpeningHours.weekdayDescriptions.forEach(desc => {
+              const m = desc.match(/^(\w+):\s*(.+)/);
+              if (m) openingHours[dayAbbrev[m[1].toLowerCase()] || m[1].toLowerCase().substring(0, 3)] = m[2].trim();
             });
           }
 
