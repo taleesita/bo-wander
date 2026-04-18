@@ -2460,7 +2460,7 @@
             ocrConfidence = result.data?.confidence || 0;
           } catch (err) { console.warn('OCR failed:', err); }
 
-          const ocrText = rawOcr
+          const ocrLines = rawOcr
             .split('\n').map(l => l.trim())
             .filter(l => {
               if (!l) return false;
@@ -2469,8 +2469,17 @@
               if (l.length <= 2 && !/[.!?]/.test(l)) return false;
               return true;
             })
-            .map(l => l.replace(/\s*\|\s*/g, ' '))
-            .join('\n').replace(/\n{3,}/g, '\n\n').trim();
+            .map(l => l.replace(/\s*\|\s*/g, ' '));
+          // Join lines into paragraphs: single newlines become spaces, blank lines become paragraph breaks
+          const ocrText = ocrLines.reduce((acc, line, i) => {
+            if (!acc) return line;
+            // If previous line ended with sentence-ending punctuation or this line starts with a capital, start new paragraph
+            const prevEndsSection = /[.!?:]\s*$/.test(ocrLines[i - 1] || '');
+            const startsWithCap = /^[A-Z\u3040-\u30ff\u4e00-\u9fff]/.test(line);
+            if (prevEndsSection && startsWithCap) return acc + '\n\n' + line;
+            // Otherwise join with space (the line break was just word-wrap in the image)
+            return acc + ' ' + line;
+          }, '').replace(/\n{3,}/g, '\n\n').trim();
 
           const wordChars = (ocrText.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]{2,}/g) || []).length;
           const isGoodOcr = ocrText && ocrConfidence >= 40 && wordChars >= 3;
@@ -3513,7 +3522,7 @@
     };
 
     // Unified search bar — searches existing pins + Photon (Komoot) for places/businesses
-    const UnifiedSearchBar = ({ pins, onSelectPin, onAddPlace, onUploadConfirmation, onAddFromLink, onPasteText, isDarkMode, isMobile, activeCollection, collections, mapCenter }) => {
+    const UnifiedSearchBar = ({ pins, onSelectPin, onAddPlace, onUploadConfirmation, onAddFromLink, onPasteText, onFromPhoto, isDarkMode, isMobile, activeCollection, collections, mapCenter }) => {
       const [query, setQuery] = useState('');
       const [placeResults, setPlaceResults] = useState([]);
       const [searching, setSearching] = useState(false);
@@ -3771,6 +3780,18 @@
             >
               ⬆️ Upload file
             </button>
+            {onFromPhoto && (
+              <button
+                className="flex-1 px-3 py-2 text-xs text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center justify-center gap-1 border-l dark:border-slate-700"
+                onClick={() => {
+                  onFromPhoto();
+                  setIsFocused(false);
+                  setQuery('');
+                }}
+              >
+                📸 Photo
+              </button>
+            )}
           </div>
         </div>,
         document.body
@@ -3834,11 +3855,20 @@
                   </button>
                   <button
                     onClick={() => { onAddFromLink(); setIsFocused(false); setQuery(''); }}
-                    className={`px-2.5 py-2.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm ${showDropdown ? '' : 'rounded-r-full'}`}
+                    className="px-2.5 py-2.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm border-r dark:border-slate-600"
                     title="Add from URL"
                   >
                     🔗
                   </button>
+                  {onFromPhoto && (
+                    <button
+                      onClick={() => { onFromPhoto(); setIsFocused(false); setQuery(''); }}
+                      className={`px-2.5 py-2.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm ${showDropdown ? '' : 'rounded-r-full'}`}
+                      title="Add from photo"
+                    >
+                      📸
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -3875,6 +3905,15 @@
                         <span className="text-base">🔗</span>
                         <span>Add from link</span>
                       </button>
+                      {onFromPhoto && (
+                        <button
+                          className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-slate-700 transition border-t dark:border-slate-700"
+                          onClick={() => { onFromPhoto(); setShowMoreMenu(false); setIsFocused(false); setQuery(''); }}
+                        >
+                          <span className="text-base">📸</span>
+                          <span>From photo</span>
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -7383,63 +7422,269 @@
 
     // Editor for multiple source links per pin — each with optional label + URL
     // ---- PhotoCropModal ----
-    // Presents a full-screen crop UI backed by Cropper.js. onApply receives a canvas of the cropped region.
+    // Presents a full-screen crop UI with Rectangle (Cropper.js) or Freeform (4-corner perspective) modes.
     const PhotoCropModal = ({ imageSrc, onApply, onCancel, isDarkMode }) => {
       const imgRef = useRef(null);
       const cropperRef = useRef(null);
+      const [mode, setMode] = useState('rect'); // 'rect' | 'quad'
 
+      // ---- Rectangle mode (Cropper.js) ----
       useEffect(() => {
+        if (mode !== 'rect') { if (cropperRef.current) { try { cropperRef.current.destroy(); } catch {} cropperRef.current = null; } return; }
         if (!imgRef.current || typeof Cropper === 'undefined') return;
         const c = new Cropper(imgRef.current, {
-          viewMode: 1,
-          autoCropArea: 0.85,
-          dragMode: 'move',
-          background: false,
-          zoomable: true,
-          scalable: false,
-          rotatable: true,
-          toggleDragModeOnDblclick: false,
-          responsive: true,
-          ready() {
-            // Cropper ready
-          },
+          viewMode: 1, autoCropArea: 0.85, dragMode: 'move', background: false,
+          zoomable: true, scalable: false, rotatable: true, toggleDragModeOnDblclick: false, responsive: true,
         });
         cropperRef.current = c;
-        return () => { try { c.destroy(); } catch {} };
-      }, []);
+        return () => { try { c.destroy(); } catch {} cropperRef.current = null; };
+      }, [mode]);
 
-      const handleApply = () => {
+      const handleRectApply = () => {
         const c = cropperRef.current;
         if (!c) return;
-        const canvas = c.getCroppedCanvas({
-          // Keep it reasonable for OCR — long side up to 2000px
-          maxWidth: 2400,
-          maxHeight: 2400,
-          fillColor: '#ffffff',
-          imageSmoothingQuality: 'high',
+        onApply(c.getCroppedCanvas({ maxWidth: 2400, maxHeight: 2400, fillColor: '#ffffff', imageSmoothingQuality: 'high' }));
+      };
+
+      // ---- Quad (freeform) mode ----
+      const quadCanvasRef = useRef(null);
+      const quadImgRef = useRef(null);
+      const [corners, setCorners] = useState(null); // [{x,y}, {x,y}, {x,y}, {x,y}] in image coords
+      const [dragging, setDragging] = useState(-1); // which corner is being dragged
+      const [imgDims, setImgDims] = useState({ w: 0, h: 0, scale: 1, offX: 0, offY: 0 });
+
+      // Initialize corners and draw when switching to quad mode
+      useEffect(() => {
+        if (mode !== 'quad') return;
+        const img = new Image();
+        img.onload = () => {
+          quadImgRef.current = img;
+          const pad = 0.08;
+          setCorners([
+            { x: img.width * pad, y: img.height * pad },
+            { x: img.width * (1 - pad), y: img.height * pad },
+            { x: img.width * (1 - pad), y: img.height * (1 - pad) },
+            { x: img.width * pad, y: img.height * (1 - pad) },
+          ]);
+        };
+        img.src = imageSrc;
+      }, [mode, imageSrc]);
+
+      // Draw quad overlay
+      useEffect(() => {
+        if (mode !== 'quad' || !corners || !quadImgRef.current) return;
+        const cvs = quadCanvasRef.current;
+        if (!cvs) return;
+        const container = cvs.parentElement;
+        const cw = container.clientWidth;
+        const ch = container.clientHeight;
+        cvs.width = cw; cvs.height = ch;
+        const img = quadImgRef.current;
+        const scale = Math.min(cw / img.width, ch / img.height);
+        const offX = (cw - img.width * scale) / 2;
+        const offY = (ch - img.height * scale) / 2;
+        setImgDims({ w: img.width, h: img.height, scale, offX, offY });
+        const ctx = cvs.getContext('2d');
+        ctx.clearRect(0, 0, cw, ch);
+        ctx.drawImage(img, offX, offY, img.width * scale, img.height * scale);
+        // Darken outside the quad
+        ctx.save();
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(0, 0, cw, ch);
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.beginPath();
+        corners.forEach((c, i) => {
+          const sx = offX + c.x * scale, sy = offY + c.y * scale;
+          i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
         });
-        onApply(canvas);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        // Redraw image inside quad
+        ctx.save();
+        ctx.beginPath();
+        corners.forEach((c, i) => {
+          const sx = offX + c.x * scale, sy = offY + c.y * scale;
+          i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+        });
+        ctx.closePath();
+        ctx.clip();
+        ctx.drawImage(img, offX, offY, img.width * scale, img.height * scale);
+        ctx.restore();
+        // Draw quad outline and corner handles
+        ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2;
+        ctx.beginPath();
+        corners.forEach((c, i) => {
+          const sx = offX + c.x * scale, sy = offY + c.y * scale;
+          i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+        });
+        ctx.closePath(); ctx.stroke();
+        // Edge midpoints
+        corners.forEach((c, i) => {
+          const next = corners[(i + 1) % 4];
+          const mx = offX + (c.x + next.x) / 2 * scale, my = offY + (c.y + next.y) / 2 * scale;
+          ctx.fillStyle = '#fff'; ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(mx, my, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        });
+        // Corner handles
+        corners.forEach(c => {
+          const sx = offX + c.x * scale, sy = offY + c.y * scale;
+          ctx.fillStyle = '#3b82f6'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(sx, sy, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        });
+      }, [mode, corners]);
+
+      // Touch/mouse handlers for dragging corners
+      const screenToImg = (clientX, clientY) => {
+        const cvs = quadCanvasRef.current;
+        if (!cvs) return { x: 0, y: 0 };
+        const rect = cvs.getBoundingClientRect();
+        const cx = clientX - rect.left, cy = clientY - rect.top;
+        return { x: (cx - imgDims.offX) / imgDims.scale, y: (cy - imgDims.offY) / imgDims.scale };
+      };
+
+      const findCorner = (clientX, clientY) => {
+        if (!corners) return -1;
+        const cvs = quadCanvasRef.current;
+        if (!cvs) return -1;
+        const rect = cvs.getBoundingClientRect();
+        const cx = clientX - rect.left, cy = clientY - rect.top;
+        // Also check edge midpoints (indices 4-7)
+        const allPoints = [...corners];
+        corners.forEach((c, i) => {
+          const next = corners[(i + 1) % 4];
+          allPoints.push({ x: (c.x + next.x) / 2, y: (c.y + next.y) / 2 });
+        });
+        let closest = -1, minDist = 30;
+        allPoints.forEach((c, i) => {
+          const sx = imgDims.offX + c.x * imgDims.scale;
+          const sy = imgDims.offY + c.y * imgDims.scale;
+          const d = Math.hypot(cx - sx, cy - sy);
+          if (d < minDist) { minDist = d; closest = i; }
+        });
+        return closest;
+      };
+
+      const handlePointerDown = (e) => {
+        const touch = e.touches ? e.touches[0] : e;
+        const idx = findCorner(touch.clientX, touch.clientY);
+        if (idx >= 0) { setDragging(idx); e.preventDefault(); }
+      };
+      const handlePointerMove = (e) => {
+        if (dragging < 0 || !corners) return;
+        e.preventDefault();
+        const touch = e.touches ? e.touches[0] : e;
+        const pt = screenToImg(touch.clientX, touch.clientY);
+        const clamped = { x: Math.max(0, Math.min(imgDims.w, pt.x)), y: Math.max(0, Math.min(imgDims.h, pt.y)) };
+        if (dragging < 4) {
+          // Corner drag
+          setCorners(prev => prev.map((c, i) => i === dragging ? clamped : c));
+        } else {
+          // Midpoint drag — move both adjacent corners proportionally
+          const edgeIdx = dragging - 4;
+          const c1 = edgeIdx, c2 = (edgeIdx + 1) % 4;
+          setCorners(prev => {
+            const next = [...prev];
+            const midX = (prev[c1].x + prev[c2].x) / 2;
+            const midY = (prev[c1].y + prev[c2].y) / 2;
+            const dx = clamped.x - midX, dy = clamped.y - midY;
+            next[c1] = { x: prev[c1].x + dx, y: prev[c1].y + dy };
+            next[c2] = { x: prev[c2].x + dx, y: prev[c2].y + dy };
+            return next;
+          });
+        }
+      };
+      const handlePointerUp = () => setDragging(-1);
+
+      // Perspective warp: extract quad → rectangle using grid-based bilinear interpolation
+      const handleQuadApply = () => {
+        if (!corners || !quadImgRef.current) return;
+        const img = quadImgRef.current;
+        // Draw original image to a source canvas
+        const srcCvs = document.createElement('canvas');
+        srcCvs.width = img.width; srcCvs.height = img.height;
+        srcCvs.getContext('2d').drawImage(img, 0, 0);
+        const srcData = srcCvs.getContext('2d').getImageData(0, 0, img.width, img.height).data;
+        // Output size: max edge length of the quad
+        const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+        const outW = Math.round(Math.max(dist(corners[0], corners[1]), dist(corners[3], corners[2])));
+        const outH = Math.round(Math.max(dist(corners[0], corners[3]), dist(corners[1], corners[2])));
+        const out = document.createElement('canvas');
+        out.width = Math.min(outW, 2400); out.height = Math.min(outH, 2400);
+        const outCtx = out.getContext('2d');
+        const outImg = outCtx.createImageData(out.width, out.height);
+        const od = outImg.data;
+        // Bilinear sample from quad
+        const [tl, tr, br, bl] = corners;
+        for (let oy = 0; oy < out.height; oy++) {
+          const v = oy / (out.height - 1);
+          for (let ox = 0; ox < out.width; ox++) {
+            const u = ox / (out.width - 1);
+            // Bilinear interpolation of the 4 corners
+            const sx = tl.x * (1 - u) * (1 - v) + tr.x * u * (1 - v) + br.x * u * v + bl.x * (1 - u) * v;
+            const sy = tl.y * (1 - u) * (1 - v) + tr.y * u * (1 - v) + br.y * u * v + bl.y * (1 - u) * v;
+            const ix = Math.round(sx), iy = Math.round(sy);
+            const si = (iy * img.width + ix) * 4;
+            const di = (oy * out.width + ox) * 4;
+            if (ix >= 0 && ix < img.width && iy >= 0 && iy < img.height) {
+              od[di] = srcData[si]; od[di + 1] = srcData[si + 1]; od[di + 2] = srcData[si + 2]; od[di + 3] = 255;
+            } else {
+              od[di] = 255; od[di + 1] = 255; od[di + 2] = 255; od[di + 3] = 255;
+            }
+          }
+        }
+        outCtx.putImageData(outImg, 0, 0);
+        onApply(out);
       };
 
       const rotate = (deg) => cropperRef.current?.rotate(deg);
-      const reset = () => cropperRef.current?.reset();
+      const reset = () => {
+        if (mode === 'rect') { cropperRef.current?.reset(); }
+        else if (quadImgRef.current) {
+          const img = quadImgRef.current; const pad = 0.08;
+          setCorners([
+            { x: img.width * pad, y: img.height * pad },
+            { x: img.width * (1 - pad), y: img.height * pad },
+            { x: img.width * (1 - pad), y: img.height * (1 - pad) },
+            { x: img.width * pad, y: img.height * (1 - pad) },
+          ]);
+        }
+      };
 
       return (
         <div className="fixed inset-0 bg-black flex flex-col" style={{ zIndex: 10050 }}>
           {/* Top bar */}
           <div className="flex items-center justify-between px-3 py-2 bg-slate-900 text-white flex-shrink-0">
             <button onClick={onCancel} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">Cancel</button>
-            <span className="text-xs text-gray-400">Drag to move · Pinch/scroll to zoom</span>
-            <button onClick={handleApply} className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-sm font-semibold">Use crop</button>
+            <span className="text-xs text-gray-400">{mode === 'rect' ? 'Drag to move · Pinch to zoom' : 'Drag corners to select'}</span>
+            <button onClick={mode === 'rect' ? handleRectApply : handleQuadApply} className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-sm font-semibold">Use crop</button>
           </div>
           {/* Image area */}
-          <div className="flex-1 overflow-hidden flex items-center justify-center bg-black" style={{ minHeight: 0 }}>
-            <img ref={imgRef} src={imageSrc} alt="Crop source" style={{ maxWidth: '100%', display: 'block' }} />
+          <div className="flex-1 overflow-hidden flex items-center justify-center bg-black" style={{ minHeight: 0, position: 'relative' }}>
+            {mode === 'rect' && (
+              <img ref={imgRef} src={imageSrc} alt="Crop source" style={{ maxWidth: '100%', display: 'block' }} />
+            )}
+            {mode === 'quad' && (
+              <canvas
+                ref={quadCanvasRef}
+                style={{ width: '100%', height: '100%', touchAction: 'none' }}
+                onMouseDown={handlePointerDown} onMouseMove={handlePointerMove} onMouseUp={handlePointerUp} onMouseLeave={handlePointerUp}
+                onTouchStart={handlePointerDown} onTouchMove={handlePointerMove} onTouchEnd={handlePointerUp}
+              />
+            )}
           </div>
           {/* Tool bar */}
-          <div className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-900 text-white flex-shrink-0">
-            <button onClick={() => rotate(-90)} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">↺ Rotate L</button>
-            <button onClick={() => rotate(90)} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">↻ Rotate R</button>
+          <div className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-900 text-white flex-shrink-0 flex-wrap">
+            <button
+              onClick={() => setMode(mode === 'rect' ? 'quad' : 'rect')}
+              className={`px-3 py-1.5 rounded text-sm font-medium ${mode === 'quad' ? 'bg-blue-600' : 'hover:bg-slate-700'}`}
+            >
+              {mode === 'rect' ? '◇ Freeform' : '▭ Rectangle'}
+            </button>
+            {mode === 'rect' && <>
+              <button onClick={() => rotate(-90)} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">↺ Rotate L</button>
+              <button onClick={() => rotate(90)} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">↻ Rotate R</button>
+            </>}
             <button onClick={reset} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">Reset</button>
           </div>
         </div>
@@ -8127,7 +8372,7 @@
                   const result = await Tesseract.recognize(ocrCanvas, 'eng+jpn', { logger: () => {} });
                   const rawText = (result.data?.text || '').trim();
                   const confidence = result.data?.confidence || 0;
-                  const cleanedText = rawText
+                  const ocrLines = rawText
                     .split('\n')
                     .map(l => l.trim())
                     .filter(l => {
@@ -8137,9 +8382,15 @@
                       if (l.length <= 2 && !/[.!?]/.test(l)) return false;
                       return true;
                     })
-                    .map(l => l.replace(/\s*\|\s*/g, ' '))
-                    .join('\n')
-                    .replace(/\n{3,}/g, '\n\n')
+                    .map(l => l.replace(/\s*\|\s*/g, ' '));
+                  // Join lines into paragraphs: single newlines become spaces, blank lines become paragraph breaks
+                  const cleanedText = ocrLines.reduce((acc, line, i) => {
+                    if (!acc) return line;
+                    const prevEndsSection = /[.!?:]\s*$/.test(ocrLines[i - 1] || '');
+                    const startsWithCap = /^[A-Z\u3040-\u30ff\u4e00-\u9fff]/.test(line);
+                    if (prevEndsSection && startsWithCap) return acc + '\n\n' + line;
+                    return acc + ' ' + line;
+                  }, '').replace(/\n{3,}/g, '\n\n')
                     .trim();
                   const existing = (formData.description || '').replace(/\n\n📷 Reading photo…$/, '');
                   const divider = existing ? '\n\n---\n' : '';
@@ -11371,6 +11622,11 @@
       const [showDocCenter, setShowDocCenter] = useState(false);
       const [showItinerary, setShowItinerary] = useState(false);
 
+      // ---- Photo-to-Pin flow state ----
+      const [photoToPinCrop, setPhotoToPinCrop] = useState(null); // { imageSrc } — shown in crop modal
+      const [photoToPinProcessing, setPhotoToPinProcessing] = useState(false);
+      const photoToPinInputRef = useRef(null);
+
       // Auto-replace side panels: only one right-side panel visible at a time.
       // When a pin is selected, close itinerary + doc center. When itinerary
       // opens, close selected pin + doc center, etc.
@@ -11503,6 +11759,8 @@
         const onHashChange = () => {
           const hash = window.location.hash.replace('#', '');
           const [hView, hCol] = hash.includes('/') ? hash.split('/') : [hash || 'home', ''];
+          // Always clear pin drawer / editing state on navigation
+          setSelectedPin(null); setCoLocatedPins([]); setPreviewPin(null); setEditingPin(null);
           if (hView === 'collection' && hCol) {
             setView('collection');
             setActiveCollection(hCol);
@@ -11748,6 +12006,169 @@
         setShowItinerary(true);
       };
 
+      // ---- Photo-to-Pin: camera → crop → OCR → search → prefill pin ----
+      const handlePhotoToPinCapture = (e) => {
+        const file = e.target.files?.[0];
+        if (e.target) e.target.value = ''; // allow re-select
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => setPhotoToPinCrop({ imageSrc: reader.result, fileName: file.name });
+        reader.readAsDataURL(file);
+      };
+
+      const handlePhotoToPinCropped = async (croppedCanvas) => {
+        setPhotoToPinCrop(null);
+        setPhotoToPinProcessing(true);
+        try {
+          // 1. Generate image data
+          const dataUrl = croppedCanvas.toDataURL('image/jpeg', 0.85);
+          const thumbCanvas = document.createElement('canvas');
+          const thumbSize = 200;
+          const ratio = Math.min(thumbSize / croppedCanvas.width, thumbSize / croppedCanvas.height);
+          thumbCanvas.width = Math.round(croppedCanvas.width * ratio);
+          thumbCanvas.height = Math.round(croppedCanvas.height * ratio);
+          thumbCanvas.getContext('2d').drawImage(croppedCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+          const thumb = thumbCanvas.toDataURL('image/jpeg', 0.6);
+
+          // 2. OCR — upscale small crops
+          const ocrCanvas = (() => {
+            const longSide = Math.max(croppedCanvas.width, croppedCanvas.height) || 1;
+            const scale = longSide < 1600 ? 1600 / longSide : 1;
+            const c = document.createElement('canvas');
+            c.width = Math.round(croppedCanvas.width * scale);
+            c.height = Math.round(croppedCanvas.height * scale);
+            const ctx = c.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, c.width, c.height);
+            ctx.drawImage(croppedCanvas, 0, 0, c.width, c.height);
+            return c;
+          })();
+
+          let rawOcr = '';
+          let ocrConfidence = 0;
+          try {
+            const result = await Tesseract.recognize(ocrCanvas, 'eng+jpn', { logger: () => {} });
+            rawOcr = (result.data?.text || '').trim();
+            ocrConfidence = result.data?.confidence || 0;
+          } catch (err) { console.warn('OCR failed:', err); }
+
+          // 3. Parse OCR text — first meaningful line is the place name
+          const ocrLines = rawOcr
+            .split('\n').map(l => l.trim())
+            .filter(l => {
+              if (!l) return false;
+              const wordish = (l.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]/g) || []).length;
+              if (l.length >= 3 && wordish / l.length < 0.4) return false;
+              if (l.length <= 2 && !/[.!?]/.test(l)) return false;
+              return true;
+            })
+            .map(l => l.replace(/\s*\|\s*/g, ' '));
+
+          // First line = place name, rest = description
+          const placeName = ocrLines[0] || '';
+          const descLines = ocrLines.slice(1);
+          const description = descLines.reduce((acc, line, i) => {
+            if (!acc) return line;
+            const prevEndsSection = /[.!?:]\s*$/.test(descLines[i - 1] || '');
+            const startsWithCap = /^[A-Z\u3040-\u30ff\u4e00-\u9fff]/.test(line);
+            if (prevEndsSection && startsWithCap) return acc + '\n\n' + line;
+            return acc + ' ' + line;
+          }, '').replace(/\n{3,}/g, '\n\n').trim();
+
+          if (!placeName) {
+            alert('Could not read a place name from the photo. Try a clearer shot with the name visible at the top.');
+            setPhotoToPinProcessing(false);
+            return;
+          }
+
+          // 4. Search Google Places for this name, using map center for location bias
+          let placeData = null;
+          const apiKey = getGoogleApiKey();
+          if (apiKey && placeName) {
+            try {
+              const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-Goog-Api-Key': apiKey,
+                  'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.userRatingCount,places.priceLevel,places.currentOpeningHours,places.websiteUri,places.googleMapsUri'
+                },
+                body: JSON.stringify({
+                  textQuery: placeName,
+                  maxResultCount: 1,
+                  ...(mapCenter?.lat ? { locationBias: { circle: { center: { latitude: mapCenter.lat, longitude: mapCenter.lng }, radius: 50000.0 }}} : {})
+                })
+              });
+              if (resp.ok) {
+                const data = await resp.json();
+                if (data.places?.[0]) placeData = data.places[0];
+              }
+            } catch (e) { console.warn('Photo-to-pin Google search failed:', e); }
+          }
+
+          // 5. Build the pin and open the edit form
+          const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
+          const resolvedName = placeData?.displayName?.text || placeName;
+          const resolvedAddress = placeData?.formattedAddress || '';
+          const resolvedLat = placeData?.location?.latitude || mapCenter?.lat || 0;
+          const resolvedLng = placeData?.location?.longitude || mapCenter?.lng || 0;
+          const result = guessEmojiAndCategory(resolvedName, placeData?.types?.[0] || '');
+
+          // Build photo record
+          const photo = {
+            id: Math.random().toString(36).substr(2, 9),
+            thumbnail: thumb, full: dataUrl,
+            name: 'photo-scan',
+            ocr_text: description,
+            added_at: new Date().toISOString(),
+          };
+
+          // Parse opening hours if available
+          const openingHours = {};
+          if (placeData?.currentOpeningHours?.weekdayDescriptions) {
+            const dayMap = { Sunday: 'sunday', Monday: 'monday', Tuesday: 'tuesday', Wednesday: 'wednesday', Thursday: 'thursday', Friday: 'friday', Saturday: 'saturday' };
+            placeData.currentOpeningHours.weekdayDescriptions.forEach(line => {
+              const [dayName, ...rest] = line.split(': ');
+              const key = dayMap[dayName.trim()];
+              if (key) openingHours[key] = rest.join(': ').trim();
+            });
+          }
+
+          // Pan map
+          if (resolvedLat && resolvedLng) {
+            setMapPanTarget({ lat: resolvedLat, lng: resolvedLng, _t: Date.now() });
+            setPreviewPin({ lat: resolvedLat, lng: resolvedLng, name: resolvedName, emoji: result.emoji });
+          }
+
+          // Pre-fill the edit form with photo description
+          const descLabel = description ? `📷 From photo:\n${description}` : '';
+
+          setEditingPin({
+            name: resolvedName,
+            address: resolvedAddress,
+            lat: resolvedLat,
+            lng: resolvedLng,
+            emoji: result.emoji,
+            category: result.category,
+            description: descLabel,
+            source_name: '',
+            collection_id: defaultCollection,
+            photos: [],
+            info_photos: [photo],
+            opening_hours: openingHours,
+            google_rating: placeData?.rating || null,
+            google_rating_count: placeData?.userRatingCount || null,
+            google_price_level: placeData?.priceLevel || null,
+            website: placeData?.websiteUri || '',
+            google_maps_url: placeData?.googleMapsUri || '',
+          });
+        } catch (err) {
+          console.error('Photo-to-pin failed:', err);
+          alert('Something went wrong processing the photo. Please try again.');
+        }
+        setPhotoToPinProcessing(false);
+      };
+
       const handleAddCollection = (newCol) => {
         const { _update, ...colData } = newCol;
         setCollections(prev => {
@@ -11812,6 +12233,7 @@
               collections={collections}
               pins={pins}
               onSelectCollection={(collectionId) => {
+                setSelectedPin(null); setCoLocatedPins([]); setPreviewPin(null); setEditingPin(null);
                 setActiveCollection(collectionId);
                 setView('collection');
                 setSearchQuery('');
@@ -11847,7 +12269,7 @@
             <div className="flex items-start gap-2 p-3 sm:p-4">
               {/* Back arrow (left) — title is shown as small overlay chip on desktop only */}
               <button
-                onClick={() => setView('home')}
+                onClick={() => { setSelectedPin(null); setCoLocatedPins([]); setPreviewPin(null); setEditingPin(null); setShowAddMenu(false); setView('home'); }}
                 className="pointer-events-auto w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-lg flex-shrink-0"
                 title={`Back — ${collections.find(c => c.id === activeCollection)?.name || 'Maps'}`}
               >
@@ -11891,6 +12313,7 @@
               onAddFromLink={() => setShowAddFromLink(true)}
               onPasteText={() => setShowPasteText(true)}
               onUploadConfirmation={() => setShowUploadConfirmation(true)}
+              onFromPhoto={() => { if (photoToPinInputRef.current) photoToPinInputRef.current.click(); }}
                 />
               </div>
             </div>
@@ -12453,7 +12876,8 @@
               <div
                 className="fam-item"
                 onClick={() => {
-                  alert('Add from Photo feature coming soon');
+                  setShowAddMenu(false);
+                  if (photoToPinInputRef.current) photoToPinInputRef.current.click();
                 }}
               >
                 <span>📸</span>
@@ -12492,6 +12916,39 @@
             </div>
           )}
 
+
+          {/* Hidden file input for Photo-to-Pin */}
+          <input
+            ref={photoToPinInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            style={{ display: 'none' }}
+            onChange={handlePhotoToPinCapture}
+          />
+
+          {/* Photo-to-Pin crop modal */}
+          {photoToPinCrop && ReactDOM.createPortal(
+            <PhotoCropModal
+              imageSrc={photoToPinCrop.imageSrc}
+              onCancel={() => setPhotoToPinCrop(null)}
+              onApply={handlePhotoToPinCropped}
+              isDarkMode={darkMode}
+            />,
+            document.body
+          )}
+
+          {/* Photo-to-Pin processing overlay */}
+          {photoToPinProcessing && ReactDOM.createPortal(
+            <div style={{ position: 'fixed', inset: 0, zIndex: 10010, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 text-center shadow-2xl max-w-xs mx-4">
+                <div className="text-3xl mb-3 animate-pulse">📸</div>
+                <div className="font-semibold dark:text-white mb-1">Reading photo...</div>
+                <div className="text-sm text-gray-500 dark:text-gray-400">Extracting text and searching for the place</div>
+              </div>
+            </div>,
+            document.body
+          )}
 
           {/* Service Worker Registration */}
           {typeof navigator !== 'undefined' && 'serviceWorker' in navigator && (
