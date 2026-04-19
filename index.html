@@ -7432,18 +7432,24 @@
       const cropperRef = useRef(null);
       const [mode, setMode] = useState('rect'); // 'rect' | 'poly'
       const [savedCrops, setSavedCrops] = useState([]); // accumulated canvas crops for multi-crop flow
+      const [activeImageSrc, setActiveImageSrc] = useState(imageSrc); // current image (supports multi-page)
+      const addPageInputRef = useRef(null);
 
       // ---- Rectangle mode (Cropper.js) ----
       useEffect(() => {
         if (mode !== 'rect') { if (cropperRef.current) { try { cropperRef.current.destroy(); } catch {} cropperRef.current = null; } return; }
         if (!imgRef.current || typeof Cropper === 'undefined') return;
-        const c = new Cropper(imgRef.current, {
-          viewMode: 1, autoCropArea: 0.85, dragMode: 'move', background: false,
-          zoomable: true, scalable: false, rotatable: true, toggleDragModeOnDblclick: false, responsive: true,
-        });
-        cropperRef.current = c;
-        return () => { try { c.destroy(); } catch {} cropperRef.current = null; };
-      }, [mode]);
+        // Small delay to let img src update in DOM before Cropper reads it
+        const timer = setTimeout(() => {
+          if (!imgRef.current) return;
+          const c = new Cropper(imgRef.current, {
+            viewMode: 1, autoCropArea: 0.85, dragMode: 'move', background: false,
+            zoomable: true, scalable: false, rotatable: true, toggleDragModeOnDblclick: false, responsive: true,
+          });
+          cropperRef.current = c;
+        }, 50);
+        return () => { clearTimeout(timer); try { cropperRef.current?.destroy(); } catch {} cropperRef.current = null; };
+      }, [mode, activeImageSrc]);
 
       // handleRectApply removed — use handleFinalApply + getCurrentCropCanvas instead
 
@@ -7465,8 +7471,8 @@
           // Start with no points — user taps to place them
           setPolyPts([]);
         };
-        img.src = imageSrc;
-      }, [mode, imageSrc]);
+        img.src = activeImageSrc;
+      }, [mode, activeImageSrc]);
 
       // Draw polygon overlay at full resolution
       useEffect(() => {
@@ -7675,49 +7681,94 @@
       };
 
       // Save current crop and reset for another
+      // Store as data URLs so canvas data isn't lost when Cropper resets
       const handleCropAndContinue = () => {
         const canvas = getCurrentCropCanvas();
         if (!canvas) return;
-        setSavedCrops(prev => [...prev, canvas]);
+        const dataUrl = canvas.toDataURL('image/png');
+        setSavedCrops(prev => [...prev, { dataUrl, width: canvas.width, height: canvas.height }]);
         // Reset for next crop
         if (mode === 'rect') { cropperRef.current?.reset(); }
         else { setPolyPts([]); }
       };
 
-      // Stitch all saved crops + current crop vertically into one canvas
-      const stitchCrops = (canvases) => {
-        if (canvases.length === 1) return canvases[0];
-        // Normalize all to same width, then stack vertically with a small divider
-        const maxW = Math.max(...canvases.map(c => c.width));
-        const gap = 20; // white gap between crops
-        let totalH = 0;
-        const scaled = canvases.map(c => {
-          const s = maxW / c.width;
-          const h = Math.round(c.height * s);
-          totalH += h;
-          return { canvas: c, w: maxW, h, scale: s };
+      // Load a new page image for cropping (multi-page support)
+      const handleAddPage = (e) => {
+        const file = e.target.files?.[0];
+        if (e.target) e.target.value = '';
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          // Save current crop first if there's a valid selection
+          const currentCanvas = getCurrentCropCanvas();
+          if (currentCanvas) {
+            const dataUrl = currentCanvas.toDataURL('image/png');
+            setSavedCrops(prev => [...prev, { dataUrl, width: currentCanvas.width, height: currentCanvas.height }]);
+          }
+          // Switch to the new image
+          setActiveImageSrc(reader.result);
+          if (mode === 'poly') setPolyPts([]);
+          // Cropper.js will reinit via the useEffect dependency on activeImageSrc
+        };
+        reader.readAsDataURL(file);
+      };
+
+      // Stitch all saved crops + current crop vertically, each OCR'd separately then combined
+      // Instead of stitching into one canvas (which confuses Tesseract), we return an array
+      // Actually, stitch visually but with clear separation for the photo record
+      const stitchCrops = (cropItems) => {
+        // cropItems: array of { dataUrl, width, height } or canvas elements
+        return new Promise((resolve) => {
+          const loadAll = cropItems.map(item => {
+            if (item instanceof HTMLCanvasElement) return Promise.resolve(item);
+            return new Promise(res => {
+              const img = new Image();
+              img.onload = () => {
+                const c = document.createElement('canvas');
+                c.width = img.width; c.height = img.height;
+                c.getContext('2d').drawImage(img, 0, 0);
+                res(c);
+              };
+              img.src = item.dataUrl;
+            });
+          });
+          Promise.all(loadAll).then(canvases => {
+            if (canvases.length === 1) { resolve(canvases[0]); return; }
+            const maxW = Math.max(...canvases.map(c => c.width));
+            const gap = 30;
+            let totalH = 0;
+            const scaled = canvases.map(c => {
+              const s = maxW / c.width;
+              const h = Math.round(c.height * s);
+              totalH += h;
+              return { canvas: c, w: maxW, h };
+            });
+            totalH += gap * (canvases.length - 1);
+            const out = document.createElement('canvas');
+            out.width = maxW; out.height = Math.min(totalH, 6000);
+            const ctx = out.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, out.width, out.height);
+            let y = 0;
+            scaled.forEach(s => {
+              ctx.drawImage(s.canvas, 0, 0, s.canvas.width, s.canvas.height, 0, y, s.w, s.h);
+              y += s.h + gap;
+            });
+            resolve(out);
+          });
         });
-        totalH += gap * (canvases.length - 1);
-        const out = document.createElement('canvas');
-        out.width = maxW; out.height = Math.min(totalH, 4800);
-        const ctx = out.getContext('2d');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, out.width, out.height);
-        let y = 0;
-        scaled.forEach((s, i) => {
-          ctx.drawImage(s.canvas, 0, 0, s.canvas.width, s.canvas.height, 0, y, s.w, s.h);
-          y += s.h + gap;
-        });
-        return out;
       };
 
       // Final apply: combine saved crops + current crop
-      const handleFinalApply = () => {
-        const currentCanvas = getCurrentCropCanvas();
+      const handleFinalApply = async () => {
         const all = [...savedCrops];
-        if (currentCanvas) all.push(currentCanvas);
+        const currentCanvas = getCurrentCropCanvas();
+        if (currentCanvas) {
+          all.push(currentCanvas); // canvas element — stitchCrops handles both types
+        }
         if (all.length === 0) return;
-        onApply(stitchCrops(all));
+        const result = await stitchCrops(all);
+        onApply(result);
       };
 
       return (
@@ -7748,7 +7799,7 @@
           {/* Image area */}
           <div className="flex-1 overflow-hidden flex items-center justify-center bg-black" style={{ minHeight: 0, position: 'relative' }}>
             {mode === 'rect' && (
-              <img ref={imgRef} src={imageSrc} alt="Crop source" style={{ maxWidth: '100%', display: 'block' }} />
+              <img ref={imgRef} src={activeImageSrc} alt="Crop source" style={{ maxWidth: '100%', display: 'block' }} />
             )}
             {mode === 'poly' && (
               <canvas
@@ -7778,7 +7829,11 @@
               <button onClick={() => rotate(90)} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">↻ Rotate R</button>
             </>}
             <button onClick={reset} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">{mode === 'poly' ? 'Clear all' : 'Reset'}</button>
+            <span className="mx-1 text-gray-600">|</span>
+            <button onClick={() => addPageInputRef.current?.click()} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">📷 Add page</button>
           </div>
+          {/* Hidden file input for multi-page */}
+          <input ref={addPageInputRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handleAddPage} />
         </div>
       );
     };
