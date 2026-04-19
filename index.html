@@ -7430,7 +7430,8 @@
     const PhotoCropModal = ({ imageSrc, onApply, onCancel, isDarkMode }) => {
       const imgRef = useRef(null);
       const cropperRef = useRef(null);
-      const [mode, setMode] = useState('rect'); // 'rect' | 'quad'
+      const [mode, setMode] = useState('rect'); // 'rect' | 'poly'
+      const [savedCrops, setSavedCrops] = useState([]); // accumulated canvas crops for multi-crop flow
 
       // ---- Rectangle mode (Cropper.js) ----
       useEffect(() => {
@@ -7444,215 +7445,279 @@
         return () => { try { c.destroy(); } catch {} cropperRef.current = null; };
       }, [mode]);
 
-      const handleRectApply = () => {
-        const c = cropperRef.current;
-        if (!c) return;
-        onApply(c.getCroppedCanvas({ maxWidth: 2400, maxHeight: 2400, fillColor: '#ffffff', imageSmoothingQuality: 'high' }));
-      };
+      // handleRectApply removed — use handleFinalApply + getCurrentCropCanvas instead
 
-      // ---- Quad (freeform) mode ----
-      const quadCanvasRef = useRef(null);
-      const quadImgRef = useRef(null);
-      const [corners, setCorners] = useState(null); // [{x,y}, {x,y}, {x,y}, {x,y}] in image coords
-      const [dragging, setDragging] = useState(-1); // which corner is being dragged
-      const [imgDims, setImgDims] = useState({ w: 0, h: 0, scale: 1, offX: 0, offY: 0 });
+      // ---- Polygon (freeform) mode ----
+      // Tap to add points, drag to move, double-tap to remove, tap midpoint to insert
+      const polyCanvasRef = useRef(null);
+      const polyImgRef = useRef(null);
+      const [polyPts, setPolyPts] = useState(null); // [{x,y}, ...] in image coords
+      const [dragIdx, setDragIdx] = useState(-1);
+      const [polyDims, setPolyDims] = useState({ w: 0, h: 0, scale: 1, offX: 0, offY: 0 });
+      const lastTapRef = useRef({ time: 0, idx: -1 });
 
-      // Initialize corners and draw when switching to quad mode
+      // Load image when switching to polygon mode
       useEffect(() => {
-        if (mode !== 'quad') return;
+        if (mode !== 'poly') return;
         const img = new Image();
         img.onload = () => {
-          quadImgRef.current = img;
-          const pad = 0.08;
-          setCorners([
-            { x: img.width * pad, y: img.height * pad },
-            { x: img.width * (1 - pad), y: img.height * pad },
-            { x: img.width * (1 - pad), y: img.height * (1 - pad) },
-            { x: img.width * pad, y: img.height * (1 - pad) },
-          ]);
+          polyImgRef.current = img;
+          // Start with no points — user taps to place them
+          setPolyPts([]);
         };
         img.src = imageSrc;
       }, [mode, imageSrc]);
 
-      // Draw quad overlay
+      // Draw polygon overlay at full resolution
       useEffect(() => {
-        if (mode !== 'quad' || !corners || !quadImgRef.current) return;
-        const cvs = quadCanvasRef.current;
+        if (mode !== 'poly' || !polyPts || !polyImgRef.current) return;
+        const cvs = polyCanvasRef.current;
         if (!cvs) return;
         const container = cvs.parentElement;
         const cw = container.clientWidth;
         const ch = container.clientHeight;
-        cvs.width = cw; cvs.height = ch;
-        const img = quadImgRef.current;
+        // Use device pixel ratio for crisp display
+        const dpr = window.devicePixelRatio || 1;
+        cvs.width = cw * dpr; cvs.height = ch * dpr;
+        cvs.style.width = cw + 'px'; cvs.style.height = ch + 'px';
+        const img = polyImgRef.current;
         const scale = Math.min(cw / img.width, ch / img.height);
         const offX = (cw - img.width * scale) / 2;
         const offY = (ch - img.height * scale) / 2;
-        setImgDims({ w: img.width, h: img.height, scale, offX, offY });
+        setPolyDims({ w: img.width, h: img.height, scale, offX, offY });
         const ctx = cvs.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
         ctx.clearRect(0, 0, cw, ch);
+        // Draw full image
         ctx.drawImage(img, offX, offY, img.width * scale, img.height * scale);
-        // Darken outside the quad
-        ctx.save();
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
-        ctx.fillRect(0, 0, cw, ch);
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.beginPath();
-        corners.forEach((c, i) => {
-          const sx = offX + c.x * scale, sy = offY + c.y * scale;
-          i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
-        });
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-        // Redraw image inside quad
-        ctx.save();
-        ctx.beginPath();
-        corners.forEach((c, i) => {
-          const sx = offX + c.x * scale, sy = offY + c.y * scale;
-          i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
-        });
-        ctx.closePath();
-        ctx.clip();
-        ctx.drawImage(img, offX, offY, img.width * scale, img.height * scale);
-        ctx.restore();
-        // Draw quad outline and corner handles
-        ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2;
-        ctx.beginPath();
-        corners.forEach((c, i) => {
-          const sx = offX + c.x * scale, sy = offY + c.y * scale;
-          i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
-        });
-        ctx.closePath(); ctx.stroke();
-        // Edge midpoints
-        corners.forEach((c, i) => {
-          const next = corners[(i + 1) % 4];
-          const mx = offX + (c.x + next.x) / 2 * scale, my = offY + (c.y + next.y) / 2 * scale;
-          ctx.fillStyle = '#fff'; ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 1.5;
-          ctx.beginPath(); ctx.arc(mx, my, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-        });
-        // Corner handles
-        corners.forEach(c => {
-          const sx = offX + c.x * scale, sy = offY + c.y * scale;
-          ctx.fillStyle = '#3b82f6'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
-          ctx.beginPath(); ctx.arc(sx, sy, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-        });
-      }, [mode, corners]);
-
-      // Touch/mouse handlers for dragging corners
-      const screenToImg = (clientX, clientY) => {
-        const cvs = quadCanvasRef.current;
-        if (!cvs) return { x: 0, y: 0 };
-        const rect = cvs.getBoundingClientRect();
-        const cx = clientX - rect.left, cy = clientY - rect.top;
-        return { x: (cx - imgDims.offX) / imgDims.scale, y: (cy - imgDims.offY) / imgDims.scale };
-      };
-
-      const findCorner = (clientX, clientY) => {
-        if (!corners) return -1;
-        const cvs = quadCanvasRef.current;
-        if (!cvs) return -1;
-        const rect = cvs.getBoundingClientRect();
-        const cx = clientX - rect.left, cy = clientY - rect.top;
-        // Also check edge midpoints (indices 4-7)
-        const allPoints = [...corners];
-        corners.forEach((c, i) => {
-          const next = corners[(i + 1) % 4];
-          allPoints.push({ x: (c.x + next.x) / 2, y: (c.y + next.y) / 2 });
-        });
-        let closest = -1, minDist = 30;
-        allPoints.forEach((c, i) => {
-          const sx = imgDims.offX + c.x * imgDims.scale;
-          const sy = imgDims.offY + c.y * imgDims.scale;
-          const d = Math.hypot(cx - sx, cy - sy);
-          if (d < minDist) { minDist = d; closest = i; }
-        });
-        return closest;
-      };
-
-      const handlePointerDown = (e) => {
-        const touch = e.touches ? e.touches[0] : e;
-        const idx = findCorner(touch.clientX, touch.clientY);
-        if (idx >= 0) { setDragging(idx); e.preventDefault(); }
-      };
-      const handlePointerMove = (e) => {
-        if (dragging < 0 || !corners) return;
-        e.preventDefault();
-        const touch = e.touches ? e.touches[0] : e;
-        const pt = screenToImg(touch.clientX, touch.clientY);
-        const clamped = { x: Math.max(0, Math.min(imgDims.w, pt.x)), y: Math.max(0, Math.min(imgDims.h, pt.y)) };
-        if (dragging < 4) {
-          // Corner drag
-          setCorners(prev => prev.map((c, i) => i === dragging ? clamped : c));
-        } else {
-          // Midpoint drag — move both adjacent corners proportionally
-          const edgeIdx = dragging - 4;
-          const c1 = edgeIdx, c2 = (edgeIdx + 1) % 4;
-          setCorners(prev => {
-            const next = [...prev];
-            const midX = (prev[c1].x + prev[c2].x) / 2;
-            const midY = (prev[c1].y + prev[c2].y) / 2;
-            const dx = clamped.x - midX, dy = clamped.y - midY;
-            next[c1] = { x: prev[c1].x + dx, y: prev[c1].y + dy };
-            next[c2] = { x: prev[c2].x + dx, y: prev[c2].y + dy };
-            return next;
+        if (polyPts.length >= 3) {
+          // Darken outside polygon
+          ctx.save();
+          ctx.fillStyle = 'rgba(0,0,0,0.5)';
+          ctx.fillRect(0, 0, cw, ch);
+          ctx.globalCompositeOperation = 'destination-out';
+          ctx.beginPath();
+          polyPts.forEach((p, i) => {
+            const sx = offX + p.x * scale, sy = offY + p.y * scale;
+            i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
           });
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+          // Redraw image inside polygon (crisp)
+          ctx.save();
+          ctx.beginPath();
+          polyPts.forEach((p, i) => {
+            const sx = offX + p.x * scale, sy = offY + p.y * scale;
+            i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+          });
+          ctx.closePath();
+          ctx.clip();
+          ctx.drawImage(img, offX, offY, img.width * scale, img.height * scale);
+          ctx.restore();
         }
-      };
-      const handlePointerUp = () => setDragging(-1);
-
-      // Perspective warp: extract quad → rectangle using grid-based bilinear interpolation
-      const handleQuadApply = () => {
-        if (!corners || !quadImgRef.current) return;
-        const img = quadImgRef.current;
-        // Draw original image to a source canvas
-        const srcCvs = document.createElement('canvas');
-        srcCvs.width = img.width; srcCvs.height = img.height;
-        srcCvs.getContext('2d').drawImage(img, 0, 0);
-        const srcData = srcCvs.getContext('2d').getImageData(0, 0, img.width, img.height).data;
-        // Output size: max edge length of the quad
-        const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-        const outW = Math.round(Math.max(dist(corners[0], corners[1]), dist(corners[3], corners[2])));
-        const outH = Math.round(Math.max(dist(corners[0], corners[3]), dist(corners[1], corners[2])));
-        const out = document.createElement('canvas');
-        out.width = Math.min(outW, 2400); out.height = Math.min(outH, 2400);
-        const outCtx = out.getContext('2d');
-        const outImg = outCtx.createImageData(out.width, out.height);
-        const od = outImg.data;
-        // Bilinear sample from quad
-        const [tl, tr, br, bl] = corners;
-        for (let oy = 0; oy < out.height; oy++) {
-          const v = oy / (out.height - 1);
-          for (let ox = 0; ox < out.width; ox++) {
-            const u = ox / (out.width - 1);
-            // Bilinear interpolation of the 4 corners
-            const sx = tl.x * (1 - u) * (1 - v) + tr.x * u * (1 - v) + br.x * u * v + bl.x * (1 - u) * v;
-            const sy = tl.y * (1 - u) * (1 - v) + tr.y * u * (1 - v) + br.y * u * v + bl.y * (1 - u) * v;
-            const ix = Math.round(sx), iy = Math.round(sy);
-            const si = (iy * img.width + ix) * 4;
-            const di = (oy * out.width + ox) * 4;
-            if (ix >= 0 && ix < img.width && iy >= 0 && iy < img.height) {
-              od[di] = srcData[si]; od[di + 1] = srcData[si + 1]; od[di + 2] = srcData[si + 2]; od[di + 3] = 255;
-            } else {
-              od[di] = 255; od[di + 1] = 255; od[di + 2] = 255; od[di + 3] = 255;
-            }
+        // Draw polygon outline
+        if (polyPts.length >= 2) {
+          ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 2;
+          ctx.beginPath();
+          polyPts.forEach((p, i) => {
+            const sx = offX + p.x * scale, sy = offY + p.y * scale;
+            i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+          });
+          if (polyPts.length >= 3) ctx.closePath();
+          ctx.stroke();
+        }
+        // Draw edge midpoints (for inserting new points)
+        if (polyPts.length >= 2) {
+          for (let i = 0; i < polyPts.length; i++) {
+            const next = polyPts[(i + 1) % polyPts.length];
+            if (i === polyPts.length - 1 && polyPts.length < 3) continue; // don't show closing midpoint for 2 pts
+            const mx = offX + (polyPts[i].x + next.x) / 2 * scale;
+            const my = offY + (polyPts[i].y + next.y) / 2 * scale;
+            ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.arc(mx, my, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
           }
         }
-        outCtx.putImageData(outImg, 0, 0);
-        onApply(out);
+        // Draw vertex handles
+        polyPts.forEach((p, i) => {
+          const sx = offX + p.x * scale, sy = offY + p.y * scale;
+          ctx.fillStyle = '#3b82f6'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(sx, sy, 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          // Number label
+          ctx.fillStyle = '#fff'; ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.fillText(i + 1, sx, sy);
+        });
+      }, [mode, polyPts]);
+
+      // Coordinate helpers
+      const polyScreenToImg = (clientX, clientY) => {
+        const cvs = polyCanvasRef.current;
+        if (!cvs) return { x: 0, y: 0 };
+        const rect = cvs.getBoundingClientRect();
+        return { x: (clientX - rect.left - polyDims.offX) / polyDims.scale, y: (clientY - rect.top - polyDims.offY) / polyDims.scale };
       };
+
+      const findPolyHandle = (clientX, clientY) => {
+        if (!polyPts || !polyPts.length) return { type: 'none', idx: -1 };
+        const cvs = polyCanvasRef.current;
+        if (!cvs) return { type: 'none', idx: -1 };
+        const rect = cvs.getBoundingClientRect();
+        const cx = clientX - rect.left, cy = clientY - rect.top;
+        // Check vertices first (priority)
+        for (let i = 0; i < polyPts.length; i++) {
+          const sx = polyDims.offX + polyPts[i].x * polyDims.scale;
+          const sy = polyDims.offY + polyPts[i].y * polyDims.scale;
+          if (Math.hypot(cx - sx, cy - sy) < 25) return { type: 'vertex', idx: i };
+        }
+        // Check edge midpoints
+        if (polyPts.length >= 2) {
+          for (let i = 0; i < polyPts.length; i++) {
+            const next = polyPts[(i + 1) % polyPts.length];
+            if (i === polyPts.length - 1 && polyPts.length < 3) continue;
+            const mx = polyDims.offX + (polyPts[i].x + next.x) / 2 * polyDims.scale;
+            const my = polyDims.offY + (polyPts[i].y + next.y) / 2 * polyDims.scale;
+            if (Math.hypot(cx - mx, cy - my) < 20) return { type: 'midpoint', idx: i };
+          }
+        }
+        return { type: 'none', idx: -1 };
+      };
+
+      const polyPointerDown = (e) => {
+        const touch = e.touches ? e.touches[0] : e;
+        const hit = findPolyHandle(touch.clientX, touch.clientY);
+        const now = Date.now();
+        if (hit.type === 'vertex') {
+          // Double-tap to remove (if >3 points)
+          if (now - lastTapRef.current.time < 350 && lastTapRef.current.idx === hit.idx && polyPts.length > 3) {
+            setPolyPts(prev => prev.filter((_, i) => i !== hit.idx));
+            lastTapRef.current = { time: 0, idx: -1 };
+            e.preventDefault();
+            return;
+          }
+          lastTapRef.current = { time: now, idx: hit.idx };
+          setDragIdx(hit.idx);
+          e.preventDefault();
+        } else if (hit.type === 'midpoint') {
+          // Insert new point at midpoint
+          const i = hit.idx;
+          const next = (i + 1) % polyPts.length;
+          const newPt = { x: (polyPts[i].x + polyPts[next].x) / 2, y: (polyPts[i].y + polyPts[next].y) / 2 };
+          setPolyPts(prev => [...prev.slice(0, next), newPt, ...prev.slice(next)]);
+          setDragIdx(next); // immediately start dragging the new point
+          lastTapRef.current = { time: 0, idx: -1 };
+          e.preventDefault();
+        } else {
+          // Tap empty area — add new point
+          const pt = polyScreenToImg(touch.clientX, touch.clientY);
+          const clamped = { x: Math.max(0, Math.min(polyDims.w, pt.x)), y: Math.max(0, Math.min(polyDims.h, pt.y)) };
+          setPolyPts(prev => [...(prev || []), clamped]);
+          lastTapRef.current = { time: 0, idx: -1 };
+          e.preventDefault();
+        }
+      };
+
+      const polyPointerMove = (e) => {
+        if (dragIdx < 0 || !polyPts) return;
+        e.preventDefault();
+        const touch = e.touches ? e.touches[0] : e;
+        const pt = polyScreenToImg(touch.clientX, touch.clientY);
+        const clamped = { x: Math.max(0, Math.min(polyDims.w, pt.x)), y: Math.max(0, Math.min(polyDims.h, pt.y)) };
+        setPolyPts(prev => prev.map((p, i) => i === dragIdx ? clamped : p));
+      };
+
+      const polyPointerUp = () => setDragIdx(-1);
+
+      // handlePolyApply removed — use handleFinalApply + getCurrentCropCanvas instead
 
       const rotate = (deg) => cropperRef.current?.rotate(deg);
       const reset = () => {
         if (mode === 'rect') { cropperRef.current?.reset(); }
-        else if (quadImgRef.current) {
-          const img = quadImgRef.current; const pad = 0.08;
-          setCorners([
-            { x: img.width * pad, y: img.height * pad },
-            { x: img.width * (1 - pad), y: img.height * pad },
-            { x: img.width * (1 - pad), y: img.height * (1 - pad) },
-            { x: img.width * pad, y: img.height * (1 - pad) },
-          ]);
+        else { setPolyPts([]); }
+      };
+
+      // Get current crop as a canvas (works for both modes)
+      const getCurrentCropCanvas = () => {
+        if (mode === 'rect') {
+          const c = cropperRef.current;
+          if (!c) return null;
+          return c.getCroppedCanvas({ maxWidth: 2400, maxHeight: 2400, fillColor: '#ffffff', imageSmoothingQuality: 'high' });
+        } else {
+          if (!polyPts || polyPts.length < 3 || !polyImgRef.current) return null;
+          const img = polyImgRef.current;
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          polyPts.forEach(p => { minX = Math.min(minX, p.x); minY = Math.min(minY, p.y); maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y); });
+          minX = Math.max(0, Math.floor(minX)); minY = Math.max(0, Math.floor(minY));
+          maxX = Math.min(img.width, Math.ceil(maxX)); maxY = Math.min(img.height, Math.ceil(maxY));
+          const w = maxX - minX, h = maxY - minY;
+          if (w < 1 || h < 1) return null;
+          const maxDim = 2400;
+          const outScale = Math.min(1, maxDim / Math.max(w, h));
+          const outW = Math.round(w * outScale), outH = Math.round(h * outScale);
+          const out = document.createElement('canvas');
+          out.width = outW; out.height = outH;
+          const ctx = out.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, outW, outH);
+          ctx.save();
+          ctx.beginPath();
+          polyPts.forEach((p, i) => {
+            const sx = (p.x - minX) * outScale, sy = (p.y - minY) * outScale;
+            i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+          });
+          ctx.closePath();
+          ctx.clip();
+          ctx.drawImage(img, minX, minY, w, h, 0, 0, outW, outH);
+          ctx.restore();
+          return out;
         }
+      };
+
+      // Save current crop and reset for another
+      const handleCropAndContinue = () => {
+        const canvas = getCurrentCropCanvas();
+        if (!canvas) return;
+        setSavedCrops(prev => [...prev, canvas]);
+        // Reset for next crop
+        if (mode === 'rect') { cropperRef.current?.reset(); }
+        else { setPolyPts([]); }
+      };
+
+      // Stitch all saved crops + current crop vertically into one canvas
+      const stitchCrops = (canvases) => {
+        if (canvases.length === 1) return canvases[0];
+        // Normalize all to same width, then stack vertically with a small divider
+        const maxW = Math.max(...canvases.map(c => c.width));
+        const gap = 20; // white gap between crops
+        let totalH = 0;
+        const scaled = canvases.map(c => {
+          const s = maxW / c.width;
+          const h = Math.round(c.height * s);
+          totalH += h;
+          return { canvas: c, w: maxW, h, scale: s };
+        });
+        totalH += gap * (canvases.length - 1);
+        const out = document.createElement('canvas');
+        out.width = maxW; out.height = Math.min(totalH, 4800);
+        const ctx = out.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, out.width, out.height);
+        let y = 0;
+        scaled.forEach((s, i) => {
+          ctx.drawImage(s.canvas, 0, 0, s.canvas.width, s.canvas.height, 0, y, s.w, s.h);
+          y += s.h + gap;
+        });
+        return out;
+      };
+
+      // Final apply: combine saved crops + current crop
+      const handleFinalApply = () => {
+        const currentCanvas = getCurrentCropCanvas();
+        const all = [...savedCrops];
+        if (currentCanvas) all.push(currentCanvas);
+        if (all.length === 0) return;
+        onApply(stitchCrops(all));
       };
 
       return (
@@ -7660,36 +7725,59 @@
           {/* Top bar */}
           <div className="flex items-center justify-between px-3 py-2 bg-slate-900 text-white flex-shrink-0">
             <button onClick={onCancel} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">Cancel</button>
-            <span className="text-xs text-gray-400">{mode === 'rect' ? 'Drag to move · Pinch to zoom' : 'Drag corners to select'}</span>
-            <button onClick={mode === 'rect' ? handleRectApply : handleQuadApply} className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-sm font-semibold">Use crop</button>
+            <span className="text-xs text-gray-400">{mode === 'rect' ? 'Drag to move · Pinch to zoom' : 'Tap to add points · Drag to move'}</span>
+            <div className="flex items-center gap-1.5">
+              {(savedCrops.length > 0 || (mode === 'poly' ? polyPts && polyPts.length >= 3 : true)) && (
+                <button onClick={handleCropAndContinue} className="px-2 py-1.5 rounded text-xs font-medium bg-slate-700 hover:bg-slate-600" title="Save this crop and select another area">+ More</button>
+              )}
+              <button onClick={handleFinalApply} className={`px-3 py-1.5 rounded text-sm font-semibold ${mode === 'poly' && (!polyPts || polyPts.length < 3) && savedCrops.length === 0 ? 'bg-gray-600 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`} disabled={mode === 'poly' && (!polyPts || polyPts.length < 3) && savedCrops.length === 0}>
+                {savedCrops.length > 0 ? `Done (${savedCrops.length + 1})` : 'Use crop'}
+              </button>
+            </div>
           </div>
+          {/* Saved crops indicator */}
+          {savedCrops.length > 0 && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-800 text-xs text-gray-300 flex-shrink-0">
+              <span>Saved crops:</span>
+              {savedCrops.map((_, i) => (
+                <span key={i} className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] font-bold">{i + 1}</span>
+              ))}
+              <span className="text-gray-500">→ now select crop {savedCrops.length + 1}</span>
+            </div>
+          )}
           {/* Image area */}
           <div className="flex-1 overflow-hidden flex items-center justify-center bg-black" style={{ minHeight: 0, position: 'relative' }}>
             {mode === 'rect' && (
               <img ref={imgRef} src={imageSrc} alt="Crop source" style={{ maxWidth: '100%', display: 'block' }} />
             )}
-            {mode === 'quad' && (
+            {mode === 'poly' && (
               <canvas
-                ref={quadCanvasRef}
+                ref={polyCanvasRef}
                 style={{ width: '100%', height: '100%', touchAction: 'none' }}
-                onMouseDown={handlePointerDown} onMouseMove={handlePointerMove} onMouseUp={handlePointerUp} onMouseLeave={handlePointerUp}
-                onTouchStart={handlePointerDown} onTouchMove={handlePointerMove} onTouchEnd={handlePointerUp}
+                onMouseDown={polyPointerDown} onMouseMove={polyPointerMove} onMouseUp={polyPointerUp} onMouseLeave={polyPointerUp}
+                onTouchStart={polyPointerDown} onTouchMove={polyPointerMove} onTouchEnd={polyPointerUp}
               />
             )}
           </div>
           {/* Tool bar */}
           <div className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-900 text-white flex-shrink-0 flex-wrap">
             <button
-              onClick={() => setMode(mode === 'rect' ? 'quad' : 'rect')}
-              className={`px-3 py-1.5 rounded text-sm font-medium ${mode === 'quad' ? 'bg-blue-600' : 'hover:bg-slate-700'}`}
+              onClick={() => setMode(mode === 'rect' ? 'poly' : 'rect')}
+              className={`px-3 py-1.5 rounded text-sm font-medium ${mode === 'poly' ? 'bg-blue-600' : 'hover:bg-slate-700'}`}
             >
-              {mode === 'rect' ? '◇ Freeform' : '▭ Rectangle'}
+              {mode === 'rect' ? '◇ Polygon' : '▭ Rectangle'}
             </button>
+            {mode === 'poly' && polyPts && (<>
+              <span className="text-xs text-gray-400">{polyPts.length} pts{polyPts.length < 3 ? ' (need 3+)' : ''}</span>
+              {polyPts.length > 0 && (
+                <button onClick={() => setPolyPts(prev => prev.slice(0, -1))} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">↩ Undo</button>
+              )}
+            </>)}
             {mode === 'rect' && <>
               <button onClick={() => rotate(-90)} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">↺ Rotate L</button>
               <button onClick={() => rotate(90)} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">↻ Rotate R</button>
             </>}
-            <button onClick={reset} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">Reset</button>
+            <button onClick={reset} className="px-3 py-1.5 rounded hover:bg-slate-700 text-sm">{mode === 'poly' ? 'Clear all' : 'Reset'}</button>
           </div>
         </div>
       );
