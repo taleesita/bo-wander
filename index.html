@@ -1353,11 +1353,13 @@
       // ---- Sharing ----
       async shareCollection(collectionId, collectionData, pins) {
         // Create/update a shared snapshot — strip large data (photos, base64) for size
-        const sharedPins = pins.map(p => ({
-          id: p.id, name: p.name, description: p.description, address: p.address,
-          lat: p.lat, lng: p.lng, emoji: p.emoji, category: p.category,
-          google_rating: p.google_rating, google_reviews_count: p.google_reviews_count,
-          personal_rating: p.personal_rating, personal_notes: p.personal_notes,
+        // Strip undefined values — Firestore rejects them
+        const clean = (obj) => JSON.parse(JSON.stringify(obj));
+        const sharedPins = pins.map(p => clean({
+          id: p.id || '', name: p.name || '', description: p.description || '', address: p.address || '',
+          lat: p.lat || 0, lng: p.lng || 0, emoji: p.emoji || '📍', category: p.category || 'other',
+          google_rating: p.google_rating || null, google_reviews_count: p.google_reviews_count || null,
+          personal_rating: p.personal_rating || null, personal_notes: p.personal_notes || '',
           opening_hours: p.opening_hours || {},
           mealTags: p.mealTags || [],
           source_links: p.source_links || [],
