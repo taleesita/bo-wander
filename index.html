@@ -9893,30 +9893,109 @@
           {/* MAP VIEW */}
           {sharedViewMode === 'map' && (
             <div className="flex-1 flex overflow-hidden" style={{ minHeight: 0 }}>
-              {/* Pin list sidebar (desktop only) */}
-              <div className="w-72 hidden md:flex flex-col border-r dark:border-slate-700 bg-gray-50 dark:bg-slate-800 overflow-y-auto flex-shrink-0">
-                {(sharedData.pins || []).map(pin => (
-                  <button key={pin.id}
-                    onClick={() => {
-                      setSelectedPin(pin);
-                      if (mapInstanceRef.current && pin.lat && pin.lng) {
-                        mapInstanceRef.current.flyTo([pin.lat, pin.lng], 16, { duration: 0.5 });
-                      }
-                    }}
-                    className={`text-left px-3 py-2.5 border-b dark:border-slate-700 hover:bg-white dark:hover:bg-slate-700 transition ${selectedPin?.id === pin.id ? 'bg-white dark:bg-slate-700' : ''}`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">{pin.emoji || '📍'}</span>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium dark:text-white truncate">{pin.name}</p>
-                        {pin.address && <p className="text-[11px] text-gray-400 truncate">{pin.address}</p>}
+              {/* Category-grouped sidebar (desktop only) */}
+              <div className="w-80 hidden md:flex flex-col border-r dark:border-slate-700 bg-gray-50 dark:bg-slate-800 overflow-y-auto flex-shrink-0">
+                {/* Filters */}
+                <div className="px-3 py-2 border-b dark:border-slate-700 bg-white dark:bg-slate-900 space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      onClick={() => setSharedFilters(f => ({ ...f, openNow: !f.openNow, openAt: f.openNow ? f.openAt : null }))}
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition ${
+                        sharedFilters.openNow ? 'bg-green-600 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-600 dark:text-gray-300'
+                      }`}
+                    >Open Now</button>
+                    <select
+                      value={sharedFilters.category || ''}
+                      onChange={e => setSharedFilters(f => ({ ...f, category: e.target.value || null }))}
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-medium border-0 appearance-none cursor-pointer transition ${
+                        sharedFilters.category ? 'bg-orange-600 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-600 dark:text-gray-300'
+                      }`}
+                      style={{ paddingRight: '1.2rem', backgroundImage: 'url("data:image/svg+xml,%3csvg xmlns=%27http://www.w3.org/2000/svg%27 fill=%27none%27 viewBox=%270 0 20 20%27%3e%3cpath stroke=%27%236b7280%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27 stroke-width=%271.5%27 d=%27M6 8l4 4 4-4%27/%3e%3c/svg%3e")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.2rem center', backgroundSize: '0.8rem' }}
+                    >
+                      <option value="">Category</option>
+                      {Object.entries(PIN_CATEGORIES).map(([id, cat]) => (
+                        <option key={id} value={id}>{cat.icon} {cat.label}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={sharedFilters.googleRating || ''}
+                      onChange={e => setSharedFilters(f => ({ ...f, googleRating: e.target.value ? parseFloat(e.target.value) : null }))}
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-medium border-0 appearance-none cursor-pointer transition ${
+                        sharedFilters.googleRating ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-600 dark:text-gray-300'
+                      }`}
+                      style={{ paddingRight: '1.2rem', backgroundImage: 'url("data:image/svg+xml,%3csvg xmlns=%27http://www.w3.org/2000/svg%27 fill=%27none%27 viewBox=%270 0 20 20%27%3e%3cpath stroke=%27%236b7280%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27 stroke-width=%271.5%27 d=%27M6 8l4 4 4-4%27/%3e%3c/svg%3e")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.2rem center', backgroundSize: '0.8rem' }}
+                    >
+                      <option value="">Rating</option>
+                      <option value="3">3+ ★</option>
+                      <option value="3.5">3.5+ ★</option>
+                      <option value="4">4+ ★</option>
+                      <option value="4.5">4.5+ ★</option>
+                    </select>
+                    {(sharedFilters.openNow || sharedFilters.category || sharedFilters.googleRating || sharedFilters.source || sharedFilters.vegetarian) && (
+                      <button
+                        onClick={() => setSharedFilters({ openNow: false, openAt: null, category: null, source: null, googleRating: null, vegetarian: false })}
+                        className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-100 dark:bg-red-900 text-red-600 dark:text-red-300"
+                      >Clear</button>
+                    )}
+                  </div>
+                </div>
+                {/* Category groups */}
+                {sharedCategories.length === 0 ? (
+                  <div className="flex items-center justify-center h-32 text-gray-400 text-sm">No pins match filters</div>
+                ) : (
+                  <div className="divide-y dark:divide-slate-700">
+                    {sharedCategories.map(cat => (
+                      <div key={cat.id}>
+                        <button
+                          onClick={() => setSharedExpandedCats(prev => ({ ...prev, [cat.id]: !prev[cat.id] }))}
+                          className="w-full px-3 py-2 flex items-center justify-between hover:bg-white dark:hover:bg-slate-700 transition"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm" style={{ color: cat.color }}>{cat.icon}</span>
+                            <span className="text-xs font-semibold dark:text-white">
+                              {cat.label} <span className="text-gray-400 font-normal">({sharedGrouped[cat.id].length})</span>
+                            </span>
+                          </div>
+                          <span className={`text-gray-400 text-[10px] transition transform ${sharedExpandedCats[cat.id] ? 'rotate-180' : ''}`}>▼</span>
+                        </button>
+                        {sharedExpandedCats[cat.id] && (
+                          <div className="divide-y dark:divide-slate-700">
+                            {sharedGrouped[cat.id].map(pin => (
+                              <button key={pin.id}
+                                onClick={() => {
+                                  setSelectedPin(pin);
+                                  if (mapInstanceRef.current && pin.lat && pin.lng) {
+                                    mapInstanceRef.current.flyTo([pin.lat, pin.lng], 16, { duration: 0.5 });
+                                  }
+                                }}
+                                className={`w-full text-left px-3 py-2 hover:bg-white dark:hover:bg-slate-700 transition ${selectedPin?.id === pin.id ? 'bg-white dark:bg-slate-700' : ''}`}
+                              >
+                                <div className="flex items-center gap-2">
+                                  <div className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-[10px] overflow-hidden" style={{ backgroundColor: cat.color }}>
+                                    {isCustomIcon(pin.emoji) ? <img src={pin.emoji} alt="" className="w-full h-full object-cover" /> : pin.emoji}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-medium dark:text-white truncate">{pin.name}</p>
+                                    {pin.address && <p className="text-[10px] text-gray-400 truncate">{pin.address}</p>}
+                                  </div>
+                                  <div className="flex items-center gap-1 flex-shrink-0">
+                                    {pin.google_rating && (
+                                      <span className="text-[11px] text-amber-500">★ {pin.google_rating}</span>
+                                    )}
+                                    {pin.opening_hours && Object.keys(pin.opening_hours).length > 0 && (() => {
+                                      const os = getOpenStatus(pin.opening_hours);
+                                      return <span className={`inline-block w-1.5 h-1.5 rounded-full ${os.status === 'open' ? 'bg-green-500' : 'bg-red-500'}`} />;
+                                    })()}
+                                  </div>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      {pin.google_rating && (
-                        <span className="text-[11px] text-amber-500 flex-shrink-0">★ {pin.google_rating}</span>
-                      )}
-                    </div>
-                  </button>
-                ))}
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Map */}
@@ -13953,7 +14032,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v11';
+const CACHE_NAME = 'bo-wander-v12';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
