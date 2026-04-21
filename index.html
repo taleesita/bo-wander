@@ -9663,6 +9663,15 @@
       const [loading, setLoading] = useState(true);
       const [error, setError] = useState(null);
       const [selectedPin, setSelectedPin] = useState(null);
+      const [sharedViewMode, setSharedViewMode] = useState('map'); // 'map' or 'list'
+      const [sharedFilters, setSharedFilters] = useState({
+        openNow: false, openAt: null, category: null, source: null, googleRating: null, vegetarian: false,
+      });
+      const [sharedSortBy, setSharedSortBy] = useState('name');
+      const [sharedExpandedCats, setSharedExpandedCats] = useState({});
+      const [sharedShowOpenAtPicker, setSharedShowOpenAtPicker] = useState(false);
+      const [sharedOpenAtDay, setSharedOpenAtDay] = useState('mon');
+      const [sharedOpenAtTime, setSharedOpenAtTime] = useState('12:00');
       const mapRef = useRef(null);
       const mapInstanceRef = useRef(null);
       const markersRef = useRef([]);
@@ -9689,9 +9698,11 @@
         })();
       }, [shareId]);
 
-      // Init Leaflet map
+      // Init Leaflet map (only when in map mode)
       useEffect(() => {
-        if (!sharedData || !mapRef.current || mapInstanceRef.current) return;
+        if (!sharedData || !mapRef.current || sharedViewMode !== 'map') return;
+        // Clean up old map instance if switching back
+        if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; markersRef.current = []; }
         const pins = sharedData.pins || [];
         const validPins = pins.filter(p => p.lat && p.lng);
         const center = validPins.length > 0 ? [validPins[0].lat, validPins[0].lng] : [35.6762, 139.6503];
@@ -9742,7 +9753,80 @@
         setTimeout(() => map.invalidateSize(), 1000);
         setTimeout(() => map.invalidateSize(), 2000);
 
-        return () => { map.remove(); mapInstanceRef.current = null; };
+        return () => { map.remove(); mapInstanceRef.current = null; markersRef.current = []; };
+      }, [sharedData, sharedViewMode]);
+
+      // Filtered + sorted + grouped pins for list view
+      const sharedGrouped = useMemo(() => {
+        if (!sharedData) return {};
+        let result = [...(sharedData.pins || [])];
+
+        // Apply filters
+        if (sharedFilters.openNow) {
+          result = result.filter(p => {
+            const status = getOpenStatus(p.opening_hours || {});
+            return status.status === 'open';
+          });
+        }
+        if (sharedFilters.openAt) {
+          result = result.filter(p => {
+            const day = sharedFilters.openAt.day;
+            const hours = (p.opening_hours || {})[day];
+            if (!sharedFilters.openAt.time) {
+              if (!hours) return false;
+              return !/^(closed|close)$/i.test(String(hours).trim());
+            }
+            const dayIndex = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].indexOf(day);
+            const [h, m] = sharedFilters.openAt.time.split(':').map(Number);
+            const targetDate = new Date();
+            const currentDay = targetDate.getDay();
+            const diff = dayIndex - currentDay;
+            targetDate.setDate(targetDate.getDate() + diff);
+            targetDate.setHours(h, m, 0, 0);
+            const status = getOpenStatus(p.opening_hours || {}, targetDate);
+            return status.status === 'open';
+          });
+        }
+        if (sharedFilters.category) {
+          result = result.filter(p => p.category === sharedFilters.category);
+        }
+        if (sharedFilters.vegetarian) {
+          result = result.filter(p => !!p.is_vegetarian);
+        }
+        if (sharedFilters.source) {
+          result = result.filter(p => p.source_name === sharedFilters.source);
+        }
+        if (sharedFilters.googleRating) {
+          result = result.filter(p => (p.google_rating || 0) >= sharedFilters.googleRating);
+        }
+
+        // Sort
+        switch (sharedSortBy) {
+          case 'name': result.sort((a, b) => a.name.localeCompare(b.name)); break;
+          case 'rating': result.sort((a, b) => (b.google_rating || 0) - (a.google_rating || 0)); break;
+          default: break;
+        }
+
+        // Group by category
+        const groups = {};
+        result.forEach(pin => {
+          const catId = pin.category || 'other';
+          if (!groups[catId]) groups[catId] = [];
+          groups[catId].push(pin);
+        });
+        return groups;
+      }, [sharedData, sharedFilters, sharedSortBy]);
+
+      const sharedCategories = useMemo(() => {
+        return Object.keys(sharedGrouped).map(catId => ({
+          id: catId,
+          ...PIN_CATEGORIES[catId]
+        })).sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+      }, [sharedGrouped]);
+
+      const sharedSources = useMemo(() => {
+        if (!sharedData) return [];
+        return [...new Set((sharedData.pins || []).map(p => p.source_name).filter(Boolean))];
       }, [sharedData]);
 
       if (loading) {
@@ -9776,7 +9860,7 @@
 
       return (
         <div className={`${isDarkMode ? 'dark' : ''} h-screen w-screen bg-white dark:bg-slate-900 overflow-hidden flex flex-col`}>
-          {/* Header */}
+          {/* Header with Map/List toggle */}
           <div className="flex items-center gap-3 px-4 py-3 bg-white dark:bg-slate-900 border-b dark:border-slate-700 flex-shrink-0" style={{ zIndex: 1000 }}>
             <span className="text-2xl">{sharedData.collection_emoji || '🗺️'}</span>
             <div className="flex-1 min-w-0">
@@ -9785,135 +9869,330 @@
                 Shared by {sharedData.owner_name} · {sharedData.pins?.length || 0} pins
               </p>
             </div>
+            <div className="flex bg-gray-100 dark:bg-slate-700 rounded-lg p-0.5 flex-shrink-0">
+              <button
+                onClick={() => setSharedViewMode('map')}
+                className={`px-3 py-1 rounded text-xs font-medium transition ${sharedViewMode === 'map' ? 'bg-white dark:bg-slate-600 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}
+              >Map</button>
+              <button
+                onClick={() => setSharedViewMode('list')}
+                className={`px-3 py-1 rounded text-xs font-medium transition ${sharedViewMode === 'list' ? 'bg-white dark:bg-slate-600 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}
+              >List</button>
+            </div>
           </div>
 
-          {/* Map + pin list */}
-          <div className="flex-1 flex overflow-hidden" style={{ minHeight: 0 }}>
-            {/* Pin list sidebar */}
-            <div className="w-72 hidden md:flex flex-col border-r dark:border-slate-700 bg-gray-50 dark:bg-slate-800 overflow-y-auto flex-shrink-0">
-              {(sharedData.pins || []).map(pin => (
-                <button key={pin.id}
-                  onClick={() => {
-                    setSelectedPin(pin);
-                    if (mapInstanceRef.current && pin.lat && pin.lng) {
-                      mapInstanceRef.current.flyTo([pin.lat, pin.lng], 16, { duration: 0.5 });
-                    }
-                  }}
-                  className={`text-left px-3 py-2.5 border-b dark:border-slate-700 hover:bg-white dark:hover:bg-slate-700 transition ${selectedPin?.id === pin.id ? 'bg-white dark:bg-slate-700' : ''}`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="text-lg">{pin.emoji || '📍'}</span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium dark:text-white truncate">{pin.name}</p>
-                      {pin.address && <p className="text-[11px] text-gray-400 truncate">{pin.address}</p>}
-                    </div>
-                    {pin.google_rating && (
-                      <span className="text-[11px] text-amber-500 flex-shrink-0">★ {pin.google_rating}</span>
-                    )}
-                  </div>
-                </button>
-              ))}
-            </div>
-
-            {/* Map */}
-            <div className="flex-1 relative">
-              <div ref={mapRef} className="w-full h-full" />
-
-              {/* Selected pin detail sheet */}
-              {selectedPin && (
-                <div className="absolute bottom-0 left-0 right-0 md:left-auto md:right-4 md:bottom-4 md:w-96 bg-white dark:bg-slate-900 rounded-t-2xl md:rounded-xl shadow-2xl border dark:border-slate-700 max-h-[60vh] overflow-y-auto" style={{ zIndex: 1000 }}>
-                  <div className="p-4">
-                    <div className="flex items-start justify-between mb-2">
+          {/* MAP VIEW */}
+          {sharedViewMode === 'map' && (
+            <div className="flex-1 flex overflow-hidden" style={{ minHeight: 0 }}>
+              {/* Pin list sidebar (desktop only) */}
+              <div className="w-72 hidden md:flex flex-col border-r dark:border-slate-700 bg-gray-50 dark:bg-slate-800 overflow-y-auto flex-shrink-0">
+                {(sharedData.pins || []).map(pin => (
+                  <button key={pin.id}
+                    onClick={() => {
+                      setSelectedPin(pin);
+                      if (mapInstanceRef.current && pin.lat && pin.lng) {
+                        mapInstanceRef.current.flyTo([pin.lat, pin.lng], 16, { duration: 0.5 });
+                      }
+                    }}
+                    className={`text-left px-3 py-2.5 border-b dark:border-slate-700 hover:bg-white dark:hover:bg-slate-700 transition ${selectedPin?.id === pin.id ? 'bg-white dark:bg-slate-700' : ''}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">{pin.emoji || '📍'}</span>
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xl">{selectedPin.emoji || '📍'}</span>
-                          <h3 className="text-lg font-bold dark:text-white">{selectedPin.name}</h3>
-                        </div>
-                        {selectedPin.address && (
-                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{selectedPin.address}</p>
-                        )}
+                        <p className="text-sm font-medium dark:text-white truncate">{pin.name}</p>
+                        {pin.address && <p className="text-[11px] text-gray-400 truncate">{pin.address}</p>}
                       </div>
-                      <button onClick={() => setSelectedPin(null)} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded flex-shrink-0 ml-2">
-                        <CloseIcon />
-                      </button>
+                      {pin.google_rating && (
+                        <span className="text-[11px] text-amber-500 flex-shrink-0">★ {pin.google_rating}</span>
+                      )}
                     </div>
+                  </button>
+                ))}
+              </div>
 
-                    {/* Ratings */}
-                    {(selectedPin.google_rating || selectedPin.personal_rating) && (
-                      <div className="flex items-center gap-3 mb-3 text-sm">
-                        {selectedPin.google_rating && (
-                          <span className="text-amber-500">★ {selectedPin.google_rating}{selectedPin.google_reviews_count ? ` (${selectedPin.google_reviews_count.toLocaleString()})` : ''}</span>
-                        )}
-                        {selectedPin.personal_rating && (
-                          <span className="text-purple-500">{'★'.repeat(selectedPin.personal_rating)}{'☆'.repeat(5 - selectedPin.personal_rating)}</span>
-                        )}
-                      </div>
-                    )}
+              {/* Map */}
+              <div className="flex-1 relative">
+                <div ref={mapRef} className="w-full h-full" />
 
-                    {/* Source badges — matching in-app style */}
-                    {(() => {
-                      const links = Array.isArray(selectedPin.sources) && selectedPin.sources.length
-                        ? selectedPin.sources.filter(s => s.url)
-                        : (selectedPin.source_url ? [{ label: '', url: selectedPin.source_url }] : []);
-                      const recommenderDuped = selectedPin.source_name && links.some(s => {
-                        const label = (s.label || '').toLowerCase();
-                        let domain = ''; try { domain = new URL(s.url).hostname.replace('www.','').toLowerCase(); } catch {}
-                        const rn = selectedPin.source_name.toLowerCase();
-                        return label === rn || domain === rn || label.includes(rn) || rn.includes(domain);
-                      });
-                      if (!selectedPin.source_name && links.length === 0) return null;
-                      return (
-                        <div className="flex flex-wrap gap-1.5 mb-2">
-                          {selectedPin.source_name && !recommenderDuped && (
-                            <span className="inline-block bg-gray-600 text-white px-1.5 py-px rounded-full" style={{ fontSize: '10px' }}>
-                              {selectedPin.source_name}
-                            </span>
+                {/* Selected pin detail sheet */}
+                {selectedPin && (
+                  <div className="absolute bottom-0 left-0 right-0 md:left-auto md:right-4 md:bottom-4 md:w-96 bg-white dark:bg-slate-900 rounded-t-2xl md:rounded-xl shadow-2xl border dark:border-slate-700 max-h-[60vh] overflow-y-auto" style={{ zIndex: 1000 }}>
+                    <div className="p-4">
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xl">{selectedPin.emoji || '📍'}</span>
+                            <h3 className="text-lg font-bold dark:text-white">{selectedPin.name}</h3>
+                          </div>
+                          {selectedPin.address && (
+                            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{selectedPin.address}</p>
                           )}
-                          {links.map((s, i) => (
-                            <a key={i} href={s.url} target="_blank" rel="noopener"
-                              className="inline-block bg-blue-600 hover:bg-blue-700 text-white px-1.5 py-px rounded-full" style={{ fontSize: '10px' }}>
-                              {s.label || (() => { try { return new URL(s.url).hostname.replace('www.',''); } catch { return s.url; } })()} ↗
-                            </a>
-                          ))}
                         </div>
-                      );
-                    })()}
-
-                    {/* Open status + toggleable hours — matching in-app style */}
-                    {(() => {
-                      const os = openStatus(selectedPin);
-                      const hasHours = selectedPin.opening_hours && Object.keys(selectedPin.opening_hours).length > 0;
-                      if (!os && !hasHours) return null;
-                      return (
-                        <SharedHoursToggle os={os} openingHours={selectedPin.opening_hours} />
-                      );
-                    })()}
-
-                    {/* Description */}
-                    {selectedPin.description && (
-                      <p className="text-sm text-gray-700 dark:text-gray-300 mb-3 whitespace-pre-line">{selectedPin.description}</p>
-                    )}
-
-                    {/* Personal notes */}
-                    {selectedPin.personal_notes && (
-                      <div className="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-2.5 mb-3">
-                        <p className="text-xs font-medium text-purple-700 dark:text-purple-300 mb-0.5">Notes</p>
-                        <p className="text-sm text-purple-900 dark:text-purple-200">{selectedPin.personal_notes}</p>
+                        <button onClick={() => setSelectedPin(null)} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded flex-shrink-0 ml-2">
+                          <CloseIcon />
+                        </button>
                       </div>
-                    )}
 
-                    {/* Google Maps link */}
-                    {selectedPin.website && (
-                      <a href={selectedPin.website} target="_blank" rel="noopener noreferrer"
-                        className="text-xs text-blue-600 hover:underline">
-                        Open in Google Maps ↗
-                      </a>
+                      {/* Ratings */}
+                      {(selectedPin.google_rating || selectedPin.personal_rating) && (
+                        <div className="flex items-center gap-3 mb-3 text-sm">
+                          {selectedPin.google_rating && (
+                            <span className="text-amber-500">★ {selectedPin.google_rating}{selectedPin.google_reviews_count ? ` (${selectedPin.google_reviews_count.toLocaleString()})` : ''}</span>
+                          )}
+                          {selectedPin.personal_rating && (
+                            <span className="text-purple-500">{'★'.repeat(selectedPin.personal_rating)}{'☆'.repeat(5 - selectedPin.personal_rating)}</span>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Source badges */}
+                      {(() => {
+                        const links = Array.isArray(selectedPin.sources) && selectedPin.sources.length
+                          ? selectedPin.sources.filter(s => s.url)
+                          : (selectedPin.source_url ? [{ label: '', url: selectedPin.source_url }] : []);
+                        const recommenderDuped = selectedPin.source_name && links.some(s => {
+                          const label = (s.label || '').toLowerCase();
+                          let domain = ''; try { domain = new URL(s.url).hostname.replace('www.','').toLowerCase(); } catch {}
+                          const rn = selectedPin.source_name.toLowerCase();
+                          return label === rn || domain === rn || label.includes(rn) || rn.includes(domain);
+                        });
+                        if (!selectedPin.source_name && links.length === 0) return null;
+                        return (
+                          <div className="flex flex-wrap gap-1.5 mb-2">
+                            {selectedPin.source_name && !recommenderDuped && (
+                              <span className="inline-block bg-gray-600 text-white px-1.5 py-px rounded-full" style={{ fontSize: '10px' }}>
+                                {selectedPin.source_name}
+                              </span>
+                            )}
+                            {links.map((s, i) => (
+                              <a key={i} href={s.url} target="_blank" rel="noopener"
+                                className="inline-block bg-blue-600 hover:bg-blue-700 text-white px-1.5 py-px rounded-full" style={{ fontSize: '10px' }}>
+                                {s.label || (() => { try { return new URL(s.url).hostname.replace('www.',''); } catch { return s.url; } })()} ↗
+                              </a>
+                            ))}
+                          </div>
+                        );
+                      })()}
+
+                      {/* Hours */}
+                      {(() => {
+                        const os = openStatus(selectedPin);
+                        const hasHours = selectedPin.opening_hours && Object.keys(selectedPin.opening_hours).length > 0;
+                        if (!os && !hasHours) return null;
+                        return <SharedHoursToggle os={os} openingHours={selectedPin.opening_hours} />;
+                      })()}
+
+                      {/* Description */}
+                      {selectedPin.description && (
+                        <p className="text-sm text-gray-700 dark:text-gray-300 mb-3 whitespace-pre-line">{selectedPin.description}</p>
+                      )}
+
+                      {/* Personal notes */}
+                      {selectedPin.personal_notes && (
+                        <div className="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-2.5 mb-3">
+                          <p className="text-xs font-medium text-purple-700 dark:text-purple-300 mb-0.5">Notes</p>
+                          <p className="text-sm text-purple-900 dark:text-purple-200">{selectedPin.personal_notes}</p>
+                        </div>
+                      )}
+
+                      {/* Google Maps link */}
+                      {selectedPin.website && (
+                        <a href={selectedPin.website} target="_blank" rel="noopener noreferrer"
+                          className="text-xs text-blue-600 hover:underline">
+                          Open in Google Maps ↗
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* LIST VIEW */}
+          {sharedViewMode === 'list' && (
+            <div className="flex-1 overflow-y-auto">
+              {/* Sort + Filters */}
+              <div className="sticky top-0 bg-white dark:bg-slate-900 border-b dark:border-slate-700 px-4 py-3 space-y-3" style={{ zIndex: 10 }}>
+                <select
+                  value={sharedSortBy}
+                  onChange={e => setSharedSortBy(e.target.value)}
+                  className="w-full pl-3 pr-9 py-2 border rounded dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm"
+                >
+                  <option value="name">Sort by Name</option>
+                  <option value="rating">Sort by Rating</option>
+                </select>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-gray-600 dark:text-gray-400 block">Filters</label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setSharedFilters(f => ({ ...f, vegetarian: !f.vegetarian }))}
+                      className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                        sharedFilters.vegetarian ? 'bg-green-700 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
+                      }`}
+                    >🌱 Veg</button>
+                    {sharedSources.length > 0 && (
+                      <select
+                        value={sharedFilters.source || ''}
+                        onChange={e => setSharedFilters(f => ({ ...f, source: e.target.value || null }))}
+                        className={`px-3 py-1 rounded-full text-xs font-medium border-0 appearance-none cursor-pointer transition ${
+                          sharedFilters.source ? 'bg-purple-600 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
+                        }`}
+                        style={{ paddingRight: '1.5rem', backgroundImage: 'url("data:image/svg+xml,%3csvg xmlns=%27http://www.w3.org/2000/svg%27 fill=%27none%27 viewBox=%270 0 20 20%27%3e%3cpath stroke=%27%236b7280%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27 stroke-width=%271.5%27 d=%27M6 8l4 4 4-4%27/%3e%3c/svg%3e")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.3rem center', backgroundSize: '1rem' }}
+                      >
+                        <option value="">Source</option>
+                        {sharedSources.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    )}
+                    <select
+                      value={sharedFilters.category || ''}
+                      onChange={e => setSharedFilters(f => ({ ...f, category: e.target.value || null }))}
+                      className={`px-3 py-1 rounded-full text-xs font-medium border-0 appearance-none cursor-pointer transition ${
+                        sharedFilters.category ? 'bg-orange-600 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
+                      }`}
+                      style={{ paddingRight: '1.5rem', backgroundImage: 'url("data:image/svg+xml,%3csvg xmlns=%27http://www.w3.org/2000/svg%27 fill=%27none%27 viewBox=%270 0 20 20%27%3e%3cpath stroke=%27%236b7280%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27 stroke-width=%271.5%27 d=%27M6 8l4 4 4-4%27/%3e%3c/svg%3e")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.3rem center', backgroundSize: '1rem' }}
+                    >
+                      <option value="">Category</option>
+                      {Object.entries(PIN_CATEGORIES).map(([id, cat]) => (
+                        <option key={id} value={id}>{cat.icon} {cat.label}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={sharedFilters.googleRating || ''}
+                      onChange={e => setSharedFilters(f => ({ ...f, googleRating: e.target.value ? parseFloat(e.target.value) : null }))}
+                      className={`px-3 py-1 rounded-full text-xs font-medium border-0 appearance-none cursor-pointer transition ${
+                        sharedFilters.googleRating ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
+                      }`}
+                      style={{ paddingRight: '1.5rem', backgroundImage: 'url("data:image/svg+xml,%3csvg xmlns=%27http://www.w3.org/2000/svg%27 fill=%27none%27 viewBox=%270 0 20 20%27%3e%3cpath stroke=%27%236b7280%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27 stroke-width=%271.5%27 d=%27M6 8l4 4 4-4%27/%3e%3c/svg%3e")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.3rem center', backgroundSize: '1rem' }}
+                    >
+                      <option value="">Google Rating</option>
+                      <option value="3">3+ ★</option>
+                      <option value="3.5">3.5+ ★</option>
+                      <option value="4">4+ ★</option>
+                      <option value="4.5">4.5+ ★</option>
+                    </select>
+                    <button
+                      onClick={() => setSharedFilters(f => ({ ...f, openNow: !f.openNow, openAt: f.openNow ? f.openAt : null }))}
+                      className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                        sharedFilters.openNow ? 'bg-green-600 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
+                      }`}
+                    >Open Now</button>
+                    <button
+                      onClick={() => {
+                        if (sharedFilters.openAt) {
+                          setSharedFilters(f => ({ ...f, openAt: null }));
+                          setSharedShowOpenAtPicker(false);
+                        } else {
+                          setSharedShowOpenAtPicker(!sharedShowOpenAtPicker);
+                        }
+                      }}
+                      className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                        sharedFilters.openAt ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
+                      }`}
+                    >
+                      {sharedFilters.openAt ? `Open ${sharedFilters.openAt.day.toUpperCase()}${sharedFilters.openAt.time ? ' ' + sharedFilters.openAt.time : ''}` : 'Open at...'}
+                    </button>
+                    {(sharedFilters.openNow || sharedFilters.openAt || sharedFilters.category || sharedFilters.source || sharedFilters.googleRating || sharedFilters.vegetarian) && (
+                      <button
+                        onClick={() => { setSharedFilters({ openNow: false, openAt: null, category: null, source: null, googleRating: null, vegetarian: false }); setSharedShowOpenAtPicker(false); }}
+                        className="px-3 py-1 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 transition hover:bg-red-200"
+                      >Clear all</button>
                     )}
                   </div>
+                  {sharedShowOpenAtPicker && !sharedFilters.openAt && (
+                    <div className="flex flex-wrap items-center gap-2 p-2 rounded-lg bg-gray-100 dark:bg-slate-800">
+                      <select value={sharedOpenAtDay} onChange={e => setSharedOpenAtDay(e.target.value)}
+                        className="px-2 py-1 rounded text-xs border dark:bg-slate-700 dark:border-slate-600 dark:text-white">
+                        {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(d => (
+                          <option key={d} value={d}>{dayName(d)}</option>
+                        ))}
+                      </select>
+                      <div className="flex items-center gap-1">
+                        <input type="time" value={sharedOpenAtTime || ''} onChange={e => setSharedOpenAtTime(e.target.value)}
+                          className="px-2 py-1 rounded text-xs border dark:bg-slate-700 dark:border-slate-600 dark:text-white" />
+                        {sharedOpenAtTime && (
+                          <button onClick={() => setSharedOpenAtTime('')} className="text-xs text-gray-500 hover:text-red-500 px-1">✕</button>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => {
+                          setSharedFilters(f => ({ ...f, openNow: false, openAt: { day: sharedOpenAtDay, time: sharedOpenAtTime || null } }));
+                          setSharedShowOpenAtPicker(false);
+                        }}
+                        className="px-3 py-1 rounded bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition"
+                      >Apply</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Grouped List */}
+              {sharedCategories.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-64 text-gray-500 dark:text-gray-400">
+                  <p className="text-lg">No pins match your filters</p>
+                </div>
+              ) : (
+                <div className="divide-y dark:divide-slate-700">
+                  {sharedCategories.map(cat => (
+                    <div key={cat.id}>
+                      <button
+                        onClick={() => setSharedExpandedCats(prev => ({ ...prev, [cat.id]: !prev[cat.id] }))}
+                        className="w-full px-4 py-2 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-slate-800 transition border-b dark:border-slate-700 bg-gray-50 dark:bg-slate-800"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm" style={{ color: cat.color }}>{cat.icon}</span>
+                          <div className="text-xs font-semibold dark:text-white">
+                            {cat.label} <span className="text-gray-500 dark:text-gray-400 font-normal">({sharedGrouped[cat.id].length})</span>
+                          </div>
+                        </div>
+                        <span className={`text-gray-400 text-xs transition transform ${sharedExpandedCats[cat.id] ? 'rotate-180' : ''}`}>▼</span>
+                      </button>
+
+                      {sharedExpandedCats[cat.id] && (
+                        <div className="divide-y dark:divide-slate-700">
+                          {sharedGrouped[cat.id].map(pin => {
+                            const os = getOpenStatus(pin.opening_hours || {});
+                            return (
+                              <div
+                                key={pin.id}
+                                className="px-4 py-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-slate-800 transition flex items-center gap-2"
+                                onClick={() => { setSelectedPin(pin); setSharedViewMode('map'); if (mapInstanceRef.current && pin.lat && pin.lng) { setTimeout(() => mapInstanceRef.current && mapInstanceRef.current.flyTo([pin.lat, pin.lng], 16, { duration: 0.5 }), 300); } }}
+                              >
+                                <div
+                                  className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 text-xs overflow-hidden"
+                                  style={{ backgroundColor: cat.color }}
+                                >
+                                  {isCustomIcon(pin.emoji) ? (
+                                    <img src={pin.emoji} alt="" className="w-full h-full object-cover" />
+                                  ) : pin.emoji}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <span className="font-medium dark:text-white text-sm">{pin.name}</span>
+                                  {pin.address && <p className="text-[10px] text-gray-400 truncate">{pin.address}</p>}
+                                </div>
+                                <div className="flex items-center gap-1.5 flex-shrink-0">
+                                  {pin.is_vegetarian && (
+                                    <span className="text-[10px]" title="Vegetarian-friendly">🌱</span>
+                                  )}
+                                  {pin.google_rating && (
+                                    <span className="text-xs text-gray-500 dark:text-gray-400">★ {pin.google_rating.toFixed ? pin.google_rating.toFixed(1) : pin.google_rating}</span>
+                                  )}
+                                  {pin.opening_hours && Object.keys(pin.opening_hours).length > 0 && (
+                                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${os.status === 'open' ? 'bg-green-500' : os.status === 'closed' ? 'bg-red-500' : 'bg-gray-400'}`} />
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
-          </div>
+          )}
         </div>
       );
     };
@@ -13665,7 +13944,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v7';
+const CACHE_NAME = 'bo-wander-v8';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
