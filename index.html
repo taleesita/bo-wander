@@ -4001,7 +4001,7 @@
                           className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-slate-700 transition border-t dark:border-slate-700"
                           onClick={() => { onShareMap(); setShowMoreMenu(false); setIsFocused(false); setQuery(''); }}
                         >
-                          <span className="text-base">🔗</span>
+                          <span className="text-base">📤</span>
                           <span>Share map</span>
                         </button>
                       )}
@@ -9698,62 +9698,71 @@
         })();
       }, [shareId]);
 
-      // Init Leaflet map (only when in map mode)
+      // Init Leaflet map (only when in map mode) — use small delay to ensure DOM is ready
       useEffect(() => {
-        if (!sharedData || !mapRef.current || sharedViewMode !== 'map') return;
-        // Clean up old map instance if switching back
-        if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; markersRef.current = []; }
-        const pins = sharedData.pins || [];
-        const validPins = pins.filter(p => p.lat && p.lng);
-        const center = validPins.length > 0 ? [validPins[0].lat, validPins[0].lng] : [35.6762, 139.6503];
+        if (!sharedData || sharedViewMode !== 'map') return;
 
-        // Force container to have explicit dimensions before map init
-        const container = mapRef.current;
-        container.style.width = '100%';
-        container.style.height = '100%';
-        container.style.minHeight = '300px';
+        const initTimer = setTimeout(() => {
+          const container = mapRef.current;
+          if (!container) return;
 
-        const map = L.map(container, { zoomControl: false }).setView(center, 13);
-        L.control.zoom({ position: 'bottomright' }).addTo(map);
-        // Always use light voyager tiles for shared view (external viewers)
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/voyager/{z}/{x}/{y}{r}.png', {
-          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
-          maxZoom: 19
-        }).addTo(map);
-        mapInstanceRef.current = map;
+          // Clean up old map instance if switching back
+          if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; markersRef.current = []; }
 
-        // Add markers
-        validPins.forEach(pin => {
-          const marker = L.marker([pin.lat, pin.lng], {
-            icon: L.divIcon({
-              className: 'shared-pin-marker',
-              html: `<div style="font-size:24px;text-align:center;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))">${pin.emoji || '📍'}</div>`,
-              iconSize: [32, 32],
-              iconAnchor: [16, 16]
-            })
+          const pins = sharedData.pins || [];
+          const validPins = pins.filter(p => p.lat && p.lng);
+          const center = validPins.length > 0 ? [validPins[0].lat, validPins[0].lng] : [35.6762, 139.6503];
+
+          // Force container to have explicit dimensions before map init
+          container.style.width = '100%';
+          container.style.height = '100%';
+          container.style.minHeight = '300px';
+
+          const map = L.map(container, { zoomControl: false }).setView(center, 13);
+          L.control.zoom({ position: 'bottomright' }).addTo(map);
+          L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png', {
+            attribution: '\u00a9 OpenStreetMap \u00a9 CARTO',
+            subdomains: 'abcd',
+            maxZoom: 20
           }).addTo(map);
-          marker.on('click', () => setSelectedPin(pin));
-          markersRef.current.push(marker);
-        });
+          mapInstanceRef.current = map;
 
-        // Aggressive invalidateSize to handle in-app browsers (iMessage, etc.)
-        const fitMap = () => {
-          map.invalidateSize();
-          if (validPins.length > 1) {
-            const bounds = L.latLngBounds(validPins.map(p => [p.lat, p.lng]));
-            map.fitBounds(bounds, { padding: [40, 40] });
-          }
+          // Add markers
+          validPins.forEach(pin => {
+            const marker = L.marker([pin.lat, pin.lng], {
+              icon: L.divIcon({
+                className: 'shared-pin-marker',
+                html: `<div style="font-size:24px;text-align:center;filter:drop-shadow(0 1px 2px rgba(0,0,0,.4))">${pin.emoji || '📍'}</div>`,
+                iconSize: [32, 32],
+                iconAnchor: [16, 16]
+              })
+            }).addTo(map);
+            marker.on('click', () => setSelectedPin(pin));
+            markersRef.current.push(marker);
+          });
+
+          // Aggressive invalidateSize to handle in-app browsers (iMessage, etc.)
+          const fitMap = () => {
+            map.invalidateSize();
+            if (validPins.length > 1) {
+              const bounds = L.latLngBounds(validPins.map(p => [p.lat, p.lng]));
+              map.fitBounds(bounds, { padding: [40, 40] });
+            }
+          };
+          map.whenReady(() => {
+            fitMap();
+            setTimeout(fitMap, 200);
+          });
+          setTimeout(fitMap, 100);
+          setTimeout(() => map.invalidateSize(), 500);
+          setTimeout(() => map.invalidateSize(), 1000);
+          setTimeout(() => map.invalidateSize(), 2000);
+        }, 50);
+
+        return () => {
+          clearTimeout(initTimer);
+          if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; markersRef.current = []; }
         };
-        map.whenReady(() => {
-          fitMap();
-          setTimeout(fitMap, 200);
-        });
-        setTimeout(fitMap, 100);
-        setTimeout(() => map.invalidateSize(), 500);
-        setTimeout(() => map.invalidateSize(), 1000);
-        setTimeout(() => map.invalidateSize(), 2000);
-
-        return () => { map.remove(); mapInstanceRef.current = null; markersRef.current = []; };
       }, [sharedData, sharedViewMode]);
 
       // Filtered + sorted + grouped pins for list view
@@ -13944,7 +13953,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v8';
+const CACHE_NAME = 'bo-wander-v11';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
