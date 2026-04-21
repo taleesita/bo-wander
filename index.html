@@ -1362,7 +1362,9 @@
           personal_rating: p.personal_rating || null, personal_notes: p.personal_notes || '',
           opening_hours: p.opening_hours || {},
           mealTags: p.mealTags || [],
-          source_links: p.source_links || [],
+          sources: p.sources || [],
+          source_name: p.source_name || '',
+          source_url: p.source_url || '',
           website: p.website || p.googleMapsUri || '',
         }));
         const shareDoc = {
@@ -9621,6 +9623,40 @@
       );
     };
 
+    // ---- Toggleable hours display for shared view ----
+    const SharedHoursToggle = ({ os, openingHours }) => {
+      const [showHours, setShowHours] = useState(false);
+      const todayDay = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][new Date().getDay()];
+      return (
+        <div className="mb-2">
+          <button onClick={() => setShowHours(!showHours)} className="flex items-center gap-2 w-full text-left">
+            {os && (
+              <>
+                <span className={`inline-block w-2 h-2 rounded-full ${os.status === 'open' ? 'bg-green-500' : os.status === 'closed' ? 'bg-red-500' : 'bg-gray-400'}`} />
+                <span className={`text-xs font-semibold ${os.status === 'open' ? 'text-green-600' : os.status === 'closed' ? 'text-red-600' : 'text-gray-500'}`}>
+                  {os.label}
+                </span>
+              </>
+            )}
+            <span className="text-xs text-gray-400">{showHours ? '▲' : '▼'}</span>
+          </button>
+          {showHours && openingHours && (
+            <div className="space-y-0.5 mt-1.5 ml-4">
+              {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(day => {
+                const isToday = day === todayDay;
+                return (
+                  <div key={day} className={`text-xs flex justify-between ${isToday ? 'font-bold text-gray-900 dark:text-white' : 'text-gray-600 dark:text-gray-400'}`}>
+                    <span className="font-medium">{dayName(day)}{isToday ? ' (today)' : ''}</span>
+                    <span>{openingHours[day] || 'Closed'}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    };
+
     // ==================== SHARED MAP VIEW (read-only, no auth) ====================
     const SharedMapView = ({ shareId, isDarkMode }) => {
       const [sharedData, setSharedData] = useState(null);
@@ -9797,20 +9833,48 @@
                       </div>
                     )}
 
-                    {/* Open status */}
+                    {/* Source badges — matching in-app style */}
+                    {(() => {
+                      const links = Array.isArray(selectedPin.sources) && selectedPin.sources.length
+                        ? selectedPin.sources.filter(s => s.url)
+                        : (selectedPin.source_url ? [{ label: '', url: selectedPin.source_url }] : []);
+                      const recommenderDuped = selectedPin.source_name && links.some(s => {
+                        const label = (s.label || '').toLowerCase();
+                        let domain = ''; try { domain = new URL(s.url).hostname.replace('www.','').toLowerCase(); } catch {}
+                        const rn = selectedPin.source_name.toLowerCase();
+                        return label === rn || domain === rn || label.includes(rn) || rn.includes(domain);
+                      });
+                      if (!selectedPin.source_name && links.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                          {selectedPin.source_name && !recommenderDuped && (
+                            <span className="inline-block bg-gray-600 text-white px-1.5 py-px rounded-full" style={{ fontSize: '10px' }}>
+                              {selectedPin.source_name}
+                            </span>
+                          )}
+                          {links.map((s, i) => (
+                            <a key={i} href={s.url} target="_blank" rel="noopener"
+                              className="inline-block bg-blue-600 hover:bg-blue-700 text-white px-1.5 py-px rounded-full" style={{ fontSize: '10px' }}>
+                              {s.label || (() => { try { return new URL(s.url).hostname.replace('www.',''); } catch { return s.url; } })()} ↗
+                            </a>
+                          ))}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Open status + toggleable hours — matching in-app style */}
                     {(() => {
                       const os = openStatus(selectedPin);
-                      if (!os) return null;
+                      const hasHours = selectedPin.opening_hours && Object.keys(selectedPin.opening_hours).length > 0;
+                      if (!os && !hasHours) return null;
                       return (
-                        <p className={`text-xs mb-2 ${os.status === 'open' ? 'text-green-600' : os.status === 'closed' ? 'text-red-500' : 'text-amber-500'}`}>
-                          {os.label} · {os.hoursText}
-                        </p>
+                        <SharedHoursToggle os={os} openingHours={selectedPin.opening_hours} />
                       );
                     })()}
 
                     {/* Description */}
                     {selectedPin.description && (
-                      <p className="text-sm text-gray-700 dark:text-gray-300 mb-3">{selectedPin.description}</p>
+                      <p className="text-sm text-gray-700 dark:text-gray-300 mb-3 whitespace-pre-line">{selectedPin.description}</p>
                     )}
 
                     {/* Personal notes */}
@@ -9821,22 +9885,7 @@
                       </div>
                     )}
 
-                    {/* Opening hours */}
-                    {selectedPin.opening_hours && Object.keys(selectedPin.opening_hours).length > 0 && (
-                      <div className="mb-3">
-                        <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Hours</p>
-                        <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs">
-                          {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(day => (
-                            <div key={day} className="flex justify-between">
-                              <span className="text-gray-500 dark:text-gray-400 capitalize">{day}</span>
-                              <span className="dark:text-gray-300">{selectedPin.opening_hours[day] || 'Closed'}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Links */}
+                    {/* Google Maps link */}
                     {selectedPin.website && (
                       <a href={selectedPin.website} target="_blank" rel="noopener noreferrer"
                         className="text-xs text-blue-600 hover:underline">
@@ -13599,7 +13648,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v4';
+const CACHE_NAME = 'bo-wander-v5';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
