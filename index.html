@@ -650,6 +650,7 @@
       shopping: { label: 'Shopping', icon: '🛍️', color: '#AB47BC' },
       viewpoint: { label: 'Viewpoint', icon: '🌅', color: '#FF9800' },
       activity: { label: 'Activity', icon: '🎫', color: '#00BCD4' },
+      boba: { label: 'Boba', icon: '🧋', color: '#8D6E63' },
       transport: { label: 'Transport', icon: '✈️', color: '#2196F3' },
       other: { label: 'Other', icon: '📍', color: '#F9A825' }
     };
@@ -9899,11 +9900,24 @@
                 <div className="px-3 py-2 border-b dark:border-slate-700 bg-white dark:bg-slate-900 space-y-2">
                   <div className="flex flex-wrap gap-1.5">
                     <button
-                      onClick={() => setSharedFilters(f => ({ ...f, openNow: !f.openNow, openAt: f.openNow ? f.openAt : null }))}
+                      onClick={() => setSharedFilters(f => ({ ...f, vegetarian: !f.vegetarian }))}
                       className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition ${
-                        sharedFilters.openNow ? 'bg-green-600 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-600 dark:text-gray-300'
+                        sharedFilters.vegetarian ? 'bg-green-700 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-600 dark:text-gray-300'
                       }`}
-                    >Open Now</button>
+                    >🌱 Veg</button>
+                    {sharedSources.length > 0 && (
+                      <select
+                        value={sharedFilters.source || ''}
+                        onChange={e => setSharedFilters(f => ({ ...f, source: e.target.value || null }))}
+                        className={`px-2 py-0.5 rounded-full text-[11px] font-medium border-0 appearance-none cursor-pointer transition ${
+                          sharedFilters.source ? 'bg-purple-600 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-600 dark:text-gray-300'
+                        }`}
+                        style={{ paddingRight: '1.2rem', backgroundImage: 'url("data:image/svg+xml,%3csvg xmlns=%27http://www.w3.org/2000/svg%27 fill=%27none%27 viewBox=%270 0 20 20%27%3e%3cpath stroke=%27%236b7280%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27 stroke-width=%271.5%27 d=%27M6 8l4 4 4-4%27/%3e%3c/svg%3e")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.2rem center', backgroundSize: '0.8rem' }}
+                      >
+                        <option value="">Source</option>
+                        {sharedSources.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    )}
                     <select
                       value={sharedFilters.category || ''}
                       onChange={e => setSharedFilters(f => ({ ...f, category: e.target.value || null }))}
@@ -9931,13 +9945,53 @@
                       <option value="4">4+ ★</option>
                       <option value="4.5">4.5+ ★</option>
                     </select>
-                    {(sharedFilters.openNow || sharedFilters.category || sharedFilters.googleRating || sharedFilters.source || sharedFilters.vegetarian) && (
+                    <button
+                      onClick={() => setSharedFilters(f => ({ ...f, openNow: !f.openNow, openAt: f.openNow ? f.openAt : null }))}
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition ${
+                        sharedFilters.openNow ? 'bg-green-600 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-600 dark:text-gray-300'
+                      }`}
+                    >Open Now</button>
+                    <button
+                      onClick={() => {
+                        if (sharedFilters.openAt) {
+                          setSharedFilters(f => ({ ...f, openAt: null }));
+                          setSharedShowOpenAtPicker(false);
+                        } else {
+                          setSharedShowOpenAtPicker(!sharedShowOpenAtPicker);
+                        }
+                      }}
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-medium transition ${
+                        sharedFilters.openAt ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-600 dark:text-gray-300'
+                      }`}
+                    >
+                      {sharedFilters.openAt ? `Open ${sharedFilters.openAt.day.toUpperCase()}${sharedFilters.openAt.time ? ' ' + sharedFilters.openAt.time : ''}` : 'Open at...'}
+                    </button>
+                    {(sharedFilters.openNow || sharedFilters.openAt || sharedFilters.category || sharedFilters.source || sharedFilters.googleRating || sharedFilters.vegetarian) && (
                       <button
-                        onClick={() => setSharedFilters({ openNow: false, openAt: null, category: null, source: null, googleRating: null, vegetarian: false })}
+                        onClick={() => { setSharedFilters({ openNow: false, openAt: null, category: null, source: null, googleRating: null, vegetarian: false }); setSharedShowOpenAtPicker(false); }}
                         className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-100 dark:bg-red-900 text-red-600 dark:text-red-300"
                       >Clear</button>
                     )}
                   </div>
+                  {sharedShowOpenAtPicker && !sharedFilters.openAt && (
+                    <div className="flex flex-wrap items-center gap-1.5 p-2 rounded-lg bg-gray-100 dark:bg-slate-800">
+                      <select value={sharedOpenAtDay} onChange={e => setSharedOpenAtDay(e.target.value)}
+                        className="px-2 py-0.5 rounded text-[11px] border dark:bg-slate-700 dark:border-slate-600 dark:text-white">
+                        {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(d => (
+                          <option key={d} value={d}>{dayName(d)}</option>
+                        ))}
+                      </select>
+                      <input type="time" value={sharedOpenAtTime || ''} onChange={e => setSharedOpenAtTime(e.target.value)}
+                        className="px-2 py-0.5 rounded text-[11px] border dark:bg-slate-700 dark:border-slate-600 dark:text-white" />
+                      <button
+                        onClick={() => {
+                          setSharedFilters(f => ({ ...f, openNow: false, openAt: { day: sharedOpenAtDay, time: sharedOpenAtTime || null } }));
+                          setSharedShowOpenAtPicker(false);
+                        }}
+                        className="px-2 py-0.5 rounded bg-blue-600 text-white text-[11px] font-medium hover:bg-blue-700"
+                      >Apply</button>
+                    </div>
+                  )}
                 </div>
                 {/* Category groups */}
                 {sharedCategories.length === 0 ? (
@@ -14032,7 +14086,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v12';
+const CACHE_NAME = 'bo-wander-v13';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
