@@ -5248,7 +5248,7 @@
                   for (const item of items) {
                     if (item['@type'] && /Place|TouristAttraction|Museum|Restaurant|Hotel|LocalBusiness|LandmarksOrHistoricalBuildings|FoodEstablishment|LodgingBusiness|CivicStructure/i.test(item['@type'])) {
                       if (item.name && !fetchedTitle) fetchedTitle = htmlDecode(item.name);
-                      if (item.description && !fetchedDescription) fetchedDescription = htmlDecode(item.description).substring(0, 600);
+                      if (item.description && !fetchedDescription) fetchedDescription = htmlDecode(item.description).substring(0, 2000);
                       break;
                     }
                   }
@@ -5302,7 +5302,7 @@
                 const descMatch = html.match(/<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']+)["']/i)
                   || html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i);
                 if (descMatch) {
-                  fetchedDescription = htmlDecode(descMatch[1]).trim().substring(0, 600);
+                  fetchedDescription = htmlDecode(descMatch[1]).trim().substring(0, 2000);
                 }
               }
 
@@ -5310,7 +5310,7 @@
               if (domainName.includes('lonelyplanet.com') && !fetchedDescription) {
                 const lpDesc = html.match(/<div[^>]*class="[^"]*(?:article-body|readMore|poi-description)[^"]*"[^>]*>([\s\S]{20,1000}?)<\/div>/i);
                 if (lpDesc) {
-                  fetchedDescription = lpDesc[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 500);
+                  fetchedDescription = lpDesc[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 2000);
                 }
               }
             }
@@ -11956,9 +11956,13 @@
         ]).then(([loadedDays, loadedItems]) => {
           setDays(loadedDays);
           setItems(loadedItems);
-          // Auto-expand first day
+          // Auto-expand today's day (or nearest upcoming day, or first day as fallback)
           if (loadedDays.length > 0) {
-            setExpandedDays({ [loadedDays[0].id]: true });
+            const today = new Date().toISOString().split('T')[0];
+            const todayDay = loadedDays.find(d => d.date === today);
+            const futureDay = !todayDay && loadedDays.filter(d => d.date > today).sort((a, b) => a.date.localeCompare(b.date))[0];
+            const expandDay = todayDay || futureDay || loadedDays[0];
+            setExpandedDays({ [expandDay.id]: true });
           }
         });
       }, [activeItinerary?.id]);
@@ -12702,6 +12706,13 @@
         googleRating: null,
         vegetarian: false,
       });
+      // Default Open Now for all maps except NYC
+      useEffect(() => {
+        const col = collections.find(c => c.id === activeCollection);
+        const isNYC = col && /\bnyc\b|new\s*york/i.test(col.name || col.id || '');
+        setListFilters(f => ({ ...f, openNow: !isNYC }));
+      }, [activeCollection]);
+
       const [editingPin, setEditingPin] = useState(null);
       const [showAddMenu, setShowAddMenu] = useState(false);
       const pendingDeletesRef = useRef(new Set()); // Guard against snapshot re-adding deleted pins
@@ -14152,7 +14163,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v14';
+const CACHE_NAME = 'bo-wander-v15';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
