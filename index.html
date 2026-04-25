@@ -1782,58 +1782,10 @@
     };
     const isFoodCategory = (cat) => ['restaurant', 'cafe', 'treats', 'bar', 'boba', 'mochi', 'tea'].includes(cat);
 
-    const fetchTabelogRating = async (name, address) => {
-      if (!name) return null;
-      try {
-        // Build search query: restaurant name + area hint from address
-        const areaHint = (address || '').split(',').slice(-2).join(' ').trim();
-        const query = `${name} ${areaHint}`.trim();
-        const searchUrl = `https://tabelog.com/en/rstLst/?vs=1&sw=${encodeURIComponent(query)}`;
-
-        const proxies = [
-          (u) => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
-          (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-        ];
-        let html = '';
-        for (const makeUrl of proxies) {
-          if (html) break;
-          try {
-            trackApiCall('corsProxy');
-            const resp = await fetch(makeUrl(searchUrl), { signal: AbortSignal.timeout(8000) });
-            const ct = resp.headers.get('content-type') || '';
-            if (ct.includes('json')) {
-              const data = await resp.json();
-              html = data.contents || '';
-            } else {
-              html = await resp.text();
-            }
-          } catch {}
-        }
-        if (!html) return null;
-
-        // Parse first search result: rating + URL
-        // Tabelog search results have restaurant cards with ratings
-        // Rating pattern: class="list-rst__rating-val">3.52<
-        const ratingMatch = html.match(/list-rst__rating-val[^>]*>\s*([\d.]+)\s*</);
-        // URL pattern: <a class="list-rst__rst-name-target" href="https://tabelog.com/en/tokyo/A1303/..."
-        const urlMatch = html.match(/list-rst__rst-name-target[^>]*href=["']([^"']+)["']/);
-        // Name from result to verify it's a reasonable match
-        const nameMatch = html.match(/list-rst__rst-name-target[^>]*>([^<]+)</);
-
-        if (ratingMatch && urlMatch) {
-          const rating = parseFloat(ratingMatch[1]);
-          const url = urlMatch[1];
-          const matchedName = nameMatch ? nameMatch[1].trim() : '';
-          // Basic sanity: rating should be between 1 and 5
-          if (rating >= 1 && rating <= 5) {
-            return { rating, url, matchedName };
-          }
-        }
-        return null;
-      } catch (e) {
-        console.warn('[Tabelog] Fetch failed:', e);
-        return null;
-      }
+    const getTabelogSearchUrl = (name, address) => {
+      const areaHint = (address || '').split(',').slice(-2).join(' ').trim();
+      const query = `${name} ${areaHint}`.trim();
+      return `https://tabelog.com/en/rstLst/?vs=1&sw=${encodeURIComponent(query)}`;
     };
 
     const isCustomIcon = (emoji) => emoji && (emoji.startsWith('data:') || emoji.startsWith('http'));
@@ -3451,7 +3403,7 @@
             })()}
 
             {/* Ratings — compact single-line per source */}
-            {(pin.google_rating || pin.yelp_rating || pin.tabelog_rating) && (
+            {(pin.google_rating || pin.yelp_rating || pin.tabelog_rating || (() => { const c = collections?.find(x => x.id === pin.collection_id); return isJapanCollection(c) && isFoodCategory(pin.category); })()) && (
               <div className="space-y-1 pt-2 border-t dark:border-slate-700">
                 {pin.google_rating && (
                   <div className="flex items-center justify-between">
@@ -3468,21 +3420,53 @@
                     </div>
                   </div>
                 )}
-                {pin.tabelog_rating && (
+                {pin.tabelog_rating ? (
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5">
                       <span className="text-xs font-semibold" style={{ color: '#E63E1C' }}>Tabelog</span>
                       <span className="text-amber-400 text-xs">⭐</span>
                       <span className="text-xs font-bold text-gray-800 dark:text-gray-200">{pin.tabelog_rating.toFixed(2)}</span>
                     </div>
-                    {pin.tabelog_url && (
-                      <a href={pin.tabelog_url} target="_blank" rel="noopener noreferrer"
-                        className="text-xs hover:underline whitespace-nowrap ml-2" style={{ color: '#E63E1C' }}>
-                        View on Tabelog ↗
+                    <div className="flex items-center gap-2">
+                      <a href={pin.tabelog_url || getTabelogSearchUrl(pin.name, pin.address)} target="_blank" rel="noopener noreferrer"
+                        className="text-xs hover:underline whitespace-nowrap" style={{ color: '#E63E1C' }}>
+                        {pin.tabelog_url ? 'View on Tabelog ↗' : 'Search Tabelog ↗'}
                       </a>
-                    )}
+                      <button onClick={() => { const r = prompt('Update Tabelog rating (1-5):', pin.tabelog_rating); if (r && !isNaN(parseFloat(r)) && parseFloat(r) >= 1 && parseFloat(r) <= 5) onInlineUpdate({ tabelog_rating: parseFloat(r) }); }}
+                        className="text-xs text-gray-400 hover:text-gray-600">✏️</button>
+                      <button onClick={() => { if (confirm('Remove Tabelog rating?')) onInlineUpdate({ tabelog_rating: null, tabelog_url: null }); }}
+                        className="text-xs text-gray-400 hover:text-red-400">✕</button>
+                    </div>
                   </div>
-                )}
+                ) : (() => {
+                  const col = collections?.find(c => c.id === pin.collection_id);
+                  const showTabelog = isJapanCollection(col) && isFoodCategory(pin.category);
+                  return showTabelog ? (
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-semibold" style={{ color: '#E63E1C' }}>Tabelog</span>
+                        <span className="text-xs text-gray-400 italic">not set</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <a href={getTabelogSearchUrl(pin.name, pin.address)} target="_blank" rel="noopener noreferrer"
+                          className="text-xs hover:underline whitespace-nowrap" style={{ color: '#E63E1C' }}>
+                          Search ↗
+                        </a>
+                        <button onClick={() => {
+                          const r = prompt('Enter Tabelog rating (1-5):');
+                          if (r && !isNaN(parseFloat(r)) && parseFloat(r) >= 1 && parseFloat(r) <= 5) {
+                            const url = prompt('Paste Tabelog URL (optional):');
+                            const updates = { tabelog_rating: parseFloat(r) };
+                            if (url && url.includes('tabelog.com')) updates.tabelog_url = url;
+                            onInlineUpdate(updates);
+                          }
+                        }} className="text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-slate-700 hover:bg-gray-200 dark:hover:bg-slate-600" style={{ color: '#E63E1C' }}>
+                          + Add rating
+                        </button>
+                      </div>
+                    </div>
+                  ) : null;
+                })()}
                 {pin.yelp_rating && (
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5">
@@ -13149,22 +13133,6 @@
           return;
         }
 
-        // Tabelog: fetch rating for food pins in Japan collections
-        const col = collections.find(c => c.id === (pinData.collection_id || activeCollection));
-        if (isJapanCollection(col) && isFoodCategory(pinData.category) && !pinData.tabelog_rating) {
-          setRatingFetchStatus('Searching Tabelog...');
-          try {
-            const tb = await fetchTabelogRating(pinData.name, pinData.address);
-            if (tb) {
-              updates.tabelog_rating = tb.rating;
-              updates.tabelog_url = tb.url;
-              if (tb.matchedName) updates.tabelog_name = tb.matchedName;
-            }
-          } catch (e) {
-            console.warn('[Tabelog] Error:', e);
-          }
-        }
-
         // If we found any data, update the pin
         if (Object.keys(updates).length > 0) {
           setPins(prev => prev.map(p => {
@@ -13599,26 +13567,16 @@
               onFetchTabelog={(() => {
                 const col = collections.find(c => c.id === activeCollection);
                 if (!isJapanCollection(col)) return null;
-                return async () => {
+                return () => {
                   const colPins = pins.filter(p => p.collection_id === activeCollection && isFoodCategory(p.category) && !p.tabelog_rating);
-                  if (colPins.length === 0) { showToast('All food pins already have Tabelog ratings (or none to fetch)'); return; }
-                  showToast(`Fetching Tabelog ratings for ${colPins.length} pins...`);
-                  let found = 0;
-                  for (const pin of colPins) {
-                    try {
-                      const tb = await fetchTabelogRating(pin.name, pin.address);
-                      if (tb) {
-                        found++;
-                        const updated = { ...pin, tabelog_rating: tb.rating, tabelog_url: tb.url };
-                        if (tb.matchedName) updated.tabelog_name = tb.matchedName;
-                        MockFirebase.savePin(updated);
-                        setPins(prev => prev.map(p => p.id === pin.id ? updated : p));
-                      }
-                    } catch (e) { console.warn('[Tabelog backfill] Error for', pin.name, e); }
-                    // Small delay to avoid hammering the proxy
-                    await new Promise(r => setTimeout(r, 800));
+                  if (colPins.length === 0) { showToast('All food pins already have Tabelog ratings!'); return; }
+                  const max = Math.min(colPins.length, 5);
+                  if (!confirm(`Open Tabelog search for ${max} pins without ratings? (${colPins.length} total missing)\n\nYou can then add ratings from each pin's detail view.`)) return;
+                  for (let i = 0; i < max; i++) {
+                    const url = getTabelogSearchUrl(colPins[i].name, colPins[i].address);
+                    window.open(url, '_blank');
                   }
-                  showToast(`Found Tabelog ratings for ${found}/${colPins.length} pins`);
+                  showToast(`Opened ${max} Tabelog searches. Add ratings from each pin's detail view.`);
                 };
               })()}
                 />
@@ -14307,7 +14265,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v17';
+const CACHE_NAME = 'bo-wander-v18';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
