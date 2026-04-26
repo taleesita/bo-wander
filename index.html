@@ -13954,6 +13954,28 @@
       }, [showTravelDocs]);
       const [pendingItineraryPin, setPendingItineraryPin] = useState(null);
       const [coLocatedPins, setCoLocatedPins] = useState([]);
+      // Helper: select a pin and auto-detect its same-place group
+      const selectPinWithGroup = (pin, group) => {
+        if (group && group.length > 1) {
+          setSelectedPin(pin);
+          setCoLocatedPins(group);
+        } else {
+          // Look up same-place partner from all pins
+          const partner = pins.find(p => p.id !== pin.id && isSamePlacePin(pin, p));
+          if (partner) {
+            const g = [pin, partner].sort((a, b) => {
+              const aBook = a.category === 'activity' || a.category === 'hotel' ? 1 : 0;
+              const bBook = b.category === 'activity' || b.category === 'hotel' ? 1 : 0;
+              return aBook - bBook;
+            });
+            setSelectedPin(pin);
+            setCoLocatedPins(g);
+          } else {
+            setSelectedPin(pin);
+            setCoLocatedPins([]);
+          }
+        }
+      };
       const [mapCenter, setMapCenter] = useState(null); // passive: where the map currently is (for search biasing)
       const [mapPanTarget, setMapPanTarget] = useState(null); // active: where to fly the map to
       const [previewPin, setPreviewPin] = useState(null); // temporary pin shown while adding a place
@@ -14635,9 +14657,7 @@
               activeCollection={activeCollection}
               collections={collections}
               mapCenter={mapCenter}
-              onSelectPin={(pin) => {
-                setSelectedPin(pin);
-              }}
+              onSelectPin={(pin) => selectPinWithGroup(pin)}
               onAddPlace={(place) => {
                 const result = guessEmojiAndCategory(place.name, place.type);
                 const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
@@ -14780,10 +14800,7 @@
                   <ListView
                     pins={filteredPins}
                     collections={collections}
-                    onSelectPin={(pin, group) => {
-                      setSelectedPin(pin);
-                      setCoLocatedPins(group && group.length > 1 ? group : []);
-                    }}
+                    onSelectPin={(pin, group) => selectPinWithGroup(pin, group)}
                     isDarkMode={darkMode}
                     onEdit={setEditingPin}
                     onDelete={handleDeletePin}
@@ -14798,10 +14815,7 @@
                 <MapView
                   pins={filteredPins}
                   selectedPin={selectedPin}
-                  onSelectPin={(pin, group) => {
-                    setSelectedPin(pin);
-                    setCoLocatedPins(group && group.length > 1 ? group : []);
-                  }}
+                  onSelectPin={(pin, group) => selectPinWithGroup(pin, group)}
                   isDarkMode={darkMode}
                   onNavigate={setNavigationPin}
                   sidebarWidth={selectedPin && !isMobile ? 384 : 0}
@@ -14818,7 +14832,7 @@
                   <ListView
                     pins={filteredPins}
                     collections={collections}
-                    onSelectPin={(pin, group) => { setSelectedPin(pin); setCoLocatedPins(group && group.length > 1 ? group : []); setShowList(false); }}
+                    onSelectPin={(pin, group) => { selectPinWithGroup(pin, group); setShowList(false); }}
                     isDarkMode={darkMode}
                     onEdit={setEditingPin}
                     onDelete={handleDeletePin}
@@ -15209,7 +15223,7 @@
               isDarkMode={darkMode}
               isMobile={isMobile}
               onClose={() => setShowTravelDocs(false)}
-              onSelectPin={(pin) => { setSelectedPin(pin); setShowTravelDocs(false); }}
+              onSelectPin={(pin) => { selectPinWithGroup(pin); setShowTravelDocs(false); }}
               showToast={showToast}
             />
           )}
@@ -15396,7 +15410,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v29';
+const CACHE_NAME = 'bo-wander-v30';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
