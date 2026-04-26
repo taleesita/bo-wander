@@ -15550,12 +15550,16 @@
         // Apply list-filter bar filters to the map pins too
         if (listFilters.openNow) {
           result = result.filter(p => {
+            // Hotels and activities always visible regardless of open hours
+            if (p.category === 'hotel' || p.category === 'activity') return true;
             const status = getOpenStatus(p.opening_hours || {});
             return status.status === 'open';
           });
         }
         if (listFilters.openAt) {
           result = result.filter(p => {
+            // Hotels and activities always visible regardless of open hours
+            if (p.category === 'hotel' || p.category === 'activity') return true;
             const day = listFilters.openAt.day;
             const hours = (p.opening_hours || {})[day];
             if (!listFilters.openAt.time) {
@@ -16870,7 +16874,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v39';
+const CACHE_NAME = 'bo-wander-v40';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
