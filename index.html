@@ -965,6 +965,37 @@
     ];
 
     // ==================== UTILITY FUNCTIONS ====================
+    const guessEmojiAndCategory = (name, type) => {
+      const combined = `${name || ''} ${type || ''}`.toLowerCase();
+      if (combined.match(/cafe|coffee|starbucks|espresso/)) return { emoji: '☕', category: 'cafe' };
+      if (combined.match(/boba|bubble.?tea/)) return { emoji: '🧋', category: 'cafe' };
+      if (combined.match(/bakery|bread|pastry|bombolona|croissant|donut|donuts|cinnamon roll|bake/)) return { emoji: '🥐', category: 'treats' };
+      if (combined.match(/ice.?cream|gelato|shave ice|frozen/)) return { emoji: '🍦', category: 'treats' };
+      if (combined.match(/ramen|noodle|pho|udon|soba/)) return { emoji: '🍜', category: 'restaurant' };
+      if (combined.match(/pizza|pizzeria/)) return { emoji: '🍕', category: 'restaurant' };
+      if (combined.match(/sushi|sashimi|fish|seafood|oyster|shrimp/)) return { emoji: '🐟', category: 'restaurant' };
+      if (combined.match(/restaurant|dining|eatery|bistro|tavern|kitchen/)) return { emoji: '🍽️', category: 'restaurant' };
+      if (combined.match(/bar|pub|brewery|cocktail|beer.?hall/)) return { emoji: '🍺', category: 'bar' };
+      if (combined.match(/wine|winery|vineyard/)) return { emoji: '🍷', category: 'bar' };
+      if (combined.match(/beach|coastal|seaside|shore|cove|bay/)) return { emoji: '🏖️', category: 'beach' };
+      if (combined.match(/snorkel|surf|dive|kayak|swim/)) return { emoji: '💧', category: 'water' };
+      if (combined.match(/waterfall|spring|pool|stream/)) return { emoji: '💧', category: 'water' };
+      if (combined.match(/park|garden|botanical|arboretum|forest|hike|trail|mountain|canyon|national park/)) return { emoji: '🥾', category: 'nature' };
+      if (combined.match(/museum|gallery|art/)) return { emoji: '🏛️', category: 'culture' };
+      if (combined.match(/synagogue|shul|beit.?midrash/)) return { emoji: '🕍', category: 'synagogue' };
+      if (combined.match(/jewish|judaica|kosher|chabad/)) return { emoji: '✡️', category: 'jewish' };
+      if (combined.match(/shrine/)) return { emoji: '⛩️', category: 'shrine' };
+      if (combined.match(/temple|church|cathedral|basilica|chapel|monastery|pagoda/)) return { emoji: '🛕', category: 'shrine' };
+      if (combined.match(/hotel|resort|hostel|inn|lodge|airbnb/)) return { emoji: '🏨', category: 'hotel' };
+      if (combined.match(/airport/)) return { emoji: '✈️', category: 'transport' };
+      if (combined.match(/station|train/)) return { emoji: '🚂', category: 'transport' };
+      if (combined.match(/market|shop|store|shopping|bazaar|mall|boutique/)) return { emoji: '🛍️', category: 'shopping' };
+      if (combined.match(/viewpoint|lookout|sunset|sunrise/)) return { emoji: '🌅', category: 'viewpoint' };
+      if (combined.match(/tour|class|activity|show|sport/)) return { emoji: '🎫', category: 'activity' };
+      if (combined.match(/onsen|hot spring|spa/)) return { emoji: '♨️', category: 'activity' };
+      return { emoji: '📍', category: 'other' };
+    };
+
     const normalizePins = (pins) => {
       return pins.map(pin => {
         if (!pin.category) {
@@ -1857,66 +1888,6 @@
 
     const formatAddress = (address) => {
       return truncate(address, 50);
-    };
-
-    const guessEmojiAndCategory = (name, type) => {
-      const combined = `${name || ''} ${type || ''}`.toLowerCase();
-
-      // Coffee/cafe
-      if (combined.match(/cafe|coffee|starbucks|espresso/)) return { emoji: '☕', category: 'cafe' };
-      // Boba/bubble tea
-      if (combined.match(/boba|bubble.?tea/)) return { emoji: '🧋', category: 'cafe' };
-      // Bakery/bread/treats
-      if (combined.match(/bakery|bread|pastry|bombolona|croissant|donut|donuts|cinnamon roll|bake/)) return { emoji: '🥐', category: 'treats' };
-      // Ice cream/treats
-      if (combined.match(/ice.?cream|gelato|shave ice|frozen/)) return { emoji: '🍦', category: 'treats' };
-      // Ramen/noodle
-      if (combined.match(/ramen|noodle|pho|udon|soba/)) return { emoji: '🍜', category: 'restaurant' };
-      // Pizza
-      if (combined.match(/pizza|pizzeria/)) return { emoji: '🍕', category: 'restaurant' };
-      // Sushi/fish
-      if (combined.match(/sushi|sashimi|fish|seafood|oyster|shrimp/)) return { emoji: '🐟', category: 'restaurant' };
-      // Restaurant/dining
-      if (combined.match(/restaurant|dining|eatery|bistro|tavern|kitchen/)) return { emoji: '🍽️', category: 'restaurant' };
-      // Bar/pub
-      if (combined.match(/bar|pub|brewery|cocktail|beer.?hall/)) return { emoji: '🍺', category: 'bar' };
-      // Wine
-      if (combined.match(/wine|winery|vineyard/)) return { emoji: '🍷', category: 'bar' };
-      // Beach
-      if (combined.match(/beach|coastal|seaside|shore|cove|bay/)) return { emoji: '🏖️', category: 'beach' };
-      // Snorkel/water activities
-      if (combined.match(/snorkel|surf|dive|kayak|swim/)) return { emoji: '💧', category: 'water' };
-      // Waterfall/water features
-      if (combined.match(/waterfall|spring|pool|stream/)) return { emoji: '💧', category: 'water' };
-      // Park/garden/hike/nature
-      if (combined.match(/park|garden|botanical|arboretum|forest|hike|trail|mountain|canyon|national park/)) return { emoji: '🥾', category: 'nature' };
-      // Museum
-      if (combined.match(/museum|gallery|art/)) return { emoji: '🏛️', category: 'culture' };
-      // Synagogue
-      if (combined.match(/synagogue|shul|beit.?midrash/)) return { emoji: '🕍', category: 'synagogue' };
-      // Jewish/Judaica
-      if (combined.match(/jewish|judaica|kosher|chabad/)) return { emoji: '✡️', category: 'jewish' };
-      // Shrine
-      if (combined.match(/shrine/)) return { emoji: '⛩️', category: 'shrine' };
-      // Temple/church/cathedral
-      if (combined.match(/temple|church|cathedral|basilica|chapel|monastery|pagoda/)) return { emoji: '🛕', category: 'shrine' };
-      // Hotel/hostel
-      if (combined.match(/hotel|resort|hostel|inn|lodge|airbnb/)) return { emoji: '🏨', category: 'hotel' };
-      // Airport
-      if (combined.match(/airport/)) return { emoji: '✈️', category: 'transport' };
-      // Station/train
-      if (combined.match(/station|train/)) return { emoji: '🚂', category: 'transport' };
-      // Market/shop
-      if (combined.match(/market|shop|store|shopping|bazaar|mall|boutique/)) return { emoji: '🛍️', category: 'shopping' };
-      // Viewpoint
-      if (combined.match(/viewpoint|lookout|sunset|sunrise/)) return { emoji: '🌅', category: 'viewpoint' };
-      // Tour/activity/show/sport
-      if (combined.match(/tour|class|activity|show|sport/)) return { emoji: '🎫', category: 'activity' };
-      // Onsen/hot spring/spa
-      if (combined.match(/onsen|hot spring|spa/)) return { emoji: '♨️', category: 'activity' };
-
-      // Default
-      return { emoji: '📍', category: 'other' };
     };
 
     // ==================== COMPONENTS ====================
@@ -14269,7 +14240,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v20';
+const CACHE_NAME = 'bo-wander-v21';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
