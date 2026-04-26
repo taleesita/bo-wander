@@ -6770,10 +6770,12 @@
       transfer: { label: 'Transfer', icon: '🚐', color: '#FF9800' },
       hotel: { label: 'Hotel', icon: '🏨', color: '#9C27B0' },
       activity: { label: 'Activity', icon: '🎫', color: '#E91E63' },
+      restaurant: { label: 'Restaurant', icon: '🍽️', color: '#FF5722' },
+      misc: { label: 'Misc', icon: '📄', color: '#78909C' },
       general: { label: 'Other', icon: '📎', color: '#607D8B' },
     };
 
-    const TravelDocsPanel = ({ collectionId, pins, isDarkMode, isMobile, onClose, onSelectPin, showToast }) => {
+    const TravelDocsPanel = ({ collectionId, pins, isDarkMode, isMobile, onClose, onSelectPin, onEditPin, showToast }) => {
       const [docs, setDocs] = useState([]);
       const [loading, setLoading] = useState(true);
       const [showForm, setShowForm] = useState(false);
@@ -6809,7 +6811,7 @@
             const rd = p.reservation_details || {};
             const isActivity = rd.booking_type === 'activity';
             let date = '';
-            if (isActivity && rd.date) date = toISO(rd.date);
+            if (isActivity && (rd.date || rd.activity_date)) date = toISO(rd.date || rd.activity_date);
             else if (rd.check_in) date = toISO(rd.check_in);
             return {
               id: `pin_${p.id}`,
@@ -6818,7 +6820,7 @@
               type: isActivity ? 'activity' : 'hotel',
               title: p.name,
               date,
-              departure_time: isActivity ? rd.time : '',
+              departure_time: isActivity ? (rd.time || rd.activity_time || '') : '',
               arrival_time: '',
               carrier: rd.booking_source || '',
               confirmation: rd.confirmation_number || '',
@@ -6843,7 +6845,7 @@
       const groupedDocs = useMemo(() => {
         const groups = {};
         filteredDocs.forEach(d => {
-          const key = d.date || 'No date';
+          const key = d.date || 'zzz_no_date';
           if (!groups[key]) groups[key] = [];
           groups[key].push(d);
         });
@@ -6962,7 +6964,7 @@
                 {groupedDocs.map(([date, dateDocs]) => (
                   <div key={date}>
                     <div className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 px-1">
-                      {formatDate(date)}
+                      {date === 'zzz_no_date' ? 'General' : formatDate(date)}
                     </div>
                     <div className="space-y-2">
                       {dateDocs.map(doc => {
@@ -7011,7 +7013,8 @@
                                   {doc.to && <div><span className="text-gray-400 dark:text-gray-500">To</span><div className="text-gray-800 dark:text-gray-200 font-medium">{doc.to}</div></div>}
                                   {doc.seat && <div><span className="text-gray-400 dark:text-gray-500">Seat</span><div className="text-gray-800 dark:text-gray-200">{doc.seat}</div></div>}
                                   {doc.confirmation && <div><span className="text-gray-400 dark:text-gray-500">Confirmation</span><div className="text-gray-800 dark:text-gray-200 font-mono">{doc.confirmation}</div></div>}
-                                  {doc.passengers && <div><span className="text-gray-400 dark:text-gray-500">Passengers</span><div className="text-gray-800 dark:text-gray-200">{doc.passengers}</div></div>}
+                                  {doc.passengers && <div><span className="text-gray-400 dark:text-gray-500">{doc.type === 'restaurant' ? 'Party Size' : 'Passengers'}</span><div className="text-gray-800 dark:text-gray-200">{doc.passengers}</div></div>}
+                                  {doc.carrier && doc.type === 'restaurant' && <div><span className="text-gray-400 dark:text-gray-500">Booked via</span><div className="text-gray-800 dark:text-gray-200">{doc.carrier}</div></div>}
                                   {doc.check_in && <div><span className="text-gray-400 dark:text-gray-500">Check-in</span><div className="text-gray-800 dark:text-gray-200">{doc.check_in}</div></div>}
                                   {doc.check_out && <div><span className="text-gray-400 dark:text-gray-500">Check-out</span><div className="text-gray-800 dark:text-gray-200">{doc.check_out}</div></div>}
                                   {doc.address && <div className="col-span-2"><span className="text-gray-400 dark:text-gray-500">Address</span><div className="text-gray-800 dark:text-gray-200">{doc.address}</div></div>}
@@ -7024,12 +7027,22 @@
                                     </button>
                                   )}
                                   {doc._pinDoc && onSelectPin ? (
-                                    <button
-                                      onClick={() => { onSelectPin(doc._pin); onClose(); }}
-                                      className="flex items-center gap-1 px-2.5 py-1.5 bg-green-50 dark:bg-green-900/30 text-green-600 dark:text-green-400 rounded-lg text-xs font-medium hover:bg-green-100 dark:hover:bg-green-900/50 transition"
-                                    >
-                                      📍 View on Map
-                                    </button>
+                                    <>
+                                      {onEditPin && (
+                                        <button
+                                          onClick={() => { onEditPin(doc._pin); onClose(); }}
+                                          className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 dark:bg-slate-700 text-gray-600 dark:text-gray-300 rounded-lg text-xs font-medium hover:bg-gray-100 dark:hover:bg-slate-600 transition"
+                                        >
+                                          ✏️ Edit
+                                        </button>
+                                      )}
+                                      <button
+                                        onClick={() => { onSelectPin(doc._pin); onClose(); }}
+                                        className="flex items-center gap-1 px-2.5 py-1.5 bg-green-50 dark:bg-green-900/30 text-green-600 dark:text-green-400 rounded-lg text-xs font-medium hover:bg-green-100 dark:hover:bg-green-900/50 transition"
+                                      >
+                                        📍 View on Map
+                                      </button>
+                                    </>
                                   ) : !doc._pinDoc && (
                                     <>
                                       <button
@@ -7196,9 +7209,20 @@
 
             {/* Title */}
             <div>
-              <label className={labelClass}>Title</label>
-              <input className={inputClass} value={title} onChange={e => setTitle(e.target.value)} placeholder={type === 'hotel' ? 'Hotel name' : 'e.g. Tokyo → Kyoto (NOZOMI 155)'} />
+              <label className={labelClass}>{type === 'misc' ? 'Document Name' : 'Title'}</label>
+              <input className={inputClass} value={title} onChange={e => setTitle(e.target.value)} placeholder={type === 'hotel' ? 'Hotel name' : type === 'restaurant' ? 'Restaurant name' : type === 'misc' ? 'e.g. Travel insurance, Visa copy' : 'e.g. Tokyo → Kyoto (NOZOMI 155)'} />
             </div>
+
+            {/* Misc: title + optional date + file */}
+            {type === 'misc' ? (
+              <>
+                <div><label className={labelClass}>Date (optional)</label><input type="date" className={inputClass} value={date} onChange={e => setDate(e.target.value)} /></div>
+                <div>
+                  <label className={labelClass}>Notes</label>
+                  <textarea className={inputClass + ' resize-none'} rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional notes..." />
+                </div>
+              </>
+            ) : <>
 
             {/* Date */}
             <div className={type === 'hotel' ? 'grid grid-cols-2 gap-3' : ''}>
@@ -7207,28 +7231,33 @@
                   <div><label className={labelClass}>Check-in</label><input type="date" className={inputClass} value={checkIn} onChange={e => { setCheckIn(e.target.value); if (!date) setDate(e.target.value); }} /></div>
                   <div><label className={labelClass}>Check-out</label><input type="date" className={inputClass} value={checkOut} onChange={e => setCheckOut(e.target.value)} /></div>
                 </>
+              ) : type === 'restaurant' ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <div><label className={labelClass}>Date</label><input type="date" className={inputClass} value={date} onChange={e => setDate(e.target.value)} /></div>
+                  <div><label className={labelClass}>Time</label><input type="time" className={inputClass} value={departureTime} onChange={e => setDepartureTime(e.target.value)} /></div>
+                </div>
               ) : (
                 <div><label className={labelClass}>Date</label><input type="date" className={inputClass} value={date} onChange={e => setDate(e.target.value)} /></div>
               )}
             </div>
 
-            {/* Time (non-hotel) */}
-            {type !== 'hotel' && type !== 'general' && (
+            {/* Time (transport types) */}
+            {(type === 'flight' || type === 'train' || type === 'transfer' || type === 'activity') && (
               <div className="grid grid-cols-2 gap-3">
                 <div><label className={labelClass}>Departure</label><input type="time" className={inputClass} value={departureTime} onChange={e => setDepartureTime(e.target.value)} /></div>
                 <div><label className={labelClass}>Arrival</label><input type="time" className={inputClass} value={arrivalTime} onChange={e => setArrivalTime(e.target.value)} /></div>
               </div>
             )}
 
-            {/* Carrier / Airline / Train */}
-            {(type === 'flight' || type === 'train' || type === 'transfer') && (
+            {/* Carrier / Airline / Train / Platform */}
+            {(type === 'flight' || type === 'train' || type === 'transfer' || type === 'restaurant') && (
               <div>
-                <label className={labelClass}>{type === 'flight' ? 'Airline / Flight #' : type === 'train' ? 'Train name / #' : 'Provider'}</label>
-                <input className={inputClass} value={carrier} onChange={e => setCarrier(e.target.value)} placeholder={type === 'flight' ? 'UA837' : type === 'train' ? 'NOZOMI 155' : 'Transfer company'} />
+                <label className={labelClass}>{type === 'flight' ? 'Airline / Flight #' : type === 'train' ? 'Train name / #' : type === 'restaurant' ? 'Platform / Booked via' : 'Provider'}</label>
+                <input className={inputClass} value={carrier} onChange={e => setCarrier(e.target.value)} placeholder={type === 'flight' ? 'UA837' : type === 'train' ? 'NOZOMI 155' : type === 'restaurant' ? 'e.g. TableCheck, OpenTable' : 'Transfer company'} />
               </div>
             )}
 
-            {/* Seat */}
+            {/* Seat / Passengers */}
             {(type === 'flight' || type === 'train') && (
               <div className="grid grid-cols-2 gap-3">
                 <div><label className={labelClass}>Seat</label><input className={inputClass} value={seat} onChange={e => setSeat(e.target.value)} placeholder="Car.5 Seat.1-D/E" /></div>
@@ -7236,8 +7265,13 @@
               </div>
             )}
 
-            {/* Address (hotel, transfer) */}
-            {(type === 'hotel' || type === 'transfer') && (
+            {/* Party size (restaurant) */}
+            {type === 'restaurant' && (
+              <div><label className={labelClass}>Party Size</label><input type="number" min="1" className={inputClass} value={passengers} onChange={e => setPassengers(e.target.value)} placeholder="2" /></div>
+            )}
+
+            {/* Address (hotel, transfer, restaurant) */}
+            {(type === 'hotel' || type === 'transfer' || type === 'restaurant') && (
               <div><label className={labelClass}>Address</label><input className={inputClass} value={address} onChange={e => setAddress(e.target.value)} placeholder="Full address" /></div>
             )}
 
@@ -7252,6 +7286,8 @@
               <label className={labelClass}>Notes</label>
               <textarea className={inputClass + ' resize-none'} rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Any extra details..." />
             </div>
+
+            </>}
           </div>
 
           {/* Save button */}
@@ -16776,6 +16812,7 @@
               isMobile={isMobile}
               onClose={() => setShowTravelDocs(false)}
               onSelectPin={(pin) => { selectPinWithGroup(pin); setShowTravelDocs(false); }}
+              onEditPin={(pin) => { setEditingPin(pin); setShowTravelDocs(false); }}
               showToast={showToast}
             />
           )}
@@ -16972,7 +17009,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v47';
+const CACHE_NAME = 'bo-wander-v48';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
