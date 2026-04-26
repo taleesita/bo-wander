@@ -2459,6 +2459,7 @@
         rd.pin && { label: 'PIN', value: rd.pin },
         rd.price && { label: 'Price', value: priceDisplay },
         rd.includes_breakfast && rd.includes_breakfast !== 'unknown' && { label: 'Breakfast', value: rd.includes_breakfast === 'yes' ? 'Included' : 'Not included' },
+        rd.has_laundry && { label: 'Laundry', value: '🧺 Available' },
         rd.booking_source && { label: 'Source', value: rd.booking_source },
       ].filter(Boolean);
 
@@ -6083,7 +6084,8 @@
         propertyName: '', address: '', checkIn: '', checkOut: '',
         checkInTime: '', checkOutTime: '',
         confirmationNumber: '', pin: '', bookingSource: '', roomType: '', price: '',
-        includesBreakfast: 'unknown'
+        includesBreakfast: 'unknown',
+        hasLaundry: false
       };
       if (!text) return result;
       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
@@ -6139,6 +6141,11 @@
         result.includesBreakfast = 'yes';
       } else if (/no\s*breakfast|without\s*breakfast|breakfast\s*not\s*included|room\s*only|no\s*meal\s*is\s*included|no\s*meal\s*option/i.test(full)) {
         result.includesBreakfast = 'no';
+      }
+
+      // Laundry detection
+      if (/washer|dryer|laundry|washing\s*machine|coin[\s-]?laundry|laundromat/i.test(full)) {
+        result.hasLaundry = true;
       }
 
       // Property name — look for specific patterns first
@@ -7437,6 +7444,7 @@
       const [checkInTime, setCheckInTime] = useState('');
       const [checkOutTime, setCheckOutTime] = useState('');
       const [includesBreakfast, setIncludesBreakfast] = useState('unknown');
+      const [hasLaundry, setHasLaundry] = useState(false);
       const [addressSuggestions, setAddressSuggestions] = useState([]);
       const [geocodingName, setGeocodingName] = useState(false);
       const [resolvedLat, setResolvedLat] = useState(0);
@@ -7535,6 +7543,7 @@
           setRoomType(parsed.roomType);
           setPrice(prev => parsed.price || prev);
           setIncludesBreakfast(parsed.includesBreakfast);
+          setHasLaundry(parsed.hasLaundry || false);
           if (parsed.propertyName || tourName) {
             geocodeHotelName(parsed.propertyName || tourName, parsed.address || address);
           }
@@ -7886,6 +7895,7 @@
           setRoomType(parsed.roomType);
           setPrice(parsed.price);
           setIncludesBreakfast(parsed.includesBreakfast);
+          setHasLaundry(parsed.hasLaundry || false);
           if (parsed.propertyName) geocodeHotelName(parsed.propertyName, parsed.address);
         }
 
@@ -7982,6 +7992,7 @@
               confirmationNumber && `Confirmation #: ${confirmationNumber}`,
               pin && `PIN: ${pin}`,
               includesBreakfast !== 'unknown' && `Breakfast: ${includesBreakfast === 'yes' ? 'Included' : 'Not included'}`,
+              hasLaundry && 'Laundry: Available',
               bookingSource && `Booked via: ${bookingSource}`,
             ].filter(Boolean).join('\n'),
             emoji: '🏨',
@@ -8003,6 +8014,7 @@
               exchange_rate_date: exchangeRateDate || '',
               price_currency: priceCurrency || '',
               includes_breakfast: includesBreakfast,
+              has_laundry: hasLaundry || false,
             },
             attachment: fileDataUrl ? { name: fileName, data: fileDataUrl, thumbnail: fileThumbnail } : null,
           });
@@ -8299,6 +8311,19 @@
                         </button>
                       ))}
                     </div>
+                  </div>
+
+                  {/* Washer/Dryer */}
+                  <div>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={hasLaundry}
+                        onChange={e => setHasLaundry(e.target.checked)}
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">🧺 Washer/Dryer Available</span>
+                    </label>
                   </div>
 
                   </>}
@@ -9489,6 +9514,12 @@
                                   <option value="no">Not included</option>
                                 </select>
                               </div>
+                            </div>
+                            <div>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" checked={rd.has_laundry || false} onChange={e => updateRD('has_laundry', e.target.checked)} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                <span className={labelClass}>Washer/Dryer Available</span>
+                              </label>
                             </div>
                             <div>
                               <label className={labelClass}>Booking source</label>
@@ -13135,7 +13166,646 @@
     };
 
     // ---- Main ItineraryPlanner ----
-    const ItineraryPlanner = ({ pins, collections, activeCollection, isDarkMode, isMobile, onFlyTo, onClose, pendingAddPin, onClearPendingAdd }) => {
+    // ==================== PACKING LIST PANEL ====================
+    const PACKING_TEMPLATE = {
+      'Taly': [
+        { name: 'Vitamins', qty: 1, fixed: true },
+        { name: 'Thyroid pills', qty: 1, fixed: true },
+        { name: 'PJs', qty: 1, auto: 'sleepwear' },
+        { name: 'Compression socks', qty: 1, fixed: true },
+        { name: 'Hair cover', qty: 1, fixed: true },
+        { name: 'Deodorant', qty: 1, fixed: true },
+        { name: 'Neck pillow', qty: 1, fixed: true },
+        { name: 'Workout clothes', qty: 1, fixed: true },
+        { name: 'Bathing suit', qty: 1, fixed: true },
+        { name: 'Sunglasses', qty: 1, fixed: true },
+        { name: 'Rings', qty: 1, fixed: true },
+        { name: 'Book', qty: 1, fixed: true },
+        { name: 'Kindle', qty: 1, fixed: true },
+        { name: 'Hair taming tool(s)', qty: 1, fixed: true },
+        { name: 'Tops', qty: 0, auto: 'tops' },
+        { name: 'Bottoms (pants/jeans)', qty: 0, auto: 'long_bottoms' },
+        { name: 'Shorts', qty: 0, auto: 'shorts' },
+        { name: 'Sweaters/Layers', qty: 0, auto: 'sweaters' },
+        { name: 'Light jacket', qty: 0, auto: 'light_jacket' },
+        { name: 'Warm jacket', qty: 0, auto: 'warm_jacket' },
+        { name: 'Dresses/Skirts', qty: 0, auto: 'dresses' },
+        { name: 'Underwear', qty: 0, auto: 'underwear' },
+        { name: 'Socks', qty: 0, auto: 'socks' },
+        { name: 'Comfortable shoes', qty: 1, fixed: true },
+        { name: 'Rain jacket', qty: 0, auto: 'rain_jacket' },
+      ],
+      'Doug': [
+        { name: 'Clothes (tops)', qty: 0, auto: 'tops' },
+        { name: 'Pants/Jeans', qty: 0, auto: 'long_bottoms' },
+        { name: 'Shorts', qty: 0, auto: 'shorts' },
+        { name: 'Sweaters/Layers', qty: 0, auto: 'sweaters' },
+        { name: 'Light jacket', qty: 0, auto: 'light_jacket' },
+        { name: 'Warm jacket', qty: 0, auto: 'warm_jacket' },
+        { name: 'Neckerchief', qty: 1, fixed: true },
+        { name: 'Sunglasses', qty: 1, fixed: true },
+        { name: 'Socks', qty: 0, auto: 'socks' },
+        { name: 'Underwear', qty: 0, auto: 'underwear' },
+        { name: 'Retainer', qty: 1, fixed: true },
+        { name: 'Vitamins', qty: 1, fixed: true },
+        { name: 'Rain jacket', qty: 0, auto: 'rain_jacket' },
+      ],
+      'Noa': [
+        { name: 'Diapers', qty: 1, fixed: true, note: 'pack for travel + buy there' },
+        { name: 'Diaper cream', qty: 1, fixed: true },
+        { name: 'Booger picker', qty: 1, fixed: true },
+        { name: 'Wipes', qty: 1, fixed: true },
+        { name: 'Spray bottle', qty: 1, fixed: true },
+        { name: 'Gas drops', qty: 1, fixed: true },
+        { name: 'Pee pads', qty: 1, fixed: true },
+        { name: 'Clothes (outfits)', qty: 0, auto: 'baby_outfits' },
+        { name: 'Socks', qty: 0, auto: 'baby_socks' },
+        { name: 'Sleep sack', qty: 1, fixed: true },
+        { name: 'Hats', qty: 1, auto: 'baby_hats' },
+        { name: 'Burp cloth', qty: 2, fixed: true },
+        { name: 'Nail filer', qty: 1, fixed: true },
+        { name: 'Hair brush', qty: 1, fixed: true },
+        { name: 'Toys', qty: 1, fixed: true },
+        { name: 'Teether toys', qty: 1, fixed: true },
+        { name: 'Pack n play sheets', qty: 1, fixed: true, note: 'white silk one' },
+        { name: 'Stroller', qty: 1, fixed: true },
+        { name: 'Portable fan', qty: 1, fixed: true },
+        { name: 'Vitamin D and spoon', qty: 1, fixed: true },
+        { name: 'Momcozy carrier', qty: 1, fixed: true },
+        { name: 'Babybjorn carrier', qty: 1, fixed: true },
+        { name: 'Bath thermometer', qty: 1, fixed: true },
+        { name: 'Bath soap', qty: 1, fixed: true },
+        { name: 'Body lotion', qty: 1, fixed: true },
+        { name: 'Baby sunscreen', qty: 1, fixed: true },
+        { name: 'Towel', qty: 1, fixed: true },
+        { name: 'Travel tub', qty: 1, fixed: true },
+        { name: 'Wash cloths', qty: 2, fixed: true },
+        { name: 'Bibs', qty: 2, fixed: true },
+        { name: 'Thermometer', qty: 1, fixed: true },
+        { name: 'Suppository', qty: 1, fixed: true },
+      ],
+      'Nursing': [
+        { name: 'Nipple butter', qty: 1, fixed: true },
+        { name: 'Breast pump wipes', qty: 1, fixed: true },
+        { name: 'Boppy', qty: 1, fixed: true },
+        { name: 'Breast pump', qty: 1, fixed: true },
+        { name: 'Nursing cover up', qty: 1, fixed: true },
+        { name: 'Milk bags', qty: 1, fixed: true },
+      ],
+      'SoomSoom': [
+        { name: 'Travel crate', qty: 1, fixed: true },
+        { name: 'Trazidone', qty: 1, fixed: true },
+        { name: 'Water bottle', qty: 1, fixed: true },
+        { name: 'Melatonin', qty: 1, fixed: true },
+        { name: 'TreatTeek', qty: 1, fixed: true },
+        { name: 'Food from fridge', qty: 1, fixed: true },
+        { name: 'Treats', qty: 1, fixed: true },
+        { name: 'Baby wipes', qty: 1, fixed: true },
+        { name: 'Food (frozen)', qty: 1, fixed: true },
+        { name: 'Poop bags', qty: 1, fixed: true },
+        { name: 'Collapsible bowls', qty: 1, fixed: true },
+        { name: 'Bravecto or interceptor', qty: 1, fixed: true, note: 'check timing before leaving' },
+      ],
+      'Electronics': [
+        { name: 'Adapters', qty: 1, fixed: true },
+        { name: 'Apple Watch charger', qty: 1, fixed: true },
+        { name: 'Camera', qty: 1, fixed: true },
+        { name: 'GoPro', qty: 1, fixed: true },
+        { name: 'Portable chargers', qty: 1, fixed: true },
+        { name: 'Computer chargers', qty: 1, fixed: true },
+        { name: 'Phone chargers', qty: 1, fixed: true },
+      ],
+      'Bug & Sun': [
+        { name: 'Sunscreen', qty: 1, fixed: true },
+        { name: 'Post-sun care', qty: 1, fixed: true },
+        { name: 'Bug zapper racket', qty: 1, fixed: true },
+        { name: 'Bug spray', qty: 1, fixed: true },
+        { name: 'Nat Pat anti-bug patches', qty: 1, fixed: true },
+      ],
+      'Travel & Other': [
+        { name: 'Travel silverware', qty: 1, fixed: true },
+        { name: 'Osprey backpack', qty: 1, fixed: true },
+        { name: 'Water bottle (silicon)', qty: 1, fixed: true },
+        { name: 'Travel cups', qty: 1, fixed: true },
+        { name: 'Water bottle', qty: 1, fixed: true },
+        { name: 'Guide books', qty: 1, fixed: true },
+      ],
+      'Food': [
+        { name: 'Foil', qty: 1, fixed: true },
+        { name: 'Tea', qty: 1, fixed: true },
+        { name: 'Honey', qty: 1, fixed: true },
+      ],
+      'Organize at Home': [
+        { name: 'Find and pack the relevant credit cards', qty: 1, fixed: true },
+        { name: 'Turn off AC', qty: 1, fixed: true },
+        { name: 'Water plants', qty: 1, fixed: true },
+        { name: 'Check outside drain', qty: 1, fixed: true },
+        { name: 'Take out trash, recycling, and compost', qty: 1, fixed: true },
+        { name: 'Unplug wipe warmer', qty: 1, fixed: true },
+        { name: 'Put fridge on vacation mode', qty: 1, fixed: true },
+        { name: 'Download stuff on iPad', qty: 1, fixed: true },
+        { name: 'Extermination', qty: 1, fixed: true },
+        { name: 'Put sticky notes in plants', qty: 1, fixed: true },
+        { name: 'Unplug big appliances', qty: 1, fixed: true },
+      ],
+    };
+
+    const computeClothingQty = (tripDays, hasAnyLaundry, weatherSummary) => {
+      // weatherSummary: { avgHigh, avgLow, rainyDays, totalDays }
+      const effectiveDays = hasAnyLaundry ? Math.min(tripDays, Math.ceil(tripDays * 0.6)) : tripDays;
+      const baseTops = Math.min(effectiveDays, hasAnyLaundry ? 5 : 8);
+      const coldDays = weatherSummary.avgHigh < 15 ? effectiveDays : (weatherSummary.avgHigh < 20 ? Math.ceil(effectiveDays * 0.5) : 0);
+      const warmDays = effectiveDays - coldDays;
+
+      return {
+        tops: Math.max(3, baseTops),
+        long_bottoms: Math.max(1, Math.ceil(coldDays > 0 ? Math.min(coldDays * 0.5, hasAnyLaundry ? 2 : 4) : (warmDays > 0 ? 1 : 2))),
+        shorts: warmDays > 0 ? Math.max(1, Math.ceil(Math.min(warmDays * 0.4, hasAnyLaundry ? 2 : 4))) : 0,
+        sweaters: weatherSummary.avgHigh < 20 ? Math.max(1, Math.min(3, Math.ceil(coldDays * 0.3))) : (weatherSummary.avgLow < 18 ? 1 : 0),
+        light_jacket: weatherSummary.avgHigh < 25 || weatherSummary.avgLow < 18 ? 1 : 0,
+        warm_jacket: weatherSummary.avgHigh < 12 ? 1 : 0,
+        dresses: warmDays >= 2 ? Math.min(2, Math.ceil(warmDays * 0.3)) : 0,
+        underwear: Math.max(3, Math.min(effectiveDays + 1, hasAnyLaundry ? 5 : 10)),
+        socks: Math.max(3, Math.min(effectiveDays, hasAnyLaundry ? 5 : 8)),
+        rain_jacket: weatherSummary.rainyDays > 0 ? 1 : 0,
+        sleepwear: hasAnyLaundry ? 1 : Math.min(2, Math.ceil(tripDays / 5)),
+        baby_outfits: Math.max(3, Math.min(effectiveDays + 2, hasAnyLaundry ? 5 : 10)),
+        baby_socks: Math.max(3, Math.min(effectiveDays, hasAnyLaundry ? 4 : 7)),
+        baby_hats: warmDays > coldDays ? 1 : 2,
+      };
+    };
+
+    const PackingListPanel = ({ collectionId, pins, isDarkMode, isMobile, onClose, showToast }) => {
+      const [packingList, setPackingList] = useState(null); // { categories: { [cat]: [{ name, qty, checked, note }] }, generated: true }
+      const [collapsedCats, setCollapsedCats] = useState({});
+      const [addItemCat, setAddItemCat] = useState(null);
+      const [newItemName, setNewItemName] = useState('');
+      const [editingItem, setEditingItem] = useState(null); // { cat, idx }
+      const [editQty, setEditQty] = useState('');
+      const packingKey = `boWanderPacking_${collectionId}`;
+
+      // Load from localStorage + Firebase
+      useEffect(() => {
+        const saved = localStorage.getItem(packingKey);
+        if (saved) {
+          try { setPackingList(JSON.parse(saved)); } catch(e) {}
+        }
+        // Also try Firebase
+        const db = MockFirebase.db;
+        if (db && collectionId) {
+          const docRef = MockFirebase.firebase.firestore().collection('packing_lists').doc(collectionId);
+          docRef.get().then(snap => {
+            if (snap.exists) {
+              const data = snap.data();
+              setPackingList(data);
+              localStorage.setItem(packingKey, JSON.stringify(data));
+            }
+          }).catch(() => {});
+        }
+      }, [collectionId]);
+
+      // Save whenever packingList changes
+      useEffect(() => {
+        if (!packingList) return;
+        localStorage.setItem(packingKey, JSON.stringify(packingList));
+        // Save to Firebase
+        const db = MockFirebase.db;
+        if (db && collectionId) {
+          try {
+            MockFirebase.firebase.firestore().collection('packing_lists').doc(collectionId).set(packingList);
+          } catch(e) { console.warn('[PackingList] Firebase save failed:', e.message); }
+        }
+      }, [packingList, collectionId]);
+
+      // Compute trip info from pins
+      const tripInfo = useMemo(() => {
+        const hotels = pins.filter(p => p.category === 'hotel' && p.reservation_details);
+        if (hotels.length === 0) return { days: 7, hasLaundry: false, weather: { avgHigh: 20, avgLow: 12, rainyDays: 2, totalDays: 7 } };
+
+        let earliest = null, latest = null;
+        let hasLaundry = false;
+        hotels.forEach(h => {
+          const rd = h.reservation_details;
+          if (rd.has_laundry) hasLaundry = true;
+          const ci = rd.check_in;
+          const co = rd.check_out;
+          if (ci && (!earliest || ci < earliest)) earliest = ci;
+          if (co && (!latest || co > latest)) latest = co;
+        });
+
+        let days = 7;
+        if (earliest && latest) {
+          days = Math.max(1, Math.round((new Date(latest) - new Date(earliest)) / 86400000));
+        }
+
+        // Try to get weather from ItineraryPlanner's approach
+        // We'll compute a simple summary from hotel locations
+        return { days, hasLaundry, weather: null }; // weather computed separately
+      }, [pins]);
+
+      // Fetch weather summary for the trip
+      const [weatherSummary, setWeatherSummary] = useState({ avgHigh: 20, avgLow: 12, rainyDays: 2, totalDays: 7 });
+      useEffect(() => {
+        const hotels = pins.filter(p => p.category === 'hotel' && p.reservation_details);
+        if (hotels.length === 0) return;
+
+        let earliest = null, latest = null;
+        hotels.forEach(h => {
+          const rd = h.reservation_details;
+          if (rd.check_in && (!earliest || rd.check_in < earliest)) earliest = rd.check_in;
+          if (rd.check_out && (!latest || rd.check_out > latest)) latest = rd.check_out;
+        });
+        if (!earliest || !latest) return;
+
+        // Use first hotel with coords for weather
+        const hotelWithCoords = hotels.find(h => h.lat && h.lng);
+        if (!hotelWithCoords) return;
+
+        const today = new Date().toISOString().split('T')[0];
+        const start = earliest;
+        const end = latest;
+
+        // Try forecast first, then historical
+        const fetchWeather = async () => {
+          try {
+            let url;
+            if (start <= today && end >= today) {
+              // Partially in future
+              url = `https://api.open-meteo.com/v1/forecast?latitude=${hotelWithCoords.lat}&longitude=${hotelWithCoords.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&start_date=${start}&end_date=${end}&timezone=auto`;
+            } else if (start > today) {
+              // All future — use forecast (up to 16 days) or historical averages
+              const forecastEnd = new Date(today);
+              forecastEnd.setDate(forecastEnd.getDate() + 16);
+              const fe = forecastEnd.toISOString().split('T')[0];
+              if (start <= fe) {
+                url = `https://api.open-meteo.com/v1/forecast?latitude=${hotelWithCoords.lat}&longitude=${hotelWithCoords.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&start_date=${start}&end_date=${end > fe ? fe : end}&timezone=auto`;
+              } else {
+                // Use last year's historical data as proxy
+                const lastYearStart = start.replace(/^\d{4}/, String(parseInt(start.substring(0,4)) - 1));
+                const lastYearEnd = end.replace(/^\d{4}/, String(parseInt(end.substring(0,4)) - 1));
+                url = `https://archive-api.open-meteo.com/v1/archive?latitude=${hotelWithCoords.lat}&longitude=${hotelWithCoords.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code&start_date=${lastYearStart}&end_date=${lastYearEnd}&timezone=auto`;
+              }
+            } else {
+              // All past
+              url = `https://archive-api.open-meteo.com/v1/archive?latitude=${hotelWithCoords.lat}&longitude=${hotelWithCoords.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code&start_date=${start}&end_date=${end}&timezone=auto`;
+            }
+
+            const resp = await fetch(url);
+            const data = await resp.json();
+            if (data.daily) {
+              const highs = data.daily.temperature_2m_max || [];
+              const lows = data.daily.temperature_2m_min || [];
+              const rainProbs = data.daily.precipitation_probability_max || [];
+              const rainSums = data.daily.precipitation_sum || [];
+              const avgHigh = highs.length ? Math.round(highs.reduce((a,b) => a+b, 0) / highs.length) : 20;
+              const avgLow = lows.length ? Math.round(lows.reduce((a,b) => a+b, 0) / lows.length) : 12;
+              let rainyDays = 0;
+              if (rainProbs.length) {
+                rainyDays = rainProbs.filter(p => p >= 50).length;
+              } else if (rainSums.length) {
+                rainyDays = rainSums.filter(s => s > 1).length;
+              }
+              setWeatherSummary({ avgHigh, avgLow, rainyDays, totalDays: highs.length || tripInfo.days });
+            }
+          } catch(e) {
+            console.warn('[PackingList] Weather fetch failed:', e);
+          }
+        };
+        fetchWeather();
+      }, [pins]);
+
+      // Generate packing list from template
+      const generateList = () => {
+        const qty = computeClothingQty(tripInfo.days, tripInfo.hasLaundry, weatherSummary);
+        const categories = {};
+        for (const [cat, items] of Object.entries(PACKING_TEMPLATE)) {
+          categories[cat] = items.map(item => {
+            let finalQty = item.qty;
+            if (item.auto && qty[item.auto] !== undefined) {
+              finalQty = qty[item.auto];
+            }
+            // Skip items with 0 quantity (not relevant for weather)
+            if (finalQty === 0) return null;
+            return { name: item.name, qty: finalQty, checked: false, note: item.note || '' };
+          }).filter(Boolean);
+        }
+        const newList = { categories, generated: true, generatedAt: new Date().toISOString(), tripDays: tripInfo.days, hasLaundry: tripInfo.hasLaundry, weatherAvgHigh: weatherSummary.avgHigh, weatherAvgLow: weatherSummary.avgLow };
+        setPackingList(newList);
+        showToast && showToast('Packing list generated!');
+      };
+
+      // Auto-update clothing quantities when trip details change (preserves checkmarks)
+      // Freezes once the trip has started (today >= first check-in date)
+      const tripHasStarted = useMemo(() => {
+        const hotels = pins.filter(p => p.category === 'hotel' && p.reservation_details?.check_in);
+        if (hotels.length === 0) return false;
+        const earliest = hotels.reduce((min, h) => {
+          const ci = h.reservation_details.check_in;
+          return ci < min ? ci : min;
+        }, hotels[0].reservation_details.check_in);
+        return new Date().toISOString().split('T')[0] >= earliest;
+      }, [pins]);
+
+      useEffect(() => {
+        if (!packingList || !packingList.generated) return;
+        // Freeze once trip has started
+        if (tripHasStarted) return;
+        // Check if trip details actually changed
+        if (packingList.tripDays === tripInfo.days && packingList.hasLaundry === tripInfo.hasLaundry &&
+            packingList.weatherAvgHigh === weatherSummary.avgHigh && packingList.weatherAvgLow === weatherSummary.avgLow) return;
+
+        const qty = computeClothingQty(tripInfo.days, tripInfo.hasLaundry, weatherSummary);
+        // Build a lookup of auto-key -> template item for each category
+        const autoLookup = {};
+        for (const [cat, items] of Object.entries(PACKING_TEMPLATE)) {
+          for (const item of items) {
+            if (item.auto) autoLookup[`${cat}::${item.name}`] = item.auto;
+          }
+        }
+
+        setPackingList(prev => {
+          const next = JSON.parse(JSON.stringify(prev));
+          for (const [cat, items] of Object.entries(next.categories)) {
+            for (let i = 0; i < items.length; i++) {
+              const key = `${cat}::${items[i].name}`;
+              const autoKey = autoLookup[key];
+              if (autoKey && qty[autoKey] !== undefined) {
+                const newQty = qty[autoKey];
+                if (newQty === 0) {
+                  // Remove item if no longer needed (e.g. warm jacket when it's hot)
+                  items.splice(i, 1);
+                  i--;
+                } else {
+                  items[i].qty = newQty;
+                }
+              }
+            }
+          }
+          // Also add back items that were removed but now needed
+          for (const [cat, templateItems] of Object.entries(PACKING_TEMPLATE)) {
+            if (!next.categories[cat]) next.categories[cat] = [];
+            for (const tItem of templateItems) {
+              if (!tItem.auto) continue;
+              const newQty = qty[tItem.auto];
+              if (newQty > 0 && !next.categories[cat].find(x => x.name === tItem.name)) {
+                next.categories[cat].push({ name: tItem.name, qty: newQty, checked: false, note: tItem.note || '' });
+              }
+            }
+          }
+          next.tripDays = tripInfo.days;
+          next.hasLaundry = tripInfo.hasLaundry;
+          next.weatherAvgHigh = weatherSummary.avgHigh;
+          next.weatherAvgLow = weatherSummary.avgLow;
+          return next;
+        });
+      }, [tripInfo.days, tripInfo.hasLaundry, weatherSummary.avgHigh, weatherSummary.avgLow]);
+
+      const toggleCheck = (cat, idx) => {
+        setPackingList(prev => {
+          const next = JSON.parse(JSON.stringify(prev));
+          next.categories[cat][idx].checked = !next.categories[cat][idx].checked;
+          return next;
+        });
+      };
+
+      const removeItem = (cat, idx) => {
+        setPackingList(prev => {
+          const next = JSON.parse(JSON.stringify(prev));
+          next.categories[cat].splice(idx, 1);
+          if (next.categories[cat].length === 0) delete next.categories[cat];
+          return next;
+        });
+      };
+
+      const addItem = (cat) => {
+        if (!newItemName.trim()) return;
+        setPackingList(prev => {
+          const next = JSON.parse(JSON.stringify(prev));
+          if (!next.categories[cat]) next.categories[cat] = [];
+          next.categories[cat].push({ name: newItemName.trim(), qty: 1, checked: false, note: '' });
+          return next;
+        });
+        setNewItemName('');
+        setAddItemCat(null);
+      };
+
+      const updateQty = (cat, idx, newQ) => {
+        setPackingList(prev => {
+          const next = JSON.parse(JSON.stringify(prev));
+          next.categories[cat][idx].qty = Math.max(1, parseInt(newQ) || 1);
+          return next;
+        });
+      };
+
+      const toggleCat = (cat) => {
+        setCollapsedCats(prev => ({ ...prev, [cat]: !prev[cat] }));
+      };
+
+      const progress = useMemo(() => {
+        if (!packingList || !packingList.categories) return { checked: 0, total: 0 };
+        let checked = 0, total = 0;
+        for (const items of Object.values(packingList.categories)) {
+          for (const item of items) {
+            total++;
+            if (item.checked) checked++;
+          }
+        }
+        return { checked, total };
+      }, [packingList]);
+
+      const catEmojis = {
+        'Taly': '👩', 'Doug': '👨', 'Noa': '👶',
+        'Nursing': '🍼', 'SoomSoom': '🐶',
+        'Electronics': '🔌', 'Bug & Sun': '☀️',
+        'Travel & Other': '🧳', 'Food': '🍱',
+        'Organize at Home': '🏠'
+      };
+
+      const panelClass = `fixed ${isMobile ? 'inset-0 z-50' : 'top-0 right-0 w-[420px] h-full z-40'} flex flex-col ${isDarkMode ? 'bg-slate-900 text-white' : 'bg-white text-gray-900'} shadow-2xl`;
+
+      // Weather summary display
+      const weatherLabel = weatherSummary.avgHigh >= 25 ? 'Hot' : weatherSummary.avgHigh >= 18 ? 'Warm' : weatherSummary.avgHigh >= 10 ? 'Cool' : 'Cold';
+      const weatherEmoji = weatherSummary.avgHigh >= 25 ? '☀️' : weatherSummary.avgHigh >= 18 ? '🌤️' : weatherSummary.avgHigh >= 10 ? '🌧️' : '❄️';
+
+      return React.createElement('div', { className: panelClass },
+        // Header
+        React.createElement('div', { className: `flex items-center justify-between px-4 py-3 border-b ${isDarkMode ? 'border-slate-700' : 'border-gray-200'}` },
+          React.createElement('div', { className: 'flex items-center gap-2' },
+            React.createElement('span', { className: 'text-xl' }, '🎒'),
+            React.createElement('h2', { className: 'text-lg font-bold' }, 'Packing List'),
+            progress.total > 0 && React.createElement('span', { className: `text-xs px-2 py-0.5 rounded-full ${progress.checked === progress.total ? (isDarkMode ? 'bg-green-900 text-green-300' : 'bg-green-100 text-green-700') : (isDarkMode ? 'bg-slate-700 text-slate-300' : 'bg-gray-100 text-gray-600')}` }, `${progress.checked}/${progress.total}`)
+          ),
+          React.createElement('button', { onClick: onClose, className: `p-1.5 rounded-full ${isDarkMode ? 'hover:bg-slate-700' : 'hover:bg-gray-100'}`, title: 'Close' }, '✕')
+        ),
+
+        // Content
+        React.createElement('div', { className: 'flex-1 overflow-y-auto' },
+          !packingList ? (
+            // Generate screen
+            React.createElement('div', { className: 'p-6 text-center' },
+              React.createElement('div', { className: 'text-4xl mb-4' }, '🧳'),
+              React.createElement('h3', { className: 'text-lg font-semibold mb-2' }, 'Generate Your Packing List'),
+              React.createElement('p', { className: `text-sm mb-4 ${isDarkMode ? 'text-slate-400' : 'text-gray-500'}` },
+                `Based on your ${tripInfo.days}-day trip`
+              ),
+              // Trip summary
+              React.createElement('div', { className: `rounded-lg p-3 mb-4 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-blue-50'}` },
+                React.createElement('div', { className: 'flex items-center justify-between mb-1' },
+                  React.createElement('span', null, `${weatherEmoji} Weather: ${weatherLabel}`),
+                  React.createElement('span', null, `${weatherSummary.avgHigh}°/${weatherSummary.avgLow}°C`)
+                ),
+                React.createElement('div', { className: 'flex items-center justify-between mb-1' },
+                  React.createElement('span', null, `🌧️ Rainy days: ${weatherSummary.rainyDays}`),
+                  React.createElement('span', null, `📅 ${tripInfo.days} days`)
+                ),
+                React.createElement('div', { className: 'flex items-center justify-between' },
+                  React.createElement('span', null, tripInfo.hasLaundry ? '🧺 Laundry available' : '🚫 No laundry'),
+                  tripInfo.hasLaundry && React.createElement('span', { className: `text-xs ${isDarkMode ? 'text-green-400' : 'text-green-600'}` }, 'Reduced quantities')
+                )
+              ),
+              React.createElement('p', { className: `text-xs mb-4 ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}` },
+                'Clothing quantities auto-calculated based on trip length, weather forecast, and laundry access. You can edit everything after generating.'
+              ),
+              React.createElement('button', {
+                onClick: generateList,
+                className: 'px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold text-sm transition shadow-lg'
+              }, 'Generate Packing List')
+            )
+          ) : (
+            // Packing list view
+            React.createElement('div', { className: 'pb-20' },
+              // Trip summary bar
+              React.createElement('div', { className: `px-4 py-2 text-xs flex items-center gap-3 border-b ${isDarkMode ? 'border-slate-700 bg-slate-800/50 text-slate-400' : 'border-gray-100 bg-gray-50 text-gray-500'}` },
+                React.createElement('span', null, `${weatherEmoji} ${weatherSummary.avgHigh}°/${weatherSummary.avgLow}°`),
+                React.createElement('span', null, `📅 ${tripInfo.days}d`),
+                tripInfo.hasLaundry && React.createElement('span', null, '🧺 Laundry'),
+                React.createElement('span', { className: 'ml-auto' },
+                  `${Math.round(progress.checked / Math.max(1, progress.total) * 100)}% packed`
+                )
+              ),
+              // Progress bar
+              React.createElement('div', { className: `h-1 ${isDarkMode ? 'bg-slate-800' : 'bg-gray-100'}` },
+                React.createElement('div', {
+                  className: `h-full transition-all ${progress.checked === progress.total ? 'bg-green-500' : 'bg-blue-500'}`,
+                  style: { width: `${Math.round(progress.checked / Math.max(1, progress.total) * 100)}%` }
+                })
+              ),
+              // Categories
+              Object.entries(packingList.categories || {}).map(([cat, items]) => {
+                const catChecked = items.filter(i => i.checked).length;
+                const collapsed = collapsedCats[cat];
+                const emoji = catEmojis[cat] || '📦';
+                return React.createElement('div', { key: cat, className: `border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}` },
+                  // Category header
+                  React.createElement('button', {
+                    onClick: () => toggleCat(cat),
+                    className: `w-full flex items-center justify-between px-4 py-2.5 text-sm font-semibold ${isDarkMode ? 'hover:bg-slate-800' : 'hover:bg-gray-50'} transition`
+                  },
+                    React.createElement('span', { className: 'flex items-center gap-2' },
+                      React.createElement('span', null, emoji),
+                      cat,
+                      React.createElement('span', { className: `text-xs font-normal ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}` }, `${catChecked}/${items.length}`)
+                    ),
+                    React.createElement('span', { className: `transform transition ${collapsed ? '' : 'rotate-180'} text-xs` }, '▼')
+                  ),
+                  // Items
+                  !collapsed && React.createElement('div', { className: 'px-2 pb-2' },
+                    items.map((item, idx) =>
+                      React.createElement('div', {
+                        key: idx,
+                        className: `flex items-center gap-2 px-2 py-1.5 rounded-lg ${item.checked ? (isDarkMode ? 'opacity-50' : 'opacity-40') : ''} ${isDarkMode ? 'hover:bg-slate-800' : 'hover:bg-gray-50'} group transition`
+                      },
+                        React.createElement('button', {
+                          onClick: () => toggleCheck(cat, idx),
+                          className: `w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition ${item.checked ? 'bg-green-500 border-green-500 text-white' : (isDarkMode ? 'border-slate-600' : 'border-gray-300')}`
+                        }, item.checked ? '✓' : ''),
+                        React.createElement('span', {
+                          className: `flex-1 text-sm ${item.checked ? 'line-through' : ''}`
+                        }, item.name),
+                        item.note && React.createElement('span', {
+                          className: `text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`, title: item.note
+                        }, '📝'),
+                        // Qty badge (editable on click)
+                        editingItem && editingItem.cat === cat && editingItem.idx === idx ? (
+                          React.createElement('input', {
+                            type: 'number', min: 1, value: editQty,
+                            onChange: e => setEditQty(e.target.value),
+                            onBlur: () => { updateQty(cat, idx, editQty); setEditingItem(null); },
+                            onKeyDown: e => { if (e.key === 'Enter') { updateQty(cat, idx, editQty); setEditingItem(null); } },
+                            className: `w-10 text-center text-xs rounded border ${isDarkMode ? 'bg-slate-700 border-slate-600' : 'bg-white border-gray-300'}`,
+                            autoFocus: true
+                          })
+                        ) : (
+                          item.qty > 1 && React.createElement('button', {
+                            onClick: () => { setEditingItem({ cat, idx }); setEditQty(String(item.qty)); },
+                            className: `text-xs px-1.5 py-0.5 rounded-full ${isDarkMode ? 'bg-slate-700 text-slate-300' : 'bg-gray-200 text-gray-600'} hover:opacity-80`,
+                            title: 'Click to edit quantity'
+                          }, `×${item.qty}`)
+                        ),
+                        // Delete button (shows on hover)
+                        React.createElement('button', {
+                          onClick: () => removeItem(cat, idx),
+                          className: `opacity-0 group-hover:opacity-100 text-xs p-0.5 rounded ${isDarkMode ? 'text-red-400 hover:bg-red-900/30' : 'text-red-400 hover:bg-red-50'} transition`
+                        }, '✕')
+                      )
+                    ),
+                    // Add item
+                    addItemCat === cat ? (
+                      React.createElement('div', { className: 'flex items-center gap-2 px-2 py-1.5' },
+                        React.createElement('input', {
+                          type: 'text', value: newItemName,
+                          onChange: e => setNewItemName(e.target.value),
+                          onKeyDown: e => { if (e.key === 'Enter') addItem(cat); if (e.key === 'Escape') setAddItemCat(null); },
+                          placeholder: 'Add item...',
+                          className: `flex-1 text-sm px-2 py-1 rounded border ${isDarkMode ? 'bg-slate-800 border-slate-600' : 'bg-white border-gray-300'}`,
+                          autoFocus: true
+                        }),
+                        React.createElement('button', { onClick: () => addItem(cat), className: 'text-blue-500 text-sm font-medium' }, 'Add'),
+                        React.createElement('button', { onClick: () => setAddItemCat(null), className: `text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}` }, '✕')
+                      )
+                    ) : (
+                      React.createElement('button', {
+                        onClick: () => { setAddItemCat(cat); setNewItemName(''); },
+                        className: `w-full text-left px-2 py-1 text-xs ${isDarkMode ? 'text-slate-500 hover:text-slate-300' : 'text-gray-400 hover:text-gray-600'} transition`
+                      }, '+ Add item')
+                    )
+                  )
+                );
+              })
+            )
+          )
+        ),
+
+        // Bottom bar (when list exists)
+        packingList && React.createElement('div', {
+          className: `flex items-center justify-between px-4 py-3 border-t ${isDarkMode ? 'border-slate-700 bg-slate-800' : 'border-gray-200 bg-gray-50'}`
+        },
+          React.createElement('button', {
+            onClick: () => {
+              if (confirm('Regenerate packing list? This will reset all items and checkmarks.')) {
+                generateList();
+              }
+            },
+            className: `text-xs px-3 py-1.5 rounded-lg ${isDarkMode ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-600'} transition`
+          }, '🔄 Regenerate'),
+          React.createElement('button', {
+            onClick: () => {
+              setPackingList(prev => {
+                const next = JSON.parse(JSON.stringify(prev));
+                for (const items of Object.values(next.categories)) {
+                  for (const item of items) item.checked = false;
+                }
+                return next;
+              });
+            },
+            className: `text-xs px-3 py-1.5 rounded-lg ${isDarkMode ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' : 'bg-gray-200 hover:bg-gray-300 text-gray-600'} transition`
+          }, 'Uncheck All')
+        )
+      );
+    };
+
+
+        const ItineraryPlanner = ({ pins, collections, activeCollection, isDarkMode, isMobile, onFlyTo, onClose, pendingAddPin, onClearPendingAdd }) => {
       const [itineraries, setItineraries] = useState([]);
       const [activeItinerary, setActiveItinerary] = useState(null);
       const [days, setDays] = useState([]);
@@ -14148,6 +14818,7 @@
       const [kmlBulkData, setKmlBulkData] = useState(null);
       const [showItinerary, setShowItinerary] = useState(false);
       const [showTravelDocs, setShowTravelDocs] = useState(false);
+      const [showPackingList, setShowPackingList] = useState(false);
 
       // ---- Photo-to-Pin flow state ----
       const [photoToPinCrop, setPhotoToPinCrop] = useState(null); // { imageSrc } — shown in crop modal
@@ -14161,20 +14832,30 @@
         if (selectedPin) {
           if (showItinerary) setShowItinerary(false);
           if (showTravelDocs) setShowTravelDocs(false);
+          if (showPackingList) setShowPackingList(false);
         }
       }, [selectedPin]);
       useEffect(() => {
         if (showItinerary) {
           if (selectedPin) setSelectedPin(null);
           if (showTravelDocs) setShowTravelDocs(false);
+          if (showPackingList) setShowPackingList(false);
         }
       }, [showItinerary]);
       useEffect(() => {
         if (showTravelDocs) {
           if (selectedPin) setSelectedPin(null);
           if (showItinerary) setShowItinerary(false);
+          if (showPackingList) setShowPackingList(false);
         }
       }, [showTravelDocs]);
+      useEffect(() => {
+        if (showPackingList) {
+          if (selectedPin) setSelectedPin(null);
+          if (showItinerary) setShowItinerary(false);
+          if (showTravelDocs) setShowTravelDocs(false);
+        }
+      }, [showPackingList]);
       const [pendingItineraryPin, setPendingItineraryPin] = useState(null);
       const [coLocatedPins, setCoLocatedPins] = useState([]);
       // Helper: select a pin and auto-detect its same-place group
@@ -14968,7 +15649,7 @@
                 (mobile uses bottom chip bar + search bar ⋯ menu instead) */}
             {!isMobile && (
               <div className={`absolute right-3 sm:right-4 top-16 sm:top-20 flex flex-col items-end gap-2 pointer-events-auto ${
-                (selectedPin || showItinerary || showTravelDocs) ? 'hidden' : ''
+                (selectedPin || showItinerary || showTravelDocs || showPackingList) ? 'hidden' : ''
               }`}>
                 <div className="flex bg-white dark:bg-slate-800 rounded-full shadow-lg p-1">
                   <button
@@ -14994,6 +15675,13 @@
                   title="Documents"
                 >
                   📄
+                </button>
+                <button
+                  onClick={() => setShowPackingList(true)}
+                  className="w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-base transition"
+                  title="Packing List"
+                >
+                  🎒
                 </button>
                 <button
                   onClick={() => setShowItinerary(!showItinerary)}
@@ -15451,6 +16139,17 @@
           )}
 
           {/* Documents (unified: standalone travel docs + pin-attached docs) */}
+          {showPackingList && (
+            <PackingListPanel
+              collectionId={activeCollection}
+              pins={pins}
+              isDarkMode={darkMode}
+              isMobile={isMobile}
+              onClose={() => setShowPackingList(false)}
+              showToast={showToast}
+            />
+          )}
+
           {showTravelDocs && (
             <TravelDocsPanel
               collectionId={activeCollection}
@@ -15500,6 +16199,16 @@
                 }`}
               >
                 <span className="text-base">📄</span> Docs
+              </button>
+              <button
+                onClick={() => setShowPackingList(!showPackingList)}
+                className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-full shadow-lg text-sm font-medium transition ${
+                  showPackingList
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 border dark:border-slate-600'
+                }`}
+              >
+                <span className="text-base">🎒</span> Pack
               </button>
               <button
                 onClick={() => setShowItinerary(!showItinerary)}
@@ -15645,7 +16354,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v33';
+const CACHE_NAME = 'bo-wander-v36';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
