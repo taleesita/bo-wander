@@ -9348,13 +9348,299 @@
             <div className="max-h-[85vh] md:max-h-full md:h-full overflow-y-auto p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-bold dark:text-white">
-                  {pin.id ? 'Edit Pin' : 'Add Place'}
+                  {pin.id && pin.reservation_details ? 'Edit Booking' : pin.id ? 'Edit Pin' : 'Add Place'}
                 </h2>
                 <button onClick={onCancel} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
                   <CloseIcon />
                 </button>
               </div>
 
+              {/* --- BOOKING-STYLE EDIT for pins with reservation_details --- */}
+              {pin.id && pin.reservation_details && (() => {
+                const rd = formData.reservation_details || {};
+                const rdType = rd.type || (pin.category === 'hotel' ? 'hotel' : pin.category === 'activity' ? 'activity' : '');
+                const isHotel = rdType === 'hotel';
+                const isActivity = rdType === 'activity';
+                const isTransport = ['flight', 'train', 'transfer'].includes(rdType);
+                const inputClass = "w-full px-3 py-2 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm";
+                const labelClass = "text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1";
+                const updateRD = (field, value) => {
+                  setFormData(prev => ({
+                    ...prev,
+                    reservation_details: { ...(prev.reservation_details || {}), [field]: value }
+                  }));
+                };
+                // Normalize dates/times for HTML inputs
+                const normDate = (v) => {
+                  if (!v) return '';
+                  if (/^\d{4}-\d{2}-\d{2}/.test(v)) return v.substring(0, 10);
+                  const d = new Date(v);
+                  return !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : '';
+                };
+                const normTime = (v) => {
+                  if (!v) return '';
+                  if (/^\d{2}:\d{2}/.test(v)) return v.substring(0, 5);
+                  const m12 = v.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+                  if (m12) {
+                    let h = parseInt(m12[1]);
+                    if (m12[3].toUpperCase() === 'PM' && h !== 12) h += 12;
+                    if (m12[3].toUpperCase() === 'AM' && h === 12) h = 0;
+                    return String(h).padStart(2, '0') + ':' + m12[2];
+                  }
+                  return '';
+                };
+
+                return (
+                  <div className="space-y-3">
+                    {/* Booking type indicator */}
+                    <div className={`text-xs font-bold uppercase tracking-wide px-2 py-1 rounded ${isHotel ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' : isActivity ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' : 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300'}`}>
+                      {isHotel ? '🏨 Hotel Reservation' : isActivity ? '🎟️ Activity Booking' : `🚄 ${rdType.charAt(0).toUpperCase() + rdType.slice(1)}`}
+                    </div>
+
+                    {/* Name */}
+                    <div>
+                      <label className={labelClass}>{isHotel ? 'Hotel / Property *' : isActivity ? 'Tour / Activity *' : 'Name *'}</label>
+                      <input type="text" value={formData.name || ''} onChange={e => handleChange('name', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" />
+                    </div>
+
+                    {/* Address */}
+                    <div>
+                      <label className={labelClass}>{isActivity ? 'Meeting Point / Address' : 'Address'}</label>
+                      <AddressAutocomplete
+                        value={formData.address || ''}
+                        onChange={val => handleChange('address', val)}
+                        onSelectAddress={s => {
+                          handleChange('address', s.address);
+                          if (s.lat && s.lng) { handleChange('lat', s.lat); handleChange('lng', s.lng); }
+                        }}
+                        isDarkMode={isDarkMode}
+                      />
+                    </div>
+
+                    {isHotel && <>
+                      {/* Room Type */}
+                      <div>
+                        <label className={labelClass}>Room Type</label>
+                        <input type="text" value={rd.room_type || ''} onChange={e => updateRD('room_type', e.target.value)} placeholder="e.g. Superior Two-Bedroom Suite" className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+
+                      {/* Price */}
+                      <div>
+                        <label className={labelClass}>Price</label>
+                        <input type="text" value={rd.price || ''} onChange={e => updateRD('price', e.target.value)} placeholder="e.g. ¥176,951" className={inputClass} autoComplete="off" data-1p-ignore />
+                        {rd.price_usd && <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">≈ {rd.price_usd} USD</p>}
+                      </div>
+
+                      {/* Check-in date + time */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className={labelClass}>Check-in Date</label>
+                          <input type="date" value={normDate(rd.check_in)} onChange={e => updateRD('check_in', e.target.value)} className={inputClass} data-1p-ignore />
+                        </div>
+                        <div>
+                          <label className={labelClass}>Check-in Time</label>
+                          <input type="time" value={normTime(rd.check_in_time)} onChange={e => updateRD('check_in_time', e.target.value)} className={inputClass} data-1p-ignore />
+                        </div>
+                      </div>
+
+                      {/* Check-out date + time */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className={labelClass}>Check-out Date</label>
+                          <input type="date" value={normDate(rd.check_out)} onChange={e => updateRD('check_out', e.target.value)} className={inputClass} data-1p-ignore />
+                        </div>
+                        <div>
+                          <label className={labelClass}>Check-out Time</label>
+                          <input type="time" value={normTime(rd.check_out_time)} onChange={e => updateRD('check_out_time', e.target.value)} className={inputClass} data-1p-ignore />
+                        </div>
+                      </div>
+
+                      {/* Confirmation # + PIN */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className={labelClass}>Confirmation #</label>
+                          <input type="text" value={rd.confirmation_number || ''} onChange={e => updateRD('confirmation_number', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" />
+                        </div>
+                        <div>
+                          <label className={labelClass}>PIN</label>
+                          <input type="text" value={rd.pin || ''} onChange={e => updateRD('pin', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" />
+                        </div>
+                      </div>
+
+                      {/* Booking Source */}
+                      <div>
+                        <label className={labelClass}>Booking Source</label>
+                        <input type="text" value={rd.booking_source || ''} onChange={e => updateRD('booking_source', e.target.value)} placeholder="e.g. Booking.com, Airbnb" className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+
+                      {/* Includes Breakfast */}
+                      <div>
+                        <label className={labelClass}>Includes Breakfast</label>
+                        <div className="flex gap-2">
+                          {[['yes', 'Yes'], ['no', 'No'], ['unknown', 'Unknown']].map(([val, label]) => (
+                            <button
+                              key={val}
+                              type="button"
+                              onClick={() => updateRD('includes_breakfast', val)}
+                              className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium border transition ${
+                                (rd.includes_breakfast || 'unknown') === val
+                                  ? val === 'yes' ? 'bg-green-100 border-green-500 text-green-800 dark:bg-green-900/30 dark:text-green-300 dark:border-green-600'
+                                    : val === 'no' ? 'bg-red-100 border-red-500 text-red-800 dark:bg-red-900/30 dark:text-red-300 dark:border-red-600'
+                                    : 'bg-gray-100 border-gray-400 text-gray-700 dark:bg-slate-700 dark:text-gray-300 dark:border-slate-500'
+                                  : 'border-gray-300 dark:border-slate-600 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-800'
+                              }`}
+                            >
+                              {val === 'yes' ? '🥐 ' : val === 'no' ? '❌ ' : '❓ '}{label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Washer/Dryer */}
+                      <div>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={rd.has_laundry || false} onChange={e => updateRD('has_laundry', e.target.checked)} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                          <span className="text-sm font-semibold text-gray-700 dark:text-gray-300">🧺 Washer/Dryer Available</span>
+                        </label>
+                      </div>
+                    </>}
+
+                    {isActivity && <>
+                      {/* Tour Operator */}
+                      <div>
+                        <label className={labelClass}>Tour Operator</label>
+                        <input type="text" value={rd.tour_operator || rd.operator || ''} onChange={e => updateRD('tour_operator', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+
+                      {/* Booking Site */}
+                      <div>
+                        <label className={labelClass}>Booking Site</label>
+                        <input type="text" value={rd.booking_source || ''} onChange={e => updateRD('booking_source', e.target.value)} placeholder="e.g. Klook, Viator" className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+
+                      {/* Confirmation # */}
+                      <div>
+                        <label className={labelClass}>Confirmation #</label>
+                        <input type="text" value={rd.confirmation_number || ''} onChange={e => updateRD('confirmation_number', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+
+                      {/* Date + Time */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className={labelClass}>Date</label>
+                          <input type="date" value={normDate(rd.date || rd.activity_date)} onChange={e => { updateRD('date', e.target.value); updateRD('activity_date', e.target.value); }} className={inputClass} data-1p-ignore />
+                        </div>
+                        <div>
+                          <label className={labelClass}>Time</label>
+                          <input type="time" value={normTime(rd.time || rd.activity_time)} onChange={e => { updateRD('time', e.target.value); updateRD('activity_time', e.target.value); }} className={inputClass} data-1p-ignore />
+                        </div>
+                      </div>
+
+                      {/* Duration + Price */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className={labelClass}>Duration</label>
+                          <input type="text" value={rd.duration || ''} onChange={e => updateRD('duration', e.target.value)} placeholder="e.g. 30 minutes" className={inputClass} autoComplete="off" data-1p-ignore />
+                        </div>
+                        <div>
+                          <label className={labelClass}>Price</label>
+                          <input type="text" value={rd.price || ''} onChange={e => updateRD('price', e.target.value)} placeholder="e.g. US$ 68.90" className={inputClass} autoComplete="off" data-1p-ignore />
+                        </div>
+                      </div>
+
+                      {/* Contact */}
+                      <div>
+                        <label className={labelClass}>Contact # / Email</label>
+                        <input type="text" value={rd.contact_info || ''} onChange={e => updateRD('contact_info', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+
+                      {/* Description */}
+                      <div>
+                        <label className={labelClass}>Description</label>
+                        <textarea value={rd.description || ''} onChange={e => updateRD('description', e.target.value)} placeholder="What's included, notes, etc." className={inputClass + " h-20 resize-none"} autoComplete="off" data-1p-ignore />
+                      </div>
+                    </>}
+
+                    {isTransport && <>
+                      {/* From / To */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className={labelClass}>From</label>
+                          <input type="text" value={rd.from || ''} onChange={e => updateRD('from', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore />
+                        </div>
+                        <div>
+                          <label className={labelClass}>To</label>
+                          <input type="text" value={rd.to || ''} onChange={e => updateRD('to', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore />
+                        </div>
+                      </div>
+
+                      {/* Carrier */}
+                      <div>
+                        <label className={labelClass}>{rdType === 'flight' ? 'Airline / Flight #' : rdType === 'train' ? 'Train Line / #' : 'Operator'}</label>
+                        <input type="text" value={rd.carrier || ''} onChange={e => updateRD('carrier', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+
+                      {/* Date + Time */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className={labelClass}>Date</label>
+                          <input type="date" value={normDate(rd.departure_date)} onChange={e => updateRD('departure_date', e.target.value)} className={inputClass} data-1p-ignore />
+                        </div>
+                        <div>
+                          <label className={labelClass}>Departure Time</label>
+                          <input type="time" value={normTime(rd.departure_time)} onChange={e => updateRD('departure_time', e.target.value)} className={inputClass} data-1p-ignore />
+                        </div>
+                      </div>
+
+                      {/* Confirmation # + Seat */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className={labelClass}>Confirmation #</label>
+                          <input type="text" value={rd.confirmation_number || ''} onChange={e => updateRD('confirmation_number', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" />
+                        </div>
+                        <div>
+                          <label className={labelClass}>Seat / Car</label>
+                          <input type="text" value={rd.seat || ''} onChange={e => updateRD('seat', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore />
+                        </div>
+                      </div>
+
+                      {/* Price */}
+                      <div>
+                        <label className={labelClass}>Price</label>
+                        <input type="text" value={rd.price || ''} onChange={e => updateRD('price', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+                    </>}
+
+                    {/* Notes — always available */}
+                    <div>
+                      <label className={labelClass}>Notes</label>
+                      <textarea
+                        value={formData.personal_notes || ''}
+                        onChange={e => handleChange('personal_notes', e.target.value)}
+                        className={inputClass + " h-16 resize-none"}
+                        rows={2}
+                        placeholder="Personal notes..."
+                      />
+                    </div>
+
+                    {/* Attachment preview */}
+                    {formData.attachment && formData.attachment.data && (
+                      <div className="rounded-lg overflow-hidden border dark:border-slate-700 bg-gray-50 dark:bg-slate-800">
+                        {formData.attachment.data.startsWith('data:image/') ? (
+                          <img src={formData.attachment.data} alt="Booking doc" className="w-full max-h-32 object-contain" />
+                        ) : (
+                          <div className="flex items-center gap-2 px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+                            <span>📎</span> {formData.attachment.name}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* --- STANDARD PIN FORM (non-booking pins) --- */}
+              {!(pin.id && pin.reservation_details) && <>
               {/* Place Search (for new pins only) */}
               {!pin.id && showPlaceSearch && (
                 <PlaceSearch onSelectPlace={handleSelectPlace} isDarkMode={isDarkMode} />
@@ -9841,6 +10127,7 @@
                   )}
                 </div>
               )}
+              </>}
 
               {(!showPlaceSearch || pin.id) && (
                 <div className="flex gap-2 pt-4 border-t dark:border-slate-700">
@@ -13540,36 +13827,50 @@
       const [editQty, setEditQty] = useState('');
       const packingKey = `boWanderPacking_${collectionId}`;
 
-      // Load from localStorage + Firebase
+      // Track whether a change came from Firebase listener to avoid save loop
+      const fromFirebaseRef = useRef(false);
+      const savingRef = useRef(false);
+
+      // Load from localStorage initially, then subscribe to Firebase for real-time sync
       useEffect(() => {
-        const saved = localStorage.getItem(packingKey);
-        if (saved) {
-          try { setPackingList(JSON.parse(saved)); } catch(e) {}
-        }
-        // Also try Firebase
+        // Load cached version for instant display
+        try {
+          const saved = localStorage.getItem(packingKey);
+          if (saved) setPackingList(JSON.parse(saved));
+        } catch(e) {}
+
+        // Subscribe to real-time updates from Firebase
         const db = MockFirebase.db;
         if (db && collectionId) {
           const docRef = MockFirebase.firebase.firestore().collection('packing_lists').doc(collectionId);
-          docRef.get().then(snap => {
+          const unsub = docRef.onSnapshot(snap => {
             if (snap.exists) {
               const data = snap.data();
+              // Skip if we just saved this ourselves
+              if (savingRef.current) { savingRef.current = false; return; }
+              fromFirebaseRef.current = true;
               setPackingList(data);
-              localStorage.setItem(packingKey, JSON.stringify(data));
+              try { localStorage.setItem(packingKey, JSON.stringify(data)); } catch(e) {}
             }
-          }).catch(() => {});
+          }, err => {
+            console.warn('[PackingList] Firebase listener error:', err);
+          });
+          return () => unsub();
         }
       }, [collectionId]);
 
-      // Save whenever packingList changes
+      // Save whenever packingList changes (skip if change came from Firebase listener)
       useEffect(() => {
         if (!packingList) return;
-        localStorage.setItem(packingKey, JSON.stringify(packingList));
+        if (fromFirebaseRef.current) { fromFirebaseRef.current = false; return; }
+        try { localStorage.setItem(packingKey, JSON.stringify(packingList)); } catch(e) {}
         // Save to Firebase
         const db = MockFirebase.db;
         if (db && collectionId) {
           try {
+            savingRef.current = true;
             MockFirebase.firebase.firestore().collection('packing_lists').doc(collectionId).set(packingList);
-          } catch(e) { console.warn('[PackingList] Firebase save failed:', e.message); }
+          } catch(e) { console.warn('[PackingList] Firebase save failed:', e.message); savingRef.current = false; }
         }
       }, [packingList, collectionId]);
 
@@ -16569,7 +16870,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v38';
+const CACHE_NAME = 'bo-wander-v39';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
