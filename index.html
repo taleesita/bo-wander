@@ -6797,14 +6797,20 @@
       // Merge pin-attached docs (hotels, activities) into the timeline
       const pinDocs = useMemo(() => {
         if (!pins) return [];
+        const toISO = (str) => {
+          if (!str) return '';
+          if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.substring(0, 10);
+          const d = new Date(str);
+          return !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : str;
+        };
         return pins
           .filter(p => p.collection_id === collectionId && (p.attachment || p.reservation_details))
           .map(p => {
             const rd = p.reservation_details || {};
             const isActivity = rd.booking_type === 'activity';
             let date = '';
-            if (isActivity && rd.date) date = rd.date;
-            else if (rd.check_in) date = rd.check_in;
+            if (isActivity && rd.date) date = toISO(rd.date);
+            else if (rd.check_in) date = toISO(rd.check_in);
             return {
               id: `pin_${p.id}`,
               _pinDoc: true,
@@ -6817,8 +6823,8 @@
               carrier: rd.booking_source || '',
               confirmation: rd.confirmation_number || '',
               cost: rd.price || '',
-              check_in: rd.check_in || '',
-              check_out: rd.check_out || '',
+              check_in: toISO(rd.check_in),
+              check_out: toISO(rd.check_out),
               notes: isActivity ? rd.description : '',
               address: p.address || '',
               file_data: p.attachment?.data || null,
@@ -6884,7 +6890,15 @@
       const formatDate = (dateStr) => {
         if (!dateStr) return '';
         try {
-          const d = new Date(dateStr + 'T00:00:00');
+          // Try ISO format first (2026-05-11)
+          let d;
+          if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) {
+            d = new Date(dateStr.substring(0, 10) + 'T00:00:00');
+          } else {
+            // Locale format like "May 11, 2026" — parse directly
+            d = new Date(dateStr);
+          }
+          if (isNaN(d.getTime())) return dateStr;
           return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
         } catch { return dateStr; }
       };
@@ -16958,7 +16972,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v46';
+const CACHE_NAME = 'bo-wander-v47';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
