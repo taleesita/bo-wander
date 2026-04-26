@@ -1968,14 +1968,23 @@
         .trim();
     };
 
-    // Check if two pins refer to the same place (for merging spot + activity)
+    // Check if two pins refer to the same place (for merging spot + activity, or same-hotel with different dates)
     const isSamePlacePin = (a, b) => {
       if (!a || !b || a.id === b.id) return false;
-      // Must be different types — one spot, one activity (or hotel)
-      const aIsBooking = a.category === 'activity' || a.category === 'hotel';
-      const bIsBooking = b.category === 'activity' || b.category === 'hotel';
-      // If both are bookings or neither is, don't merge
-      if (aIsBooking === bIsBooking) return false;
+      const bookingCats = ['activity', 'hotel', 'restaurant'];
+      const aIsBooking = bookingCats.includes(a.category);
+      const bIsBooking = bookingCats.includes(b.category);
+      // Allow merging: (1) spot + booking, or (2) same-category bookings at same place (e.g. two hotel stays)
+      const sameCategory = a.category === b.category;
+      const bothBookings = aIsBooking && bIsBooking;
+      if (aIsBooking === bIsBooking && !sameCategory) return false; // both bookings but different types — don't merge
+      if (!aIsBooking && !bIsBooking) return false; // neither is a booking — don't merge
+      // For same-category bookings, they must have different dates to be worth merging
+      if (sameCategory && bothBookings) {
+        const aDate = a.reservation_details?.check_in || a.reservation_details?.date || '';
+        const bDate = b.reservation_details?.check_in || b.reservation_details?.date || '';
+        if (aDate && bDate && aDate === bDate) return false; // same date = likely duplicate, don't merge
+      }
       // Compare normalized names
       const na = normalizePinName(a.name);
       const nb = normalizePinName(b.name);
@@ -3061,16 +3070,26 @@
             {hasGroup && !editing && (
               <div className="flex gap-1 bg-gray-100 dark:bg-slate-800 rounded-lg p-1">
                 {[...coLocatedPins].sort((a, b) => {
-                  // Spot pin first, then activity/hotel
-                  const aBook = a.category === 'activity' || a.category === 'hotel' || a.category === 'restaurant' ? 1 : 0;
-                  const bBook = b.category === 'activity' || b.category === 'hotel' || b.category === 'restaurant' ? 1 : 0;
-                  return aBook - bBook;
+                  // Spot pin first, then bookings sorted by date
+                  const bookingCats = ['activity', 'hotel', 'restaurant'];
+                  const aBook = bookingCats.includes(a.category) ? 1 : 0;
+                  const bBook = bookingCats.includes(b.category) ? 1 : 0;
+                  if (aBook !== bBook) return aBook - bBook;
+                  // Both bookings: sort by date
+                  const aDate = a.reservation_details?.check_in || a.reservation_details?.date || '';
+                  const bDate = b.reservation_details?.check_in || b.reservation_details?.date || '';
+                  return aDate.localeCompare(bDate);
                 }).map((p) => {
                   const isActive = p.id === pin.id;
                   const isBooking = p.category === 'activity' || p.category === 'hotel' || p.category === 'restaurant';
                   const catData = PIN_CATEGORIES[p.category] || PIN_CATEGORIES.other;
+                  // If multiple pins share the same category, show dates to differentiate
+                  const sameCatCount = coLocatedPins.filter(cp => cp.category === p.category).length;
+                  const dateTag = sameCatCount > 1 && p.reservation_details ? formatPinDate(p.reservation_details) : null;
                   const label = isBooking
-                    ? (p.category === 'activity' ? '🎫 Activity' : p.category === 'restaurant' ? '🍽️ Reservation' : '🏨 Hotel')
+                    ? (dateTag
+                        ? `${p.category === 'activity' ? '🎫' : p.category === 'restaurant' ? '🍽️' : '🏨'} ${dateTag}`
+                        : (p.category === 'activity' ? '🎫 Activity' : p.category === 'restaurant' ? '🍽️ Reservation' : '🏨 Hotel'))
                     : `${catData.icon || '📍'} Place`;
                   return (
                     <button
@@ -10831,11 +10850,15 @@
             if (matched.has(validPins[j].id)) continue;
             if (isSamePlacePin(validPins[i], validPins[j])) {
               const group = [validPins[i], validPins[j]];
-              // Sort: spot pin first, then activity/hotel
+              // Sort: spot pin first, then bookings by date
               group.sort((a, b) => {
-                const aBook = a.category === 'activity' || a.category === 'hotel';
-                const bBook = b.category === 'activity' || b.category === 'hotel';
-                return aBook - bBook;
+                const bookingCats = ['activity', 'hotel', 'restaurant'];
+                const aBook = bookingCats.includes(a.category) ? 1 : 0;
+                const bBook = bookingCats.includes(b.category) ? 1 : 0;
+                if (aBook !== bBook) return aBook - bBook;
+                const aDate = a.reservation_details?.check_in || a.reservation_details?.date || '';
+                const bDate = b.reservation_details?.check_in || b.reservation_details?.date || '';
+                return aDate.localeCompare(bDate);
               });
               pinGroupMap[validPins[i].id] = group;
               pinGroupMap[validPins[j].id] = group;
@@ -11184,9 +11207,13 @@
             if (isSamePlacePin(result[i], result[j])) {
               const group = [result[i], result[j]];
               group.sort((a, b) => {
-                const aBook = a.category === 'activity' || a.category === 'hotel';
-                const bBook = b.category === 'activity' || b.category === 'hotel';
-                return aBook - bBook; // spot first
+                const bookingCats = ['activity', 'hotel', 'restaurant'];
+                const aBook = bookingCats.includes(a.category) ? 1 : 0;
+                const bBook = bookingCats.includes(b.category) ? 1 : 0;
+                if (aBook !== bBook) return aBook - bBook;
+                const aDate = a.reservation_details?.check_in || a.reservation_details?.date || '';
+                const bDate = b.reservation_details?.check_in || b.reservation_details?.date || '';
+                return aDate.localeCompare(bDate);
               });
               samePlaceMap[result[i].id] = group;
               samePlaceMap[result[j].id] = group;
@@ -17237,7 +17264,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v53';
+const CACHE_NAME = 'bo-wander-v54';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
