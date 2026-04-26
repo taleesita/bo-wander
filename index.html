@@ -9606,6 +9606,158 @@
                   </div>
                   )}
 
+                  {/* Reservation / Activity Details — only when they exist */}
+                  {pin.id && formData.reservation_details && (() => {
+                    const rd = formData.reservation_details;
+                    const isHotel = rd.type === 'hotel';
+                    const isActivity = rd.type === 'activity';
+                    const isTransport = rd.type === 'flight' || rd.type === 'train' || rd.type === 'transfer';
+                    const updateRDEdit = (field, value) => {
+                      handleChange('reservation_details', { ...rd, [field]: value });
+                    };
+                    const rdLabel = "text-xs font-medium text-gray-500 dark:text-gray-400 mb-0.5";
+                    const rdField = "w-full px-2.5 py-1.5 border rounded-lg dark:bg-slate-800 dark:border-slate-700 dark:text-white text-sm";
+                    return (
+                      <div className="border rounded-xl dark:border-slate-700 overflow-hidden">
+                        <div className="px-3 py-2 bg-blue-50 dark:bg-blue-900/20 border-b dark:border-slate-700">
+                          <span className="text-xs font-bold text-blue-600 dark:text-blue-400 uppercase tracking-wide">
+                            {isHotel ? 'Reservation Details' : isActivity ? 'Activity Details' : 'Transport Details'}
+                          </span>
+                        </div>
+                        <div className="p-3 space-y-2.5">
+                          {isHotel && (
+                            <>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className={rdLabel}>Check-in</label>
+                                  <input type="date" value={rd.check_in || ''} onChange={e => updateRDEdit('check_in', e.target.value)} className={rdField} />
+                                </div>
+                                <div>
+                                  <label className={rdLabel}>Check-out</label>
+                                  <input type="date" value={rd.check_out || ''} onChange={e => updateRDEdit('check_out', e.target.value)} className={rdField} />
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className={rdLabel}>Check-in time</label>
+                                  <input type="time" value={rd.check_in_time || ''} onChange={e => updateRDEdit('check_in_time', e.target.value)} className={rdField} />
+                                </div>
+                                <div>
+                                  <label className={rdLabel}>Check-out time</label>
+                                  <input type="time" value={rd.check_out_time || ''} onChange={e => updateRDEdit('check_out_time', e.target.value)} className={rdField} />
+                                </div>
+                              </div>
+                              <div>
+                                <label className={rdLabel}>Room type</label>
+                                <input type="text" value={rd.room_type || ''} onChange={e => updateRDEdit('room_type', e.target.value)} className={rdField} placeholder="e.g. King Suite" />
+                              </div>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className={rdLabel}>Confirmation #</label>
+                                  <input type="text" value={rd.confirmation_number || ''} onChange={e => updateRDEdit('confirmation_number', e.target.value)} className={rdField} data-1p-ignore data-lpignore="true" autoComplete="off" />
+                                </div>
+                                <div>
+                                  <label className={rdLabel}>PIN</label>
+                                  <input type="text" value={rd.pin || ''} onChange={e => updateRDEdit('pin', e.target.value)} className={rdField} data-1p-ignore data-lpignore="true" autoComplete="off" />
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className={rdLabel}>Price</label>
+                                  <input type="text" value={rd.price || ''} onChange={e => updateRDEdit('price', e.target.value)} className={rdField} placeholder="e.g. $150/night" />
+                                </div>
+                                <div>
+                                  <label className={rdLabel}>Breakfast</label>
+                                  <select value={rd.includes_breakfast || ''} onChange={e => updateRDEdit('includes_breakfast', e.target.value)} className={rdField}>
+                                    <option value="">Unknown</option>
+                                    <option value="yes">Included</option>
+                                    <option value="no">Not included</option>
+                                  </select>
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className={rdLabel}>Booking source</label>
+                                  <input type="text" value={rd.booking_source || ''} onChange={e => updateRDEdit('booking_source', e.target.value)} className={rdField} placeholder="e.g. Booking.com" />
+                                </div>
+                                <div className="flex items-end pb-1">
+                                  <label className="flex items-center gap-2 cursor-pointer">
+                                    <input type="checkbox" checked={rd.has_laundry || false} onChange={e => updateRDEdit('has_laundry', e.target.checked)} className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                                    <span className="text-sm text-gray-700 dark:text-gray-300">Washer/Dryer</span>
+                                  </label>
+                                </div>
+                              </div>
+                            </>
+                          )}
+                          {isActivity && (
+                            <>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className={rdLabel}>Date</label>
+                                  <input type="date" value={rd.activity_date || ''} onChange={e => updateRDEdit('activity_date', e.target.value)} className={rdField} />
+                                </div>
+                                <div>
+                                  <label className={rdLabel}>Time</label>
+                                  <input type="time" value={rd.activity_time || ''} onChange={e => updateRDEdit('activity_time', e.target.value)} className={rdField} />
+                                </div>
+                              </div>
+                              <div>
+                                <label className={rdLabel}>Operator</label>
+                                <input type="text" value={rd.operator || ''} onChange={e => updateRDEdit('operator', e.target.value)} className={rdField} />
+                              </div>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className={rdLabel}>Confirmation #</label>
+                                  <input type="text" value={rd.confirmation_number || ''} onChange={e => updateRDEdit('confirmation_number', e.target.value)} className={rdField} data-1p-ignore data-lpignore="true" autoComplete="off" />
+                                </div>
+                                <div>
+                                  <label className={rdLabel}>Price</label>
+                                  <input type="text" value={rd.price || ''} onChange={e => updateRDEdit('price', e.target.value)} className={rdField} />
+                                </div>
+                              </div>
+                              <div>
+                                <label className={rdLabel}>Meeting point</label>
+                                <input type="text" value={rd.meeting_point || ''} onChange={e => updateRDEdit('meeting_point', e.target.value)} className={rdField} />
+                              </div>
+                              <div>
+                                <label className={rdLabel}>Booking source</label>
+                                <input type="text" value={rd.booking_source || ''} onChange={e => updateRDEdit('booking_source', e.target.value)} className={rdField} />
+                              </div>
+                            </>
+                          )}
+                          {isTransport && (
+                            <>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className={rdLabel}>Date</label>
+                                  <input type="date" value={rd.departure_date || ''} onChange={e => updateRDEdit('departure_date', e.target.value)} className={rdField} />
+                                </div>
+                                <div>
+                                  <label className={rdLabel}>Time</label>
+                                  <input type="time" value={rd.departure_time || ''} onChange={e => updateRDEdit('departure_time', e.target.value)} className={rdField} />
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className={rdLabel}>Confirmation #</label>
+                                  <input type="text" value={rd.confirmation_number || ''} onChange={e => updateRDEdit('confirmation_number', e.target.value)} className={rdField} data-1p-ignore data-lpignore="true" autoComplete="off" />
+                                </div>
+                                <div>
+                                  <label className={rdLabel}>Carrier</label>
+                                  <input type="text" value={rd.carrier || ''} onChange={e => updateRDEdit('carrier', e.target.value)} className={rdField} />
+                                </div>
+                              </div>
+                              <div>
+                                <label className={rdLabel}>Price</label>
+                                <input type="text" value={rd.price || ''} onChange={e => updateRDEdit('price', e.target.value)} className={rdField} />
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {/* Meal tags — for itinerary smart filtering */}
                   {(['cafe', 'treats', 'restaurant', 'bar'].includes(formData.category || guessEmojiAndCategory(formData.name || '', '').category)) && (
                   <div>
@@ -12947,33 +13099,36 @@
           {/* Day header */}
           <button
             onClick={onToggle}
-            className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 dark:bg-slate-800/80 hover:bg-gray-100 dark:hover:bg-slate-700/80 transition text-left"
+            className="w-full px-3 py-2.5 bg-gray-50 dark:bg-slate-800/80 hover:bg-gray-100 dark:hover:bg-slate-700/80 transition text-left"
           >
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="text-xs font-bold text-gray-400 dark:text-gray-500 flex-shrink-0">D{day.day_number}</span>
-              <span className="text-sm font-semibold dark:text-white flex-shrink-0">{formatDayDate(day.date)}</span>
-              {weather && (() => {
-                const w = weatherCodeMap[weather.code] || weatherCodeMap[0];
-                const showRain = weather.rainChance != null && weather.rainChance > 0;
-                return (
-                  <span className="flex items-center gap-1 flex-shrink-0" title={`${w.label}${showRain ? ` · ${weather.rainChance}% chance of rain` : ''}${weather.rainMm > 0 ? ` · ${weather.rainMm}mm` : ''}${weather.isHistorical ? ' (last year)' : ''}`}>
-                    <span className="text-sm">{w.emoji}</span>
-                    <span className={`text-xs ${weather.isHistorical ? 'text-gray-400 dark:text-gray-500 italic' : 'text-gray-500 dark:text-gray-400'}`}>
-                      {weather.high}°/{weather.low}°
-                    </span>
-                    {showRain && (
-                      <span className={`text-xs ${weather.rainChance >= 50 ? 'text-blue-500 dark:text-blue-400 font-medium' : 'text-gray-400 dark:text-gray-500'}`}>
-                        💧{weather.rainChance}%
-                      </span>
-                    )}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-xs font-bold text-gray-400 dark:text-gray-500 flex-shrink-0">D{day.day_number}</span>
+                <span className="text-sm font-semibold dark:text-white flex-shrink-0">{formatDayDate(day.date)}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-400">{items.length} item{items.length !== 1 ? 's' : ''}{totalMinutes > 0 ? ` · ${totalHrs > 0 ? totalHrs + 'h ' : ''}${totalMins > 0 ? totalMins + 'm' : ''}` : ''}{totalTransitMin > 0 ? ` (${totalTransitMin}m travel)` : ''}</span>
+                <span className={`text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}>▾</span>
+              </div>
+            </div>
+            {weather && (() => {
+              const w = weatherCodeMap[weather.code] || weatherCodeMap[0];
+              const showRain = weather.rainChance != null && weather.rainChance > 0;
+              return (
+                <div className={`flex items-center gap-2 mt-1 ml-6 ${weather.isHistorical ? 'opacity-70' : ''}`} title={`${w.label}${showRain ? ` · ${weather.rainChance}% chance of rain` : ''}${weather.rainMm > 0 ? ` · ${weather.rainMm}mm` : ''}${weather.isHistorical ? ' (historical avg)' : ''}`}>
+                  <span className="text-sm">{w.emoji}</span>
+                  <span className={`text-xs ${weather.isHistorical ? 'text-gray-400 dark:text-gray-500 italic' : 'text-gray-500 dark:text-gray-400'}`}>
+                    {weather.high}°/{weather.low}°
                   </span>
-                );
-              })()}
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-400">{items.length} item{items.length !== 1 ? 's' : ''}{totalMinutes > 0 ? ` · ${totalHrs > 0 ? totalHrs + 'h ' : ''}${totalMins > 0 ? totalMins + 'm' : ''}` : ''}{totalTransitMin > 0 ? ` (${totalTransitMin}m travel)` : ''}</span>
-              <span className={`text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}>▾</span>
-            </div>
+                  {showRain && (
+                    <span className={`text-xs ${weather.rainChance >= 50 ? 'text-blue-500 dark:text-blue-400 font-medium' : 'text-gray-400 dark:text-gray-500'}`}>
+                      💧{weather.rainChance}%
+                    </span>
+                  )}
+                  {weather.isHistorical && <span className="text-xs text-gray-400 dark:text-gray-500 italic">avg</span>}
+                </div>
+              );
+            })()}
           </button>
 
           {/* Expanded content */}
@@ -16354,7 +16509,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v36';
+const CACHE_NAME = 'bo-wander-v37';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
