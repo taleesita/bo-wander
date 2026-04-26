@@ -1124,7 +1124,18 @@
 
       // Save a pin to Firestore
       async savePin(pin) {
-        const pinData = { ...pin, updated_at: new Date().toISOString() };
+        // Deep-clean undefined values (Firestore rejects them)
+        const cleanForFirestore = (obj) => {
+          if (obj === null || obj === undefined) return null;
+          if (typeof obj !== 'object') return obj;
+          if (Array.isArray(obj)) return obj.map(cleanForFirestore);
+          const cleaned = {};
+          for (const [k, v] of Object.entries(obj)) {
+            if (v !== undefined) cleaned[k] = cleanForFirestore(v);
+          }
+          return cleaned;
+        };
+        const pinData = cleanForFirestore({ ...pin, updated_at: new Date().toISOString() });
         if (!pinData.created_at) pinData.created_at = new Date().toISOString();
         // Use pin.id as the document ID
         await db.collection('pins').doc(pin.id).set(pinData, { merge: true });
@@ -8256,17 +8267,18 @@
                   )}
 
                   {/* Booking type toggle */}
-                  <div className="flex rounded-lg overflow-hidden border dark:border-slate-700">
-                    {[['hotel', '🏨 Hotel'], ['activity', '🎟️ Activity'], ['restaurant', '🍽️ Restaurant'], ['flight', '✈️ Flight'], ['train', '🚄 Train'], ['transfer', '🚐 Transfer']].map(([val, label]) => (
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {[['hotel', '🏨', 'Hotel'], ['activity', '🎟️', 'Activity'], ['restaurant', '🍽️', 'Restaurant'], ['flight', '✈️', 'Flight'], ['train', '🚄', 'Train'], ['transfer', '🚐', 'Transfer']].map(([val, icon, label]) => (
                       <button
                         key={val}
                         onClick={() => setBookingType(val)}
-                        className={`flex-1 px-3 py-2 text-sm font-medium transition ${
+                        className={`flex flex-col items-center gap-0.5 px-2 py-2 rounded-lg text-xs font-medium transition border ${
                           bookingType === val
-                            ? 'bg-blue-600 text-white'
-                            : 'bg-gray-50 dark:bg-slate-800 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : 'bg-gray-50 dark:bg-slate-800 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700 border-gray-200 dark:border-slate-700'
                         }`}
                       >
+                        <span className="text-base">{icon}</span>
                         {label}
                       </button>
                     ))}
@@ -10526,7 +10538,7 @@
           attributionControl: true,
           zoomAnimation: true,
           markerZoomAnimation: true
-        }).setView([35.68, 139.69], 12);
+        }).setView([30, 0], 3);
         // Place zoom controls on the right (bottom) to avoid colliding with the floating back/search chips
         L.control.zoom({ position: 'bottomright' }).addTo(map);
         mapInstanceRef.current = map;
@@ -17113,7 +17125,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v50';
+const CACHE_NAME = 'bo-wander-v52';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
