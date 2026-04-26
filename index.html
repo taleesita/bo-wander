@@ -6810,24 +6810,27 @@
           .map(p => {
             const rd = p.reservation_details || {};
             const isActivity = rd.booking_type === 'activity';
+            const isRestaurant = rd.booking_type === 'restaurant' || p.category === 'restaurant';
             let date = '';
-            if (isActivity && (rd.date || rd.activity_date)) date = toISO(rd.date || rd.activity_date);
+            if ((isActivity || isRestaurant) && (rd.date || rd.activity_date)) date = toISO(rd.date || rd.activity_date);
             else if (rd.check_in) date = toISO(rd.check_in);
+            const docType = isRestaurant ? 'restaurant' : isActivity ? 'activity' : 'hotel';
             return {
               id: `pin_${p.id}`,
               _pinDoc: true,
               _pin: p,
-              type: isActivity ? 'activity' : 'hotel',
+              type: docType,
               title: p.name,
               date,
-              departure_time: isActivity ? (rd.time || rd.activity_time || '') : '',
+              departure_time: (isActivity || isRestaurant) ? (rd.time || rd.activity_time || '') : '',
               arrival_time: '',
               carrier: rd.booking_source || '',
               confirmation: rd.confirmation_number || '',
               cost: rd.price || '',
+              passengers: rd.passengers || '',
               check_in: toISO(rd.check_in),
               check_out: toISO(rd.check_out),
-              notes: isActivity ? rd.description : '',
+              notes: (isActivity || isRestaurant) ? rd.description : '',
               address: p.address || '',
               file_data: p.attachment?.data || null,
               file_name: p.attachment?.name || '',
@@ -7999,7 +8002,38 @@
           }
           return;
         }
-        if (bookingType === 'activity') {
+        if (bookingType === 'restaurant') {
+          if (!propertyName.trim()) { alert('Please enter a restaurant name'); return; }
+          onSelect({
+            name: propertyName,
+            address: address,
+            lat: resolvedLat,
+            lng: resolvedLng,
+            description: [
+              activityDate && `Date: ${activityDate}${activityTime ? ' at ' + activityTime : ''}`,
+              passengers && `Party: ${passengers}`,
+              price && `Price: ${price}`,
+              confirmationNumber && `Confirmation: ${confirmationNumber}`,
+              bookingSource && `Booked via: ${bookingSource}`,
+              activityDescription,
+            ].filter(Boolean).join('\n'),
+            emoji: '🍽️',
+            category: 'restaurant',
+            source_name: bookingSource || '',
+            reservation_details: {
+              booking_type: 'restaurant',
+              booking_source: bookingSource,
+              confirmation_number: confirmationNumber,
+              date: activityDate,
+              time: activityTime,
+              price: price,
+              passengers: passengers ? parseInt(passengers) : null,
+              description: activityDescription,
+              address: address,
+            },
+            attachment: fileDataUrl ? { name: fileName, data: fileDataUrl, thumbnail: fileThumbnail } : null,
+          });
+        } else if (bookingType === 'activity') {
           if (!tourName.trim()) { alert('Please enter a tour/activity name'); return; }
           onSelect({
             name: tourName,
@@ -8223,7 +8257,7 @@
 
                   {/* Booking type toggle */}
                   <div className="flex rounded-lg overflow-hidden border dark:border-slate-700">
-                    {[['hotel', '🏨 Hotel'], ['activity', '🎟️ Activity'], ['flight', '✈️ Flight'], ['train', '🚄 Train'], ['transfer', '🚐 Transfer']].map(([val, label]) => (
+                    {[['hotel', '🏨 Hotel'], ['activity', '🎟️ Activity'], ['restaurant', '🍽️ Restaurant'], ['flight', '✈️ Flight'], ['train', '🚄 Train'], ['transfer', '🚐 Transfer']].map(([val, label]) => (
                       <button
                         key={val}
                         onClick={() => setBookingType(val)}
@@ -8451,6 +8485,66 @@
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Description</label>
                     <textarea value={activityDescription} onChange={e => setActivityDescription(e.target.value)} placeholder="What's included, notes, etc." className={inputClass + " h-20 resize-none"} autoComplete="off" data-1p-ignore />
+                  </div>
+                  </>}
+
+                  {/* --- RESTAURANT FORM --- */}
+                  {bookingType === 'restaurant' && <>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Restaurant Name *</label>
+                    <div className="relative">
+                      <input type="text" value={propertyName} onChange={e => handlePropertyNameChange(e.target.value)} placeholder="e.g. Restaurant Shigetsu" className={inputClass} autoFocus autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" />
+                      {geocodingName && <span className="absolute right-3 top-2.5 text-xs text-gray-400 animate-pulse">Looking up...</span>}
+                    </div>
+                    {addressSuggestions.length > 0 && (
+                      <div className="mt-1 border rounded-lg overflow-hidden dark:border-slate-700 bg-white dark:bg-slate-800">
+                        {addressSuggestions.map((s, i) => (
+                          <button key={i} onClick={() => selectAddressSuggestion(s)} className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 dark:hover:bg-slate-700 border-b last:border-b-0 dark:border-slate-700 flex items-start gap-2">
+                            <span className="text-red-400 mt-0.5">📍</span>
+                            <div>
+                              <span className="font-medium dark:text-white">{s.name || propertyName}</span>
+                              <span className="text-gray-500 dark:text-gray-400 text-xs block">{s.address}</span>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Address</label>
+                    <input type="text" value={address} onChange={e => { setAddress(e.target.value); setAddressSuggestions([]); }} placeholder="Restaurant address" className={inputClass} autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Booked via</label>
+                    <input type="text" value={bookingSource} onChange={e => setBookingSource(e.target.value)} placeholder="e.g. TableCheck, OpenTable, direct" className={inputClass} autoComplete="off" data-1p-ignore />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Date</label>
+                      <input type="date" value={activityDate} onChange={e => setActivityDate(e.target.value)} className={inputClass} data-1p-ignore />
+                    </div>
+                    <div>
+                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Time</label>
+                      <input type="time" value={activityTime} onChange={e => setActivityTime(e.target.value)} className={inputClass} data-1p-ignore />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Party Size</label>
+                      <input type="number" min="1" value={passengers} onChange={e => setPassengers(e.target.value)} placeholder="2" className={inputClass} data-1p-ignore />
+                    </div>
+                    <div>
+                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Price</label>
+                      <input type="text" value={price} onChange={e => setPrice(e.target.value)} placeholder="e.g. ¥5,500" className={inputClass} autoComplete="off" data-1p-ignore />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Confirmation #</label>
+                    <input type="text" value={confirmationNumber} onChange={e => setConfirmationNumber(e.target.value)} placeholder="Reservation number" className={inputClass} autoComplete="off" data-1p-ignore />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Notes</label>
+                    <textarea value={activityDescription} onChange={e => setActivityDescription(e.target.value)} placeholder="Special requests, dietary needs, etc." className={inputClass + " h-20 resize-none"} autoComplete="off" data-1p-ignore />
                   </div>
                   </>}
 
@@ -15603,22 +15697,27 @@
         console.log('[BoWander] Auto-repairing', missingCoords.length, 'pins with missing coordinates:', missingCoords.map(p => p.name));
         let repaired = 0;
         const repair = async (pin) => {
-          try {
-            const resp = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(pin.name)}&limit=1`);
-            const data = await resp.json();
-            const f = data.features?.[0];
-            if (f?.geometry?.coordinates) {
-              const lng = f.geometry.coordinates[0];
-              const lat = f.geometry.coordinates[1];
-              const addr = !pin.address ? [f.properties?.street, f.properties?.city, f.properties?.country].filter(Boolean).join(', ') : pin.address;
-              const updated = { ...pin, lat, lng, address: addr || pin.address };
-              MockFirebase.savePin(updated);
-              setPins(prev => prev.map(p => p.id === pin.id ? updated : p));
-              repaired++;
-              console.log('[BoWander] Repaired:', pin.name, '->', lat, lng);
+          // Try address first (more specific), then name
+          const queries = [pin.address, pin.name].filter(Boolean);
+          for (const q of queries) {
+            try {
+              const resp = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=1`);
+              const data = await resp.json();
+              const f = data.features?.[0];
+              if (f?.geometry?.coordinates) {
+                const lng = f.geometry.coordinates[0];
+                const lat = f.geometry.coordinates[1];
+                const addr = !pin.address ? [f.properties?.street, f.properties?.city, f.properties?.country].filter(Boolean).join(', ') : pin.address;
+                const updated = { ...pin, lat, lng, address: addr || pin.address };
+                MockFirebase.savePin(updated);
+                setPins(prev => prev.map(p => p.id === pin.id ? updated : p));
+                repaired++;
+                console.log('[BoWander] Repaired:', pin.name, '->', lat, lng);
+                return;
+              }
+            } catch (err) {
+              console.warn('[BoWander] Failed to repair:', pin.name, 'with query:', q, err);
             }
-          } catch (err) {
-            console.warn('[BoWander] Failed to repair:', pin.name, err);
           }
         };
         // Stagger requests to avoid rate limiting
@@ -16747,17 +16846,22 @@
                 const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
                 // Use coordinates from the modal if available, otherwise fallback geocode
                 let lat = data.lat || 0, lng = data.lng || 0;
-                if (!lat && data.name) {
-                  try {
-                    const geoResp = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(data.name)}&limit=1`);
-                    const geoData = await geoResp.json();
-                    const f = geoData.features?.[0];
-                    if (f?.geometry?.coordinates) {
-                      lng = f.geometry.coordinates[0];
-                      lat = f.geometry.coordinates[1];
-                      if (!data.address) data.address = [f.properties?.street, f.properties?.city, f.properties?.country].filter(Boolean).join(', ');
-                    }
-                  } catch {}
+                if (!lat && (data.address || data.name)) {
+                  // Try address first (more specific), then name
+                  const queries = [data.address, data.name].filter(Boolean);
+                  for (const q of queries) {
+                    try {
+                      const geoResp = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=1`);
+                      const geoData = await geoResp.json();
+                      const f = geoData.features?.[0];
+                      if (f?.geometry?.coordinates) {
+                        lng = f.geometry.coordinates[0];
+                        lat = f.geometry.coordinates[1];
+                        if (!data.address) data.address = [f.properties?.street, f.properties?.city, f.properties?.country].filter(Boolean).join(', ');
+                        break;
+                      }
+                    } catch {}
+                  }
                 }
                 const newPin = {
                   name: data.name,
@@ -17009,7 +17113,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v48';
+const CACHE_NAME = 'bo-wander-v50';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
