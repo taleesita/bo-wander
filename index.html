@@ -13652,8 +13652,8 @@
     // ==================== PACKING LIST PANEL ====================
     const PACKING_TEMPLATE = {
       'Taly': [
-        { name: 'Vitamins', qty: 1, fixed: true },
-        { name: 'Thyroid pills', qty: 1, fixed: true },
+        { name: 'Vitamins', qty: 0, auto: 'daily' },
+        { name: 'Thyroid pills', qty: 0, auto: 'daily' },
         { name: 'PJs', qty: 1, auto: 'sleepwear' },
         { name: 'Compression socks', qty: 1, fixed: true },
         { name: 'Hair cover', qty: 1, fixed: true },
@@ -13690,7 +13690,7 @@
         { name: 'Socks', qty: 0, auto: 'socks' },
         { name: 'Underwear', qty: 0, auto: 'underwear' },
         { name: 'Retainer', qty: 1, fixed: true },
-        { name: 'Vitamins', qty: 1, fixed: true },
+        { name: 'Vitamins', qty: 0, auto: 'daily' },
         { name: 'Rain jacket', qty: 0, auto: 'rain_jacket' },
       ],
       'Noa': [
@@ -13801,6 +13801,7 @@
       const warmDays = effectiveDays - coldDays;
 
       return {
+        daily: tripDays, // items needed once per day (vitamins, pills)
         tops: Math.max(3, baseTops),
         long_bottoms: Math.max(1, Math.ceil(coldDays > 0 ? Math.min(coldDays * 0.5, hasAnyLaundry ? 2 : 4) : (warmDays > 0 ? 1 : 2))),
         shorts: warmDays > 0 ? Math.max(1, Math.ceil(Math.min(warmDays * 0.4, hasAnyLaundry ? 2 : 4))) : 0,
@@ -13825,6 +13826,8 @@
       const [newItemName, setNewItemName] = useState('');
       const [editingItem, setEditingItem] = useState(null); // { cat, idx }
       const [editQty, setEditQty] = useState('');
+      const [addingSection, setAddingSection] = useState(false);
+      const [newSectionName, setNewSectionName] = useState('');
       const packingKey = `boWanderPacking_${collectionId}`;
 
       // Track whether a change came from Firebase listener to avoid save loop
@@ -14114,6 +14117,27 @@
         setCollapsedCats(prev => ({ ...prev, [cat]: !prev[cat] }));
       };
 
+      const deleteSection = (cat) => {
+        setPackingList(prev => {
+          const next = JSON.parse(JSON.stringify(prev));
+          delete next.categories[cat];
+          return next;
+        });
+      };
+
+      const addSection = (name) => {
+        if (!name.trim()) return;
+        setPackingList(prev => {
+          const next = JSON.parse(JSON.stringify(prev));
+          if (!next.categories[name.trim()]) {
+            next.categories[name.trim()] = [];
+          }
+          return next;
+        });
+        setNewSectionName('');
+        setAddingSection(false);
+      };
+
       const progress = useMemo(() => {
         if (!packingList || !packingList.categories) return { checked: 0, total: 0 };
         let checked = 0, total = 0;
@@ -14210,16 +14234,24 @@
                 const emoji = catEmojis[cat] || '📦';
                 return React.createElement('div', { key: cat, className: `border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}` },
                   // Category header
-                  React.createElement('button', {
-                    onClick: () => toggleCat(cat),
-                    className: `w-full flex items-center justify-between px-4 py-2.5 text-sm font-semibold ${isDarkMode ? 'hover:bg-slate-800' : 'hover:bg-gray-50'} transition`
-                  },
-                    React.createElement('span', { className: 'flex items-center gap-2' },
-                      React.createElement('span', null, emoji),
-                      cat,
-                      React.createElement('span', { className: `text-xs font-normal ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}` }, `${catChecked}/${items.length}`)
+                  React.createElement('div', { className: `flex items-center justify-between px-4 py-2.5 text-sm font-semibold ${isDarkMode ? 'hover:bg-slate-800' : 'hover:bg-gray-50'} transition group` },
+                    React.createElement('button', {
+                      onClick: () => toggleCat(cat),
+                      className: 'flex-1 flex items-center justify-between'
+                    },
+                      React.createElement('span', { className: 'flex items-center gap-2' },
+                        React.createElement('span', null, emoji),
+                        cat,
+                        React.createElement('span', { className: `text-xs font-normal ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}` }, `${catChecked}/${items.length}`)
+                      ),
+                      React.createElement('span', { className: `transform transition ${collapsed ? '' : 'rotate-180'} text-xs` }, '▼')
                     ),
-                    React.createElement('span', { className: `transform transition ${collapsed ? '' : 'rotate-180'} text-xs` }, '▼')
+                    // Delete section button (shows on hover, only when empty)
+                    React.createElement('button', {
+                      onClick: (e) => { e.stopPropagation(); if (items.length === 0 || confirm(`Delete "${cat}" section and its ${items.length} items?`)) deleteSection(cat); },
+                      className: `ml-2 opacity-0 group-hover:opacity-100 text-xs p-1 rounded ${isDarkMode ? 'text-red-400 hover:bg-red-900/30' : 'text-red-400 hover:bg-red-50'} transition`,
+                      title: 'Delete section'
+                    }, '✕')
                   ),
                   // Items
                   !collapsed && React.createElement('div', { className: 'px-2 pb-2' },
@@ -14232,12 +14264,14 @@
                           onClick: () => toggleCheck(cat, idx),
                           className: `w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition ${item.checked ? 'bg-green-500 border-green-500 text-white' : (isDarkMode ? 'border-slate-600' : 'border-gray-300')}`
                         }, item.checked ? '✓' : ''),
-                        React.createElement('span', {
-                          className: `flex-1 text-sm ${item.checked ? 'line-through' : ''}`
-                        }, item.name),
-                        item.note && React.createElement('span', {
-                          className: `text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`, title: item.note
-                        }, '📝'),
+                        React.createElement('div', { className: 'flex-1 min-w-0' },
+                          React.createElement('span', {
+                            className: `text-sm ${item.checked ? 'line-through' : ''}`
+                          }, item.name),
+                          item.note && React.createElement('div', {
+                            className: `text-xs truncate ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}`
+                          }, item.note)
+                        ),
                         // Qty badge (editable on click)
                         editingItem && editingItem.cat === cat && editingItem.idx === idx ? (
                           React.createElement('input', {
@@ -14284,7 +14318,27 @@
                     )
                   )
                 );
-              })
+              }),
+              // Add section button
+              addingSection ? (
+                React.createElement('div', { className: `flex items-center gap-2 px-4 py-3 border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}` },
+                  React.createElement('input', {
+                    type: 'text', value: newSectionName,
+                    onChange: e => setNewSectionName(e.target.value),
+                    onKeyDown: e => { if (e.key === 'Enter') addSection(newSectionName); if (e.key === 'Escape') setAddingSection(false); },
+                    placeholder: 'Section name...',
+                    className: `flex-1 text-sm px-2 py-1 rounded border ${isDarkMode ? 'bg-slate-800 border-slate-600' : 'bg-white border-gray-300'}`,
+                    autoFocus: true
+                  }),
+                  React.createElement('button', { onClick: () => addSection(newSectionName), className: 'text-blue-500 text-sm font-medium' }, 'Add'),
+                  React.createElement('button', { onClick: () => setAddingSection(false), className: `text-xs ${isDarkMode ? 'text-slate-500' : 'text-gray-400'}` }, '✕')
+                )
+              ) : (
+                React.createElement('button', {
+                  onClick: () => { setAddingSection(true); setNewSectionName(''); },
+                  className: `w-full text-left px-4 py-2.5 text-xs font-medium ${isDarkMode ? 'text-slate-500 hover:text-slate-300 hover:bg-slate-800' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'} transition border-b ${isDarkMode ? 'border-slate-800' : 'border-gray-100'}`
+                }, '+ Add section')
+              )
             )
           )
         ),
@@ -16901,7 +16955,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v42';
+const CACHE_NAME = 'bo-wander-v43';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
