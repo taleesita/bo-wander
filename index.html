@@ -10545,6 +10545,8 @@
       useEffect(() => {
         const map = mapInstanceRef.current;
         if (!map) return;
+        // Abort any pending geocode from a previous render (prevents stale geocode overriding pin-based centering)
+        const abortController = new AbortController();
 
         // Clear old markers
         markersRef.current.forEach(marker => map.removeLayer(marker));
@@ -10708,7 +10710,7 @@
           prevCollectionKey.current = collectionKey;
           // No pins — geocode the collection name to center the map there
           if (collectionName) {
-            fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(collectionName)}&limit=1`)
+            fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(collectionName)}&limit=1`, { signal: abortController.signal })
               .then(r => r.json())
               .then(data => {
                 const f = data.features?.[0];
@@ -10720,6 +10722,7 @@
               .catch(() => {});
           }
         }
+        return () => abortController.abort();
       }, [pins, collectionName]);
 
       // Update marker styles when selection changes (without rebuilding all markers)
@@ -16955,7 +16958,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v45';
+const CACHE_NAME = 'bo-wander-v46';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
