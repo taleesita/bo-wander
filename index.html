@@ -1430,6 +1430,65 @@
           console.warn('Shared map load failed:', e);
         }
         return null;
+      },
+
+      // ===== TRAVEL DOCS CRUD =====
+      _travelDocsLocalKey: 'boWanderTravelDocs',
+
+      async saveTravelDoc(doc) {
+        const data = { ...doc, updated_at: new Date().toISOString() };
+        if (!data.created_at) data.created_at = data.updated_at;
+        if (!data.id) data.id = Date.now().toString();
+        this._mergeLocal(this._travelDocsLocalKey, data);
+        try {
+          await db.collection('travel_docs').doc(data.id).set(data, { merge: true });
+        } catch (e) {
+          console.warn('[TravelDocs] Firestore save failed, using localStorage only:', e.message);
+        }
+        return data;
+      },
+
+      async loadTravelDocs(collectionId) {
+        const local = this._loadLocal(this._travelDocsLocalKey).filter(d => d.collection_id === collectionId);
+        try {
+          const snap = await db.collection('travel_docs').where('collection_id', '==', collectionId).get();
+          const items = [];
+          snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+          const byId = {};
+          [...local, ...items].forEach(it => { byId[it.id] = it; });
+          return Object.values(byId).sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.departure_time || '').localeCompare(b.departure_time || ''));
+        } catch (e) {
+          console.warn('Failed to load travel docs from Firestore, using localStorage:', e.message);
+          return local.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+        }
+      },
+
+      async deleteTravelDoc(docId) {
+        this._removeLocal(this._travelDocsLocalKey, docId);
+        try {
+          await db.collection('travel_docs').doc(docId).delete();
+        } catch (e) {
+          console.warn('[TravelDocs] Firestore delete failed:', e.message);
+        }
+      },
+
+      onTravelDocsSnapshot(collectionId, callback) {
+        try {
+          return db.collection('travel_docs')
+            .where('collection_id', '==', collectionId)
+            .onSnapshot(snap => {
+              const items = [];
+              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+              items.sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.departure_time || '').localeCompare(b.departure_time || ''));
+              callback(items);
+            }, err => {
+              console.warn('TravelDocs snapshot error:', err);
+              callback(this._loadLocal(this._travelDocsLocalKey).filter(d => d.collection_id === collectionId));
+            });
+        } catch (e) {
+          callback(this._loadLocal(this._travelDocsLocalKey).filter(d => d.collection_id === collectionId));
+          return () => {};
+        }
       }
     };
 
@@ -6373,6 +6432,445 @@
       }
 
       return result;
+    };
+
+    // ==================== TRAVEL DOCS PANEL ====================
+    const TRAVEL_DOC_TYPES = {
+      flight: { label: 'Flight', icon: '✈️', color: '#2196F3' },
+      train: { label: 'Train', icon: '🚄', color: '#4CAF50' },
+      hotel: { label: 'Hotel', icon: '🏨', color: '#9C27B0' },
+      transfer: { label: 'Transfer', icon: '🚐', color: '#FF9800' },
+      general: { label: 'Other', icon: '📎', color: '#607D8B' },
+    };
+
+    const TravelDocsPanel = ({ collectionId, isDarkMode, isMobile, onClose, showToast }) => {
+      const [docs, setDocs] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [showForm, setShowForm] = useState(false);
+      const [editDoc, setEditDoc] = useState(null);
+      const [expandedId, setExpandedId] = useState(null);
+      const [filterType, setFilterType] = useState('all');
+      const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+      const fileInputRef = useRef(null);
+
+      // Load docs with real-time listener
+      useEffect(() => {
+        if (!collectionId) return;
+        setLoading(true);
+        const unsub = MockFirebase.onTravelDocsSnapshot(collectionId, items => {
+          setDocs(items);
+          setLoading(false);
+        });
+        return () => { if (unsub) unsub(); };
+      }, [collectionId]);
+
+      const filteredDocs = filterType === 'all' ? docs : docs.filter(d => d.type === filterType);
+
+      // Group docs by date
+      const groupedDocs = useMemo(() => {
+        const groups = {};
+        filteredDocs.forEach(d => {
+          const key = d.date || 'No date';
+          if (!groups[key]) groups[key] = [];
+          groups[key].push(d);
+        });
+        return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+      }, [filteredDocs]);
+
+      const handleSave = async (docData) => {
+        try {
+          await MockFirebase.saveTravelDoc({ ...docData, collection_id: collectionId });
+          setShowForm(false);
+          setEditDoc(null);
+          if (showToast) showToast('Document saved!');
+        } catch (e) {
+          console.error('Save travel doc failed:', e);
+          if (showToast) showToast('Save failed', 'error');
+        }
+      };
+
+      const handleDelete = async (docId) => {
+        try {
+          await MockFirebase.deleteTravelDoc(docId);
+          setConfirmDeleteId(null);
+          setExpandedId(null);
+          if (showToast) showToast('Document deleted');
+        } catch (e) {
+          if (showToast) showToast('Delete failed', 'error');
+        }
+      };
+
+      const openFile = (doc) => {
+        if (!doc.file_data) return;
+        try {
+          const parts = doc.file_data.match(/^data:([^;]+);base64,(.*)$/);
+          if (!parts) return;
+          const byteString = atob(parts[2]);
+          const ab = new ArrayBuffer(byteString.length);
+          const ia = new Uint8Array(ab);
+          for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+          const blob = new Blob([ab], { type: parts[1] });
+          window.open(URL.createObjectURL(blob), '_blank');
+        } catch (e) { console.error('Open file failed:', e); }
+      };
+
+      const formatDate = (dateStr) => {
+        if (!dateStr) return '';
+        try {
+          const d = new Date(dateStr + 'T00:00:00');
+          return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+        } catch { return dateStr; }
+      };
+
+      // Panel container
+      const panelClass = isMobile
+        ? 'fixed inset-0 z-[1000] flex flex-col bg-white dark:bg-slate-900'
+        : 'fixed top-0 right-0 h-full w-[420px] z-[600] flex flex-col bg-white dark:bg-slate-900 shadow-2xl border-l dark:border-slate-700';
+
+      return (
+        <div className={panelClass}>
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-3 border-b dark:border-slate-700 bg-white dark:bg-slate-800 shrink-0">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">🧳</span>
+              <h2 className="font-semibold text-gray-900 dark:text-white text-base">Travel Docs</h2>
+              <span className="text-xs text-gray-400 dark:text-gray-500">{docs.length}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => { setEditDoc(null); setShowForm(true); }}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-full transition"
+              >
+                + Add
+              </button>
+              <button onClick={onClose} className="p-1.5 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full transition">
+                <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Type filter chips */}
+          <div className="flex gap-1.5 px-4 py-2 overflow-x-auto shrink-0 border-b dark:border-slate-700">
+            {[{ key: 'all', label: 'All', icon: '' }, ...Object.entries(TRAVEL_DOC_TYPES).map(([k, v]) => ({ key: k, label: v.label, icon: v.icon }))].map(f => (
+              <button
+                key={f.key}
+                onClick={() => setFilterType(f.key)}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap transition ${
+                  filterType === f.key
+                    ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300'
+                    : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-slate-600'
+                }`}
+              >
+                {f.icon && <span>{f.icon}</span>}{f.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Doc list */}
+          <div className="flex-1 overflow-y-auto px-4 py-3">
+            {loading ? (
+              <div className="flex items-center justify-center py-12 text-gray-400"><div className="animate-spin w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full"></div></div>
+            ) : filteredDocs.length === 0 ? (
+              <div className="text-center py-12">
+                <div className="text-4xl mb-3">🧳</div>
+                <p className="text-gray-500 dark:text-gray-400 text-sm">No travel documents yet</p>
+                <p className="text-gray-400 dark:text-gray-500 text-xs mt-1">Add flights, trains, hotel bookings & more</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {groupedDocs.map(([date, dateDocs]) => (
+                  <div key={date}>
+                    <div className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2 px-1">
+                      {formatDate(date)}
+                    </div>
+                    <div className="space-y-2">
+                      {dateDocs.map(doc => {
+                        const typeInfo = TRAVEL_DOC_TYPES[doc.type] || TRAVEL_DOC_TYPES.general;
+                        const isExpanded = expandedId === doc.id;
+                        return (
+                          <div
+                            key={doc.id}
+                            className={`rounded-xl border transition overflow-hidden ${
+                              isExpanded
+                                ? 'border-blue-300 dark:border-blue-700 shadow-md'
+                                : 'border-gray-200 dark:border-slate-700 hover:border-gray-300 dark:hover:border-slate-600'
+                            }`}
+                          >
+                            {/* Card header — always visible */}
+                            <button
+                              onClick={() => setExpandedId(isExpanded ? null : doc.id)}
+                              className="w-full flex items-start gap-3 p-3 text-left"
+                            >
+                              <div className="w-9 h-9 rounded-lg flex items-center justify-center text-lg shrink-0" style={{ backgroundColor: typeInfo.color + '20' }}>
+                                {typeInfo.icon}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="font-medium text-sm text-gray-900 dark:text-white truncate">{doc.title}</div>
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                                  {doc.departure_time && (
+                                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                                      {doc.departure_time}{doc.arrival_time ? ` → ${doc.arrival_time}` : ''}
+                                    </span>
+                                  )}
+                                  {doc.carrier && <span className="text-xs text-gray-400 dark:text-gray-500">{doc.carrier}</span>}
+                                  {doc.cost && <span className="text-xs font-medium text-gray-600 dark:text-gray-300">{doc.cost}</span>}
+                                </div>
+                              </div>
+                              <svg className={`w-4 h-4 text-gray-400 shrink-0 mt-1 transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7"/></svg>
+                            </button>
+
+                            {/* Expanded details */}
+                            {isExpanded && (
+                              <div className="px-3 pb-3 border-t dark:border-slate-700">
+                                <div className="grid grid-cols-2 gap-x-4 gap-y-2 mt-3 text-xs">
+                                  {doc.from && <div><span className="text-gray-400 dark:text-gray-500">From</span><div className="text-gray-800 dark:text-gray-200 font-medium">{doc.from}</div></div>}
+                                  {doc.to && <div><span className="text-gray-400 dark:text-gray-500">To</span><div className="text-gray-800 dark:text-gray-200 font-medium">{doc.to}</div></div>}
+                                  {doc.seat && <div><span className="text-gray-400 dark:text-gray-500">Seat</span><div className="text-gray-800 dark:text-gray-200">{doc.seat}</div></div>}
+                                  {doc.confirmation && <div><span className="text-gray-400 dark:text-gray-500">Confirmation</span><div className="text-gray-800 dark:text-gray-200 font-mono">{doc.confirmation}</div></div>}
+                                  {doc.passengers && <div><span className="text-gray-400 dark:text-gray-500">Passengers</span><div className="text-gray-800 dark:text-gray-200">{doc.passengers}</div></div>}
+                                  {doc.check_in && <div><span className="text-gray-400 dark:text-gray-500">Check-in</span><div className="text-gray-800 dark:text-gray-200">{doc.check_in}</div></div>}
+                                  {doc.check_out && <div><span className="text-gray-400 dark:text-gray-500">Check-out</span><div className="text-gray-800 dark:text-gray-200">{doc.check_out}</div></div>}
+                                  {doc.address && <div className="col-span-2"><span className="text-gray-400 dark:text-gray-500">Address</span><div className="text-gray-800 dark:text-gray-200">{doc.address}</div></div>}
+                                </div>
+                                {doc.notes && <div className="mt-2 text-xs text-gray-500 dark:text-gray-400 italic">{doc.notes}</div>}
+                                <div className="flex gap-2 mt-3">
+                                  {doc.file_data && (
+                                    <button onClick={() => openFile(doc)} className="flex items-center gap-1 px-2.5 py-1.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-lg text-xs font-medium hover:bg-blue-100 dark:hover:bg-blue-900/50 transition">
+                                      📄 View File
+                                    </button>
+                                  )}
+                                  <button
+                                    onClick={() => { setEditDoc(doc); setShowForm(true); }}
+                                    className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-50 dark:bg-slate-700 text-gray-600 dark:text-gray-300 rounded-lg text-xs font-medium hover:bg-gray-100 dark:hover:bg-slate-600 transition"
+                                  >
+                                    ✏️ Edit
+                                  </button>
+                                  {confirmDeleteId === doc.id ? (
+                                    <div className="flex gap-1">
+                                      <button onClick={() => handleDelete(doc.id)} className="px-2.5 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium">Delete</button>
+                                      <button onClick={() => setConfirmDeleteId(null)} className="px-2.5 py-1.5 bg-gray-200 dark:bg-slate-600 text-gray-700 dark:text-gray-300 rounded-lg text-xs">Cancel</button>
+                                    </div>
+                                  ) : (
+                                    <button onClick={() => setConfirmDeleteId(doc.id)} className="flex items-center gap-1 px-2.5 py-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg text-xs transition">
+                                      🗑️
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Upload/Edit Form Modal */}
+          {showForm && (
+            <TravelDocForm
+              doc={editDoc}
+              onSave={handleSave}
+              onClose={() => { setShowForm(false); setEditDoc(null); }}
+              isDarkMode={isDarkMode}
+            />
+          )}
+        </div>
+      );
+    };
+
+    // ---- Travel Doc Form (modal overlay) ----
+    const TravelDocForm = ({ doc, onSave, onClose, isDarkMode }) => {
+      const isEdit = !!doc;
+      const [type, setType] = useState(doc?.type || 'flight');
+      const [title, setTitle] = useState(doc?.title || '');
+      const [date, setDate] = useState(doc?.date || '');
+      const [departureTime, setDepartureTime] = useState(doc?.departure_time || '');
+      const [arrivalTime, setArrivalTime] = useState(doc?.arrival_time || '');
+      const [from, setFrom] = useState(doc?.from || '');
+      const [to, setTo] = useState(doc?.to || '');
+      const [carrier, setCarrier] = useState(doc?.carrier || '');
+      const [seat, setSeat] = useState(doc?.seat || '');
+      const [confirmation, setConfirmation] = useState(doc?.confirmation || '');
+      const [passengers, setPassengers] = useState(doc?.passengers || '');
+      const [cost, setCost] = useState(doc?.cost || '');
+      const [notes, setNotes] = useState(doc?.notes || '');
+      const [address, setAddress] = useState(doc?.address || '');
+      const [checkIn, setCheckIn] = useState(doc?.check_in || '');
+      const [checkOut, setCheckOut] = useState(doc?.check_out || '');
+      const [fileData, setFileData] = useState(doc?.file_data || null);
+      const [fileName, setFileName] = useState(doc?.file_name || '');
+      const [saving, setSaving] = useState(false);
+
+      const handleFile = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        if (file.size > 4 * 1024 * 1024) {
+          alert('File too large (max 4MB). Try a smaller file or screenshot.');
+          return;
+        }
+        setFileName(file.name);
+        const reader = new FileReader();
+        reader.onload = () => setFileData(reader.result);
+        reader.readAsDataURL(file);
+      };
+
+      // Auto-generate title from route
+      useEffect(() => {
+        if (!title && from && to) {
+          const typeInfo = TRAVEL_DOC_TYPES[type];
+          setTitle(`${from} → ${to}${carrier ? ` (${carrier})` : ''}`);
+        }
+      }, [from, to, carrier, type]);
+
+      const handleSubmit = async () => {
+        if (!title.trim()) return;
+        setSaving(true);
+        const data = {
+          ...(isEdit ? doc : {}),
+          id: doc?.id || Date.now().toString(),
+          type, title: title.trim(), date,
+          departure_time: departureTime, arrival_time: arrivalTime,
+          from, to, carrier, seat, confirmation,
+          passengers: passengers ? parseInt(passengers) : null,
+          cost, notes, address,
+          check_in: checkIn, check_out: checkOut,
+          file_data: fileData, file_name: fileName,
+        };
+        await onSave(data);
+        setSaving(false);
+      };
+
+      const inputClass = "w-full px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none";
+      const labelClass = "block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1";
+
+      return (
+        <div className="absolute inset-0 bg-white dark:bg-slate-900 z-10 flex flex-col">
+          {/* Form header */}
+          <div className="flex items-center justify-between px-4 py-3 border-b dark:border-slate-700 shrink-0">
+            <h3 className="font-semibold text-gray-900 dark:text-white text-sm">{isEdit ? 'Edit Document' : 'Add Travel Document'}</h3>
+            <button onClick={onClose} className="p-1.5 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full">
+              <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+            {/* Type selector */}
+            <div>
+              <label className={labelClass}>Type</label>
+              <div className="flex gap-1.5 flex-wrap">
+                {Object.entries(TRAVEL_DOC_TYPES).map(([k, v]) => (
+                  <button
+                    key={k}
+                    onClick={() => setType(k)}
+                    className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium transition ${
+                      type === k ? 'ring-2 ring-blue-500 bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-gray-300'
+                    }`}
+                  >
+                    {v.icon} {v.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* File upload */}
+            <div>
+              <label className={labelClass}>Attachment</label>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => document.getElementById('travel-doc-file').click()}
+                  className="px-3 py-2 bg-gray-100 dark:bg-slate-700 hover:bg-gray-200 dark:hover:bg-slate-600 rounded-lg text-xs font-medium text-gray-700 dark:text-gray-300 transition"
+                >
+                  {fileData ? '📎 Change file' : '📎 Choose file'}
+                </button>
+                {fileName && <span className="text-xs text-gray-500 dark:text-gray-400 truncate max-w-[200px]">{fileName}</span>}
+                {fileData && <button onClick={() => { setFileData(null); setFileName(''); }} className="text-xs text-red-500 hover:text-red-700">Remove</button>}
+              </div>
+              <input id="travel-doc-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" className="hidden" onChange={handleFile} />
+            </div>
+
+            {/* Route fields (flight, train, transfer) */}
+            {(type === 'flight' || type === 'train' || type === 'transfer') && (
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className={labelClass}>From</label><input className={inputClass} value={from} onChange={e => setFrom(e.target.value)} placeholder="Origin" /></div>
+                <div><label className={labelClass}>To</label><input className={inputClass} value={to} onChange={e => setTo(e.target.value)} placeholder="Destination" /></div>
+              </div>
+            )}
+
+            {/* Title */}
+            <div>
+              <label className={labelClass}>Title</label>
+              <input className={inputClass} value={title} onChange={e => setTitle(e.target.value)} placeholder={type === 'hotel' ? 'Hotel name' : 'e.g. Tokyo → Kyoto (NOZOMI 155)'} />
+            </div>
+
+            {/* Date */}
+            <div className={type === 'hotel' ? 'grid grid-cols-2 gap-3' : ''}>
+              {type === 'hotel' ? (
+                <>
+                  <div><label className={labelClass}>Check-in</label><input type="date" className={inputClass} value={checkIn} onChange={e => { setCheckIn(e.target.value); if (!date) setDate(e.target.value); }} /></div>
+                  <div><label className={labelClass}>Check-out</label><input type="date" className={inputClass} value={checkOut} onChange={e => setCheckOut(e.target.value)} /></div>
+                </>
+              ) : (
+                <div><label className={labelClass}>Date</label><input type="date" className={inputClass} value={date} onChange={e => setDate(e.target.value)} /></div>
+              )}
+            </div>
+
+            {/* Time (non-hotel) */}
+            {type !== 'hotel' && type !== 'general' && (
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className={labelClass}>Departure</label><input type="time" className={inputClass} value={departureTime} onChange={e => setDepartureTime(e.target.value)} /></div>
+                <div><label className={labelClass}>Arrival</label><input type="time" className={inputClass} value={arrivalTime} onChange={e => setArrivalTime(e.target.value)} /></div>
+              </div>
+            )}
+
+            {/* Carrier / Airline / Train */}
+            {(type === 'flight' || type === 'train' || type === 'transfer') && (
+              <div>
+                <label className={labelClass}>{type === 'flight' ? 'Airline / Flight #' : type === 'train' ? 'Train name / #' : 'Provider'}</label>
+                <input className={inputClass} value={carrier} onChange={e => setCarrier(e.target.value)} placeholder={type === 'flight' ? 'UA837' : type === 'train' ? 'NOZOMI 155' : 'Transfer company'} />
+              </div>
+            )}
+
+            {/* Seat */}
+            {(type === 'flight' || type === 'train') && (
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className={labelClass}>Seat</label><input className={inputClass} value={seat} onChange={e => setSeat(e.target.value)} placeholder="Car.5 Seat.1-D/E" /></div>
+                <div><label className={labelClass}>Passengers</label><input type="number" min="1" className={inputClass} value={passengers} onChange={e => setPassengers(e.target.value)} placeholder="2" /></div>
+              </div>
+            )}
+
+            {/* Address (hotel, transfer) */}
+            {(type === 'hotel' || type === 'transfer') && (
+              <div><label className={labelClass}>Address</label><input className={inputClass} value={address} onChange={e => setAddress(e.target.value)} placeholder="Full address" /></div>
+            )}
+
+            {/* Confirmation & Cost */}
+            <div className="grid grid-cols-2 gap-3">
+              <div><label className={labelClass}>Confirmation #</label><input className={inputClass} value={confirmation} onChange={e => setConfirmation(e.target.value)} placeholder="ABC123" /></div>
+              <div><label className={labelClass}>Cost</label><input className={inputClass} value={cost} onChange={e => setCost(e.target.value)} placeholder="¥28,740" /></div>
+            </div>
+
+            {/* Notes */}
+            <div>
+              <label className={labelClass}>Notes</label>
+              <textarea className={inputClass + ' resize-none'} rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Any extra details..." />
+            </div>
+          </div>
+
+          {/* Save button */}
+          <div className="px-4 py-3 border-t dark:border-slate-700 shrink-0">
+            <button
+              onClick={handleSubmit}
+              disabled={!title.trim() || saving}
+              className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-slate-600 text-white font-medium text-sm rounded-xl transition"
+            >
+              {saving ? 'Saving...' : isEdit ? 'Update Document' : 'Add Document'}
+            </button>
+          </div>
+        </div>
+      );
     };
 
     const DocumentCenter = ({ pins, onClose, isDarkMode, onSelectPin }) => {
@@ -12809,6 +13307,7 @@
       const [kmlBulkData, setKmlBulkData] = useState(null);
       const [showDocCenter, setShowDocCenter] = useState(false);
       const [showItinerary, setShowItinerary] = useState(false);
+      const [showTravelDocs, setShowTravelDocs] = useState(false);
 
       // ---- Photo-to-Pin flow state ----
       const [photoToPinCrop, setPhotoToPinCrop] = useState(null); // { imageSrc } — shown in crop modal
@@ -12822,20 +13321,30 @@
         if (selectedPin) {
           if (showItinerary) setShowItinerary(false);
           if (showDocCenter) setShowDocCenter(false);
+          if (showTravelDocs) setShowTravelDocs(false);
         }
       }, [selectedPin]);
       useEffect(() => {
         if (showItinerary) {
           if (selectedPin) setSelectedPin(null);
           if (showDocCenter) setShowDocCenter(false);
+          if (showTravelDocs) setShowTravelDocs(false);
         }
       }, [showItinerary]);
       useEffect(() => {
         if (showDocCenter) {
           if (selectedPin) setSelectedPin(null);
           if (showItinerary) setShowItinerary(false);
+          if (showTravelDocs) setShowTravelDocs(false);
         }
       }, [showDocCenter]);
+      useEffect(() => {
+        if (showTravelDocs) {
+          if (selectedPin) setSelectedPin(null);
+          if (showItinerary) setShowItinerary(false);
+          if (showDocCenter) setShowDocCenter(false);
+        }
+      }, [showTravelDocs]);
       const [pendingItineraryPin, setPendingItineraryPin] = useState(null);
       const [coLocatedPins, setCoLocatedPins] = useState([]);
       const [mapCenter, setMapCenter] = useState(null); // passive: where the map currently is (for search biasing)
@@ -13562,7 +14071,7 @@
                 (mobile uses bottom chip bar + search bar ⋯ menu instead) */}
             {!isMobile && (
               <div className={`absolute right-3 sm:right-4 top-16 sm:top-20 flex flex-col items-end gap-2 pointer-events-auto ${
-                (selectedPin || showItinerary || showDocCenter) ? 'hidden' : ''
+                (selectedPin || showItinerary || showDocCenter || showTravelDocs) ? 'hidden' : ''
               }`}>
                 <div className="flex bg-white dark:bg-slate-800 rounded-full shadow-lg p-1">
                   <button
@@ -13588,6 +14097,13 @@
                   title="Document Center"
                 >
                   📄
+                </button>
+                <button
+                  onClick={() => setShowTravelDocs(true)}
+                  className="w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-base transition"
+                  title="Travel Documents"
+                >
+                  🧳
                 </button>
                 <button
                   onClick={() => setShowItinerary(!showItinerary)}
@@ -14048,6 +14564,17 @@
             />
           )}
 
+          {/* Travel Docs */}
+          {showTravelDocs && (
+            <TravelDocsPanel
+              collectionId={activeCollection}
+              isDarkMode={darkMode}
+              isMobile={isMobile}
+              onClose={() => setShowTravelDocs(false)}
+              showToast={showToast}
+            />
+          )}
+
           {/* Document Center */}
           {showDocCenter && (
             <DocumentCenter
@@ -14095,6 +14622,16 @@
                 }`}
               >
                 <span className="text-base">📄</span> Docs
+              </button>
+              <button
+                onClick={() => setShowTravelDocs(!showTravelDocs)}
+                className={`flex items-center gap-1.5 px-3.5 py-2.5 rounded-full shadow-lg text-sm font-medium transition ${
+                  showTravelDocs
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white dark:bg-slate-800 text-gray-700 dark:text-gray-200 border dark:border-slate-600'
+                }`}
+              >
+                <span className="text-base">🧳</span> Travel
               </button>
               <button
                 onClick={() => setShowItinerary(!showItinerary)}
@@ -14240,7 +14777,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v22';
+const CACHE_NAME = 'bo-wander-v23';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
