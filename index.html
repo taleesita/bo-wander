@@ -14340,11 +14340,19 @@
 
       // Determine location for each day based on hotel check-in/check-out dates
       const getLocationForDate = (dateStr) => {
+        // Safely parse a date string that might be ISO or locale format
+        const safeDate = (str) => {
+          if (!str) return null;
+          // Already ISO
+          if (/^\d{4}-\d{2}-\d{2}/.test(str)) return new Date(str.substring(0, 10) + 'T12:00:00');
+          const d = new Date(str);
+          return !isNaN(d.getTime()) ? d : null;
+        };
         const hotelPins = collectionPins.filter(p => p.category === 'hotel' && p.reservation_details);
         for (const hp of hotelPins) {
           const rd = hp.reservation_details;
-          const ci = rd.check_in ? new Date(rd.check_in + (rd.check_in.includes('T') ? '' : 'T12:00:00')) : null;
-          const co = rd.check_out ? new Date(rd.check_out + (rd.check_out.includes('T') ? '' : 'T12:00:00')) : null;
+          const ci = safeDate(rd.check_in);
+          const co = safeDate(rd.check_out);
           if (!ci) continue;
           const d = new Date(dateStr + 'T12:00:00');
           ci.setHours(0,0,0,0); d.setHours(0,0,0,0);
@@ -14357,7 +14365,7 @@
         let best = null, bestDiff = Infinity;
         for (const hp of hotelPins) {
           const rd = hp.reservation_details;
-          const ci = rd.check_in ? new Date(rd.check_in + (rd.check_in.includes('T') ? '' : 'T12:00:00')) : null;
+          const ci = safeDate(rd.check_in);
           if (!ci) continue;
           const d = new Date(dateStr + 'T12:00:00');
           const diff = d.getTime() - ci.getTime();
@@ -14418,8 +14426,11 @@
           if (!locationGroups[key]) locationGroups[key] = { lat: loc.lat, lng: loc.lng, dates: [] };
           locationGroups[key].dates.push(day.date);
           dayDates.push(day.date);
-          // Extract city name from hotel name (strip "MIMARU SUITES" etc, keep city)
-          const cityName = loc.name ? loc.name.replace(/^(MIMARU|mimaru)\s*(SUITES?|HOTEL)?\s*/i, '').trim() : '';
+          // Extract city name from hotel name — strip common hotel brand/type words
+          const cityName = loc.name ? loc.name
+            .replace(/^(MIMARU|mimaru|hotel|the|hostel|ryokan|inn|motel|resort|airbnb|villa)\s*/gi, '')
+            .replace(/\b(SUITES?|HOTEL|RESORT|INN|HOSTEL|LODGE|RESIDENCE|BOUTIQUE|APARTMENT)\b/gi, '')
+            .replace(/\s{2,}/g, ' ').trim() : '';
           newLocations[day.date] = { name: cityName || loc.name || '', lat: loc.lat, lng: loc.lng };
         });
         // Only update if locations changed (avoid infinite loop)
@@ -16890,7 +16901,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v41';
+const CACHE_NAME = 'bo-wander-v42';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
