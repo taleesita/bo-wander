@@ -382,11 +382,17 @@
 
     // ==================== HELPERS ====================
     // Open a data: URL file in a new tab using Blob URLs (data: URLs are blocked by browsers)
-    const openDataFile = (dataUrl, fileName) => {
+    const openDataFile = async (dataUrl, fileName, pinId) => {
       if (!dataUrl) return;
       try {
+        let actualData = dataUrl;
+        // If stored separately, load from chunked storage
+        if (actualData === '__stored_separately__' && pinId) {
+          actualData = await MockFirebase.loadAttachment(pinId);
+          if (!actualData) { alert('Could not load file'); return; }
+        }
         // Convert data URL to blob
-        const [header, b64] = dataUrl.split(',');
+        const [header, b64] = actualData.split(',');
         const mime = header.match(/:(.*?);/)?.[1] || 'application/octet-stream';
         const binary = atob(b64);
         const bytes = new Uint8Array(binary.length);
@@ -1137,8 +1143,44 @@
         };
         const pinData = cleanForFirestore({ ...pin, updated_at: new Date().toISOString() });
         if (!pinData.created_at) pinData.created_at = new Date().toISOString();
+        // If attachment data is too large for Firestore (>800KB), store it separately
+        let attachmentData = null;
+        if (pinData.attachment?.data && pinData.attachment.data.length > 800000) {
+          attachmentData = pinData.attachment.data;
+          pinData.attachment = { ...pinData.attachment, data: '__stored_separately__' };
+        }
         // Use pin.id as the document ID
-        await db.collection('pins').doc(pin.id).set(pinData, { merge: true });
+        try {
+          await db.collection('pins').doc(pin.id).set(pinData, { merge: true });
+        } catch (e) {
+          // If save fails (e.g. doc too large), try without attachment data
+          if (pinData.attachment?.data) {
+            attachmentData = pinData.attachment.data;
+            pinData.attachment = { ...pinData.attachment, data: '__stored_separately__' };
+            await db.collection('pins').doc(pin.id).set(pinData, { merge: true });
+          } else throw e;
+        }
+        // Store large attachment in a separate document
+        if (attachmentData) {
+          // Split into chunks if needed (Firestore max doc ~1MB)
+          const chunkSize = 750000;
+          const chunks = [];
+          for (let i = 0; i < attachmentData.length; i += chunkSize) {
+            chunks.push(attachmentData.substring(i, i + chunkSize));
+          }
+          await db.collection('pin_attachments').doc(pin.id).set({
+            pin_id: pin.id,
+            chunks: chunks.length,
+            updated_at: new Date().toISOString()
+          });
+          for (let i = 0; i < chunks.length; i++) {
+            await db.collection('pin_attachments').doc(pin.id + '_chunk_' + i).set({
+              pin_id: pin.id,
+              chunk_index: i,
+              data: chunks[i]
+            });
+          }
+        }
         // Also keep localStorage in sync for fast loads
         try {
           const cached = JSON.parse(localStorage.getItem('boWanderPins') || '[]');
@@ -1148,6 +1190,24 @@
           safeSetItem('boWanderPins', JSON.stringify(stripLargeData(cached)));
         } catch {}
         return Promise.resolve();
+      },
+
+      // Load large attachment data stored separately
+      async loadAttachment(pinId) {
+        try {
+          const metaSnap = await db.collection('pin_attachments').doc(pinId).get();
+          if (!metaSnap.exists) return null;
+          const meta = metaSnap.data();
+          let data = '';
+          for (let i = 0; i < meta.chunks; i++) {
+            const chunkSnap = await db.collection('pin_attachments').doc(pinId + '_chunk_' + i).get();
+            if (chunkSnap.exists) data += chunkSnap.data().data;
+          }
+          return data;
+        } catch (e) {
+          console.warn('[BoWander] Failed to load attachment for pin:', pinId, e);
+          return null;
+        }
       },
 
       // Delete a pin from Firestore
@@ -1961,7 +2021,7 @@
       // Build date badges — combine from all co-located pins
       const pinsToCheck = coLocatedPins && coLocatedPins.length > 1 ? coLocatedPins : [pin];
       const dates = pinsToCheck
-        .filter(p => p.reservation_details && (p.category === 'hotel' || p.category === 'activity'))
+        .filter(p => p.reservation_details && (p.category === 'hotel' || p.category === 'activity' || p.category === 'restaurant'))
         .map(p => formatPinDate(p.reservation_details))
         .filter(Boolean);
 
@@ -2435,6 +2495,7 @@
       }, [rd.price, rd.price_usd, liveUsd]);
 
       const isActivity = rd.type === 'activity' || category === 'activity';
+      const isRestaurant = rd.booking_type === 'restaurant' || category === 'restaurant';
       const priceDisplay = rd.price ? (
         <span>
           {rd.price}
@@ -2453,7 +2514,15 @@
         </span>
       ) : null;
 
-      const details = isActivity ? [
+      const details = isRestaurant ? [
+        rd.date && { label: 'Date', value: `${rd.date}${rd.time ? ' at ' + rd.time : ''}` },
+        rd.confirmation_number && { label: 'Confirmation', value: rd.confirmation_number },
+        rd.passengers && { label: 'Party Size', value: rd.passengers },
+        rd.price && { label: 'Price', value: priceDisplay },
+        rd.address && { label: 'Address', value: rd.address },
+        rd.booking_source && { label: 'Booked via', value: rd.booking_source },
+        rd.description && { label: 'Notes', value: rd.description },
+      ].filter(Boolean) : isActivity ? [
         rd.tour_operator && { label: 'Operator', value: rd.tour_operator },
         rd.date && { label: 'Date', value: `${rd.date}${rd.time ? ' at ' + rd.time : ''}` },
         rd.duration && { label: 'Duration', value: rd.duration },
@@ -2477,7 +2546,7 @@
       if (details.length === 0) return null;
       return (
         <div className="bg-blue-50 dark:bg-slate-800 rounded-lg p-3 space-y-1.5">
-          <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wide">{isActivity ? 'Activity Details' : 'Reservation Details'}</p>
+          <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wide">{isRestaurant ? 'Reservation Details' : isActivity ? 'Activity Details' : 'Reservation Details'}</p>
           {details.map((d, i) => (
             <div key={i} className="flex justify-between text-sm">
               <span className="text-gray-500 dark:text-gray-400">{d.label}</span>
@@ -2993,15 +3062,15 @@
               <div className="flex gap-1 bg-gray-100 dark:bg-slate-800 rounded-lg p-1">
                 {[...coLocatedPins].sort((a, b) => {
                   // Spot pin first, then activity/hotel
-                  const aBook = a.category === 'activity' || a.category === 'hotel' ? 1 : 0;
-                  const bBook = b.category === 'activity' || b.category === 'hotel' ? 1 : 0;
+                  const aBook = a.category === 'activity' || a.category === 'hotel' || a.category === 'restaurant' ? 1 : 0;
+                  const bBook = b.category === 'activity' || b.category === 'hotel' || b.category === 'restaurant' ? 1 : 0;
                   return aBook - bBook;
                 }).map((p) => {
                   const isActive = p.id === pin.id;
-                  const isBooking = p.category === 'activity' || p.category === 'hotel';
+                  const isBooking = p.category === 'activity' || p.category === 'hotel' || p.category === 'restaurant';
                   const catData = PIN_CATEGORIES[p.category] || PIN_CATEGORIES.other;
                   const label = isBooking
-                    ? (p.category === 'activity' ? '🎫 Activity' : '🏨 Hotel')
+                    ? (p.category === 'activity' ? '🎫 Activity' : p.category === 'restaurant' ? '🍽️ Reservation' : '🏨 Hotel')
                     : `${catData.icon || '📍'} Place`;
                   return (
                     <button
@@ -3213,17 +3282,17 @@
                     src={pin.attachment.thumbnail}
                     alt={pin.attachment.name}
                     className="w-12 h-12 rounded object-cover cursor-pointer border hover:opacity-80 transition"
-                    onClick={() => openDataFile(pin.attachment.data, pin.attachment.name)}
+                    onClick={() => openDataFile(pin.attachment.data, pin.attachment.name, pin.id)}
                   />
                 ) : (
-                  <span className="text-2xl cursor-pointer" onClick={() => openDataFile(pin.attachment.data, pin.attachment.name)}>
+                  <span className="text-2xl cursor-pointer" onClick={() => openDataFile(pin.attachment.data, pin.attachment.name, pin.id)}>
                     {pin.attachment.thumbnail || '📎'}
                   </span>
                 )}
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{pin.attachment.name}</p>
                   <button
-                    onClick={() => openDataFile(pin.attachment.data, pin.attachment.name)}
+                    onClick={() => openDataFile(pin.attachment.data, pin.attachment.name, pin.id)}
                     className="text-xs text-blue-600 dark:text-blue-400 hover:underline"
                   >
                     View full file
@@ -3233,7 +3302,7 @@
             )}
 
             {/* Reservation Details Card — for hotel and activity pins */}
-            {!editing && pin.reservation_details && (pin.category === 'hotel' || pin.category === 'activity') && (
+            {!editing && pin.reservation_details && (pin.category === 'hotel' || pin.category === 'activity' || pin.category === 'restaurant') && (
               <ReservationDetailsCard rd={pin.reservation_details} category={pin.category} isDarkMode={isDarkMode} />
             )}
 
@@ -3715,7 +3784,7 @@
                   )}
                   <button
                     onClick={() => {
-                      const isBooking = (pin.category === 'hotel' || pin.category === 'activity') && pin.reservation_details;
+                      const isBooking = (pin.category === 'hotel' || pin.category === 'activity' || pin.category === 'restaurant') && pin.reservation_details;
                       if (isBooking) {
                         onEdit && onEdit(pin);
                       } else {
@@ -6889,10 +6958,16 @@
         }
       };
 
-      const openFile = (doc) => {
-        if (!doc.file_data) return;
+      const openFile = async (doc) => {
+        let fileData = doc.file_data;
+        if (!fileData) return;
+        // Load separately stored attachment if needed
+        if (fileData === '__stored_separately__' && doc._pin) {
+          fileData = await MockFirebase.loadAttachment(doc._pin.id);
+          if (!fileData) { if (showToast) showToast('Could not load file', 'error'); return; }
+        }
         try {
-          const parts = doc.file_data.match(/^data:([^;]+);base64,(.*)$/);
+          const parts = fileData.match(/^data:([^;]+);base64,(.*)$/);
           if (!parts) return;
           const byteString = atob(parts[2]);
           const ab = new ArrayBuffer(byteString.length);
@@ -7396,7 +7471,7 @@
                       </div>
                       {p.attachment && (
                         <button
-                          onClick={(e) => { e.stopPropagation(); openDataFile(p.attachment.data, p.attachment.name); }}
+                          onClick={(e) => { e.stopPropagation(); openDataFile(p.attachment.data, p.attachment.name, p.id); }}
                           className="flex-shrink-0 text-xs text-blue-600 dark:text-blue-400 hover:underline"
                           title="View file"
                         >
@@ -7983,6 +8058,27 @@
       const handleDrop = (e) => { e.preventDefault(); e.stopPropagation(); setDragging(false); handleFiles(e.dataTransfer.files); };
 
       const handleSubmit = async () => {
+        // Misc: save as standalone travel doc (no pin)
+        if (bookingType === 'misc') {
+          const title = tourName.trim() || fileName || 'Misc Document';
+          try {
+            await MockFirebase.saveTravelDoc({
+              collection_id: collectionId,
+              type: 'misc',
+              title,
+              date: activityDate || '',
+              notes: activityDescription,
+              file_data: fileDataUrl || null,
+              file_name: fileName || '',
+            });
+            if (onTransportSaved) onTransportSaved();
+            onClose();
+          } catch (e) {
+            console.error('Save misc doc failed:', e);
+            alert('Failed to save document. Please try again.');
+          }
+          return;
+        }
         // Transport types: save as standalone travel doc (no pin)
         if (['flight', 'train', 'transfer'].includes(bookingType)) {
           const title = tourName.trim() || (transportFrom && transportTo ? `${transportFrom} → ${transportTo}` : bookingType.charAt(0).toUpperCase() + bookingType.slice(1));
@@ -8267,8 +8363,8 @@
                   )}
 
                   {/* Booking type toggle */}
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {[['hotel', '🏨', 'Hotel'], ['activity', '🎟️', 'Activity'], ['restaurant', '🍽️', 'Restaurant'], ['flight', '✈️', 'Flight'], ['train', '🚄', 'Train'], ['transfer', '🚐', 'Transfer']].map(([val, icon, label]) => (
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {[['hotel', '🏨', 'Hotel'], ['activity', '🎟️', 'Activity'], ['restaurant', '🍽️', 'Restaurant'], ['misc', '📄', 'Misc'], ['flight', '✈️', 'Flight'], ['train', '🚄', 'Train'], ['transfer', '🚐', 'Transfer']].map(([val, icon, label]) => (
                       <button
                         key={val}
                         onClick={() => setBookingType(val)}
@@ -8285,7 +8381,7 @@
                   </div>
 
                   {/* Location status */}
-                  {!['flight', 'train', 'transfer'].includes(bookingType) && (
+                  {!['flight', 'train', 'transfer', 'misc'].includes(bookingType) && (
                     <>
                     {resolvedLat && resolvedLng ? (
                       <div className="flex items-center gap-2 px-3 py-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg text-xs text-green-700 dark:text-green-400">
@@ -8560,6 +8656,22 @@
                   </div>
                   </>}
 
+                  {/* --- MISC FORM --- */}
+                  {bookingType === 'misc' && <>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Document Name *</label>
+                    <input type="text" value={tourName} onChange={e => setTourName(e.target.value)} placeholder="e.g. Travel Insurance, Visa Copy" className={inputClass} autoFocus autoComplete="off" data-1p-ignore />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Date (optional)</label>
+                    <input type="date" value={activityDate} onChange={e => setActivityDate(e.target.value)} className={inputClass} data-1p-ignore />
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Notes</label>
+                    <textarea value={activityDescription} onChange={e => setActivityDescription(e.target.value)} placeholder="Any notes about this document" className={inputClass + " h-20 resize-none"} autoComplete="off" data-1p-ignore />
+                  </div>
+                  </>}
+
                   {/* --- TRANSPORT FORM (Flight / Train / Transfer) --- */}
                   {['flight', 'train', 'transfer'].includes(bookingType) && <>
                   <div>
@@ -8634,7 +8746,7 @@
                       onClick={handleSubmit}
                       className="flex-1 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
                     >
-                      {['flight', 'train', 'transfer'].includes(bookingType) ? 'Save Document' : 'Add to Map'}
+                      {['flight', 'train', 'transfer', 'misc'].includes(bookingType) ? 'Save Document' : 'Add to Map'}
                     </button>
                   </div>
                 </div>
@@ -17125,7 +17237,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v52';
+const CACHE_NAME = 'bo-wander-v53';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
