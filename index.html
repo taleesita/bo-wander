@@ -13876,6 +13876,12 @@
 
       // Compute trip info from pins
       const tripInfo = useMemo(() => {
+        const toISO = (str) => {
+          if (!str) return '';
+          if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.substring(0, 10);
+          const d = new Date(str);
+          return !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : '';
+        };
         const hotels = pins.filter(p => p.category === 'hotel' && p.reservation_details);
         if (hotels.length === 0) return { days: 7, hasLaundry: false, weather: { avgHigh: 20, avgLow: 12, rainyDays: 2, totalDays: 7 } };
 
@@ -13884,8 +13890,8 @@
         hotels.forEach(h => {
           const rd = h.reservation_details;
           if (rd.has_laundry) hasLaundry = true;
-          const ci = rd.check_in;
-          const co = rd.check_out;
+          const ci = toISO(rd.check_in);
+          const co = toISO(rd.check_out);
           if (ci && (!earliest || ci < earliest)) earliest = ci;
           if (co && (!latest || co > latest)) latest = co;
         });
@@ -13903,14 +13909,24 @@
       // Fetch weather summary for the trip
       const [weatherSummary, setWeatherSummary] = useState({ avgHigh: 20, avgLow: 12, rainyDays: 2, totalDays: 7 });
       useEffect(() => {
+        // Normalize any date string to ISO YYYY-MM-DD
+        const toISO = (str) => {
+          if (!str) return '';
+          if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.substring(0, 10);
+          const d = new Date(str);
+          return !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : '';
+        };
+
         const hotels = pins.filter(p => p.category === 'hotel' && p.reservation_details);
         if (hotels.length === 0) return;
 
         let earliest = null, latest = null;
         hotels.forEach(h => {
           const rd = h.reservation_details;
-          if (rd.check_in && (!earliest || rd.check_in < earliest)) earliest = rd.check_in;
-          if (rd.check_out && (!latest || rd.check_out > latest)) latest = rd.check_out;
+          const ci = toISO(rd.check_in);
+          const co = toISO(rd.check_out);
+          if (ci && (!earliest || ci < earliest)) earliest = ci;
+          if (co && (!latest || co > latest)) latest = co;
         });
         if (!earliest || !latest) return;
 
@@ -14118,7 +14134,7 @@
         'Organize at Home': '🏠'
       };
 
-      const panelClass = `fixed ${isMobile ? 'inset-0 z-50' : 'top-0 right-0 w-[420px] h-full z-40'} flex flex-col ${isDarkMode ? 'bg-slate-900 text-white' : 'bg-white text-gray-900'} shadow-2xl`;
+      const panelClass = `fixed ${isMobile ? 'inset-0 z-[1000]' : 'top-0 right-0 w-[420px] h-full z-[600]'} flex flex-col ${isDarkMode ? 'bg-slate-900 text-white' : 'bg-white text-gray-900'} shadow-2xl border-l dark:border-slate-700`;
 
       // Weather summary display
       const weatherLabel = weatherSummary.avgHigh >= 25 ? 'Hot' : weatherSummary.avgHigh >= 18 ? 'Warm' : weatherSummary.avgHigh >= 10 ? 'Cool' : 'Cold';
@@ -16874,7 +16890,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v40';
+const CACHE_NAME = 'bo-wander-v41';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
