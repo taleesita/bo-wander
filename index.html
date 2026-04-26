@@ -3703,7 +3703,14 @@
                     </button>
                   )}
                   <button
-                    onClick={startEditing}
+                    onClick={() => {
+                      const isBooking = (pin.category === 'hotel' || pin.category === 'activity') && pin.reservation_details;
+                      if (isBooking) {
+                        onEdit && onEdit(pin);
+                      } else {
+                        startEditing();
+                      }
+                    }}
                     className="flex-1 flex items-center justify-center gap-1.5 bg-blue-600 text-white px-2 py-1.5 rounded-lg text-xs hover:bg-blue-700"
                   >
                     <PencilIcon /> Edit
@@ -10547,12 +10554,16 @@
         // Apply filters
         if (filters.openNow) {
           result = result.filter(p => {
+            // Hotels and activities always visible regardless of open hours
+            if (p.category === 'hotel' || p.category === 'activity') return true;
             const status = getOpenStatus(p.opening_hours || {});
             return status.status === 'open';
           });
         }
         if (filters.openAt) {
           result = result.filter(p => {
+            // Hotels and activities always visible regardless of open hours
+            if (p.category === 'hotel' || p.category === 'activity') return true;
             const day = filters.openAt.day;
             const hours = (p.opening_hours || {})[day];
             // No time specified → just check the place has any hours that day
@@ -11151,12 +11162,14 @@
         // Apply filters
         if (sharedFilters.openNow) {
           result = result.filter(p => {
+            if (p.category === 'hotel' || p.category === 'activity') return true;
             const status = getOpenStatus(p.opening_hours || {});
             return status.status === 'open';
           });
         }
         if (sharedFilters.openAt) {
           result = result.filter(p => {
+            if (p.category === 'hotel' || p.category === 'activity') return true;
             const day = sharedFilters.openAt.day;
             const hours = (p.opening_hours || {})[day];
             if (!sharedFilters.openAt.time) {
@@ -13009,7 +13022,7 @@
     };
 
     // ---- DayView (single day card) ----
-    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, transitError, onRecalcTransit, weather, weatherCodeMap }) => {
+    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, transitError, onRecalcTransit, weather, weatherCodeMap, weatherLocation, onWeatherLocationChange, allHotels }) => {
       const [dragItemId, setDragItemId] = useState(null);
       const [dragOverIndex, setDragOverIndex] = useState(null);
       const [showStartPicker, setShowStartPicker] = useState(false);
@@ -13114,8 +13127,9 @@
             {weather && (() => {
               const w = weatherCodeMap[weather.code] || weatherCodeMap[0];
               const showRain = weather.rainChance != null && weather.rainChance > 0;
+              const locName = weatherLocation?.name || '';
               return (
-                <div className={`flex items-center gap-2 mt-1 ml-6 ${weather.isHistorical ? 'opacity-70' : ''}`} title={`${w.label}${showRain ? ` · ${weather.rainChance}% chance of rain` : ''}${weather.rainMm > 0 ? ` · ${weather.rainMm}mm` : ''}${weather.isHistorical ? ' (historical avg)' : ''}`}>
+                <div className={`flex items-center gap-2 mt-1 ml-6 ${weather.isHistorical ? 'opacity-70' : ''}`} title={`${w.label}${locName ? ' in ' + locName : ''}${showRain ? ` · ${weather.rainChance}% chance of rain` : ''}${weather.rainMm > 0 ? ` · ${weather.rainMm}mm` : ''}${weather.isHistorical ? ' (historical avg)' : ''}`}>
                   <span className="text-sm">{w.emoji}</span>
                   <span className={`text-xs ${weather.isHistorical ? 'text-gray-400 dark:text-gray-500 italic' : 'text-gray-500 dark:text-gray-400'}`}>
                     {weather.high}°/{weather.low}°
@@ -13126,6 +13140,33 @@
                     </span>
                   )}
                   {weather.isHistorical && <span className="text-xs text-gray-400 dark:text-gray-500 italic">avg</span>}
+                  {locName && (
+                    <span className="relative text-xs ml-1 inline-flex items-center">
+                      <span className="text-gray-400 dark:text-gray-500">·</span>
+                      {allHotels && allHotels.length > 1 && onWeatherLocationChange ? (
+                        <span className="relative inline-block ml-1">
+                          <span className="text-blue-500 dark:text-blue-400 cursor-pointer">{locName} ▾</span>
+                          <select
+                            value={locName}
+                            onClick={e => e.stopPropagation()}
+                            onChange={e => {
+                              e.stopPropagation();
+                              const hotel = allHotels.find(h => h.name === e.target.value);
+                              if (hotel) onWeatherLocationChange({ name: hotel.name, lat: hotel.lat, lng: hotel.lng });
+                            }}
+                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                            title="Change weather location"
+                          >
+                            {allHotels.map(h => (
+                              <option key={h.id} value={h.name}>{h.name}</option>
+                            ))}
+                          </select>
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 dark:text-gray-500 ml-1">{locName}</span>
+                      )}
+                    </span>
+                  )}
                 </div>
               );
             })()}
@@ -13975,7 +14016,8 @@
       const [newStartDate, setNewStartDate] = useState('');
       const [newEndDate, setNewEndDate] = useState('');
       const [showDayPicker, setShowDayPicker] = useState(null); // pin object to add via day picker
-      const [weatherData, setWeatherData] = useState({}); // { 'YYYY-MM-DD': { high, low, code, isHistorical } }
+      const [weatherData, setWeatherData] = useState({});
+      const [weatherLocations, setWeatherLocations] = useState({}); // { date: { name, lat, lng } } // { 'YYYY-MM-DD': { high, low, code, isHistorical } }
 
       const collectionPins = pins.filter(p => p.collection_id === activeCollection);
 
@@ -14048,14 +14090,25 @@
         // Group days by location (lat/lng)
         const locationGroups = {};
         const dayDates = [];
+        const newLocations = {};
         days.forEach(day => {
           if (!day.date) return;
-          const loc = getLocationForDate(day.date);
+          // Use override if set, otherwise auto-detect from hotels
+          const override = weatherLocations[day.date];
+          const loc = override?.lat ? override : getLocationForDate(day.date);
           if (!loc) return;
           const key = `${loc.lat.toFixed(2)},${loc.lng.toFixed(2)}`;
           if (!locationGroups[key]) locationGroups[key] = { lat: loc.lat, lng: loc.lng, dates: [] };
           locationGroups[key].dates.push(day.date);
           dayDates.push(day.date);
+          // Extract city name from hotel name (strip "MIMARU SUITES" etc, keep city)
+          const cityName = loc.name ? loc.name.replace(/^(MIMARU|mimaru)\s*(SUITES?|HOTEL)?\s*/i, '').trim() : '';
+          newLocations[day.date] = { name: cityName || loc.name || '', lat: loc.lat, lng: loc.lng };
+        });
+        // Only update if locations changed (avoid infinite loop)
+        setWeatherLocations(prev => {
+          const changed = Object.keys(newLocations).some(d => !prev[d] || prev[d].name !== newLocations[d].name || prev[d].lat !== newLocations[d].lat);
+          return changed ? { ...prev, ...newLocations } : prev;
         });
 
         if (dayDates.length === 0) return;
@@ -14740,6 +14793,13 @@
                   transitError={transitErrors[day.id]}
                   onRecalcTransit={(dayId) => { transitCacheRef.current = {}; calculateTransitForDay(dayId); }}
                   weather={weatherData[day.date]}
+                  weatherLocation={weatherLocations[day.date]}
+                  onWeatherLocationChange={(newLoc) => {
+                    setWeatherLocations(prev => ({ ...prev, [day.date]: newLoc }));
+                    // Clear weather for this date to force refetch
+                    setWeatherData(prev => { const next = { ...prev }; delete next[day.date]; return next; });
+                  }}
+                  allHotels={collectionPins.filter(p => p.category === 'hotel' && p.lat && p.lng)}
                   weatherCodeMap={weatherCodeMap}
                 />
               ))}
@@ -16509,7 +16569,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v37';
+const CACHE_NAME = 'bo-wander-v38';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
