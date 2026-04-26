@@ -2568,10 +2568,10 @@
             return c.toDataURL('image/jpeg', 0.7);
           })();
 
-          // OCR canvas: upscale small crops
+          // OCR canvas: upscale + grayscale + contrast for better recognition
           const ocrCanvas = (() => {
             const longSide = Math.max(croppedCanvas.width, croppedCanvas.height) || 1;
-            const scale = longSide < 1600 ? 1600 / longSide : 1;
+            const scale = longSide < 2400 ? 2400 / longSide : 1;
             const c = document.createElement('canvas');
             c.width = Math.round(croppedCanvas.width * scale);
             c.height = Math.round(croppedCanvas.height * scale);
@@ -2579,6 +2579,19 @@
             ctx.fillStyle = '#ffffff';
             ctx.fillRect(0, 0, c.width, c.height);
             ctx.drawImage(croppedCanvas, 0, 0, c.width, c.height);
+            // Grayscale + contrast boost for cleaner OCR
+            try {
+              const imgData = ctx.getImageData(0, 0, c.width, c.height);
+              const d = imgData.data;
+              for (let i = 0; i < d.length; i += 4) {
+                let gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+                // Boost contrast: stretch toward black/white
+                gray = ((gray / 255 - 0.5) * 1.4 + 0.5) * 255;
+                gray = Math.max(0, Math.min(255, gray));
+                d[i] = d[i+1] = d[i+2] = gray;
+              }
+              ctx.putImageData(imgData, 0, 0);
+            } catch (e) { /* canvas tainted or security error — use as-is */ }
             return c;
           })();
 
@@ -2598,8 +2611,8 @@
               if (/^\(?\s*MAP\s*[:;.]?/i.test(l)) return false;
               if (/^[A-Z]\d+\s+[A-Z]\d/i.test(l)) return false;
               const wordish = (l.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]/g) || []).length;
-              if (l.length >= 3 && wordish / l.length < 0.4) return false;
-              if (l.length <= 2 && !/[.!?]/.test(l)) return false;
+              if (l.length >= 3 && wordish / l.length < 0.25) return false;
+              if (l.length <= 1) return false;
               return true;
             })
             .map(l => l.replace(/\s*\|\s*/g, ' '));
@@ -9758,20 +9771,30 @@
                 };
 
                 try {
-                  // Upscale small crops so Tesseract gets enough pixels
+                  // Upscale + grayscale + contrast for better OCR
                   const longSide = Math.max(croppedCanvas.width, croppedCanvas.height) || 1;
-                  const scale = longSide < 1600 ? 1600 / longSide : 1;
-                  let ocrCanvas = croppedCanvas;
-                  if (scale !== 1) {
+                  const scale = longSide < 2400 ? 2400 / longSide : 1;
+                  const ocrCanvas = (() => {
                     const c = document.createElement('canvas');
-                    c.width = Math.round(croppedCanvas.width * scale);
-                    c.height = Math.round(croppedCanvas.height * scale);
+                    c.width = Math.round(croppedCanvas.width * (scale === 1 ? 1 : scale));
+                    c.height = Math.round(croppedCanvas.height * (scale === 1 ? 1 : scale));
                     const ctx = c.getContext('2d');
                     ctx.fillStyle = '#ffffff';
                     ctx.fillRect(0, 0, c.width, c.height);
                     ctx.drawImage(croppedCanvas, 0, 0, c.width, c.height);
-                    ocrCanvas = c;
-                  }
+                    try {
+                      const imgData = ctx.getImageData(0, 0, c.width, c.height);
+                      const d = imgData.data;
+                      for (let i = 0; i < d.length; i += 4) {
+                        let gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+                        gray = ((gray / 255 - 0.5) * 1.4 + 0.5) * 255;
+                        gray = Math.max(0, Math.min(255, gray));
+                        d[i] = d[i+1] = d[i+2] = gray;
+                      }
+                      ctx.putImageData(imgData, 0, 0);
+                    } catch (e) { /* canvas tainted — use as-is */ }
+                    return c;
+                  })();
                   const result = await Tesseract.recognize(ocrCanvas, 'eng+jpn', { logger: () => {} });
                   const rawText = (result.data?.text || '').trim();
                   const confidence = result.data?.confidence || 0;
@@ -9784,8 +9807,8 @@
                       if (/^\(?\s*MAP\s*[:;.]?/i.test(l)) return false;
                       if (/^[A-Z]\d+\s+[A-Z]\d/i.test(l)) return false;
                       const wordish = (l.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]/g) || []).length;
-                      if (l.length >= 3 && wordish / l.length < 0.4) return false;
-                      if (l.length <= 2 && !/[.!?]/.test(l)) return false;
+                      if (l.length >= 3 && wordish / l.length < 0.25) return false;
+                      if (l.length <= 1) return false;
                       return true;
                     })
                     .map(l => l.replace(/\s*\|\s*/g, ' '));
@@ -12803,7 +12826,7 @@
     };
 
     // ---- DayView (single day card) ----
-    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, transitError, onRecalcTransit }) => {
+    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, transitError, onRecalcTransit, weather, weatherCodeMap }) => {
       const [dragItemId, setDragItemId] = useState(null);
       const [dragOverIndex, setDragOverIndex] = useState(null);
       const [showStartPicker, setShowStartPicker] = useState(false);
@@ -12898,6 +12921,23 @@
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-xs font-bold text-gray-400 dark:text-gray-500 flex-shrink-0">D{day.day_number}</span>
               <span className="text-sm font-semibold dark:text-white flex-shrink-0">{formatDayDate(day.date)}</span>
+              {weather && (() => {
+                const w = weatherCodeMap[weather.code] || weatherCodeMap[0];
+                const showRain = weather.rainChance != null && weather.rainChance > 0;
+                return (
+                  <span className="flex items-center gap-1 flex-shrink-0" title={`${w.label}${showRain ? ` · ${weather.rainChance}% chance of rain` : ''}${weather.rainMm > 0 ? ` · ${weather.rainMm}mm` : ''}${weather.isHistorical ? ' (last year)' : ''}`}>
+                    <span className="text-sm">{w.emoji}</span>
+                    <span className={`text-xs ${weather.isHistorical ? 'text-gray-400 dark:text-gray-500 italic' : 'text-gray-500 dark:text-gray-400'}`}>
+                      {weather.high}°/{weather.low}°
+                    </span>
+                    {showRain && (
+                      <span className={`text-xs ${weather.rainChance >= 50 ? 'text-blue-500 dark:text-blue-400 font-medium' : 'text-gray-400 dark:text-gray-500'}`}>
+                        💧{weather.rainChance}%
+                      </span>
+                    )}
+                  </span>
+                );
+              })()}
             </div>
             <div className="flex items-center gap-2">
               <span className="text-xs text-gray-400">{items.length} item{items.length !== 1 ? 's' : ''}{totalMinutes > 0 ? ` · ${totalHrs > 0 ? totalHrs + 'h ' : ''}${totalMins > 0 ? totalMins + 'm' : ''}` : ''}{totalTransitMin > 0 ? ` (${totalTransitMin}m travel)` : ''}</span>
@@ -13110,8 +13150,181 @@
       const [newStartDate, setNewStartDate] = useState('');
       const [newEndDate, setNewEndDate] = useState('');
       const [showDayPicker, setShowDayPicker] = useState(null); // pin object to add via day picker
+      const [weatherData, setWeatherData] = useState({}); // { 'YYYY-MM-DD': { high, low, code, isHistorical } }
 
       const collectionPins = pins.filter(p => p.collection_id === activeCollection);
+
+      // Determine location for each day based on hotel check-in/check-out dates
+      const getLocationForDate = (dateStr) => {
+        const hotelPins = collectionPins.filter(p => p.category === 'hotel' && p.reservation_details);
+        for (const hp of hotelPins) {
+          const rd = hp.reservation_details;
+          const ci = rd.check_in ? new Date(rd.check_in + (rd.check_in.includes('T') ? '' : 'T12:00:00')) : null;
+          const co = rd.check_out ? new Date(rd.check_out + (rd.check_out.includes('T') ? '' : 'T12:00:00')) : null;
+          if (!ci) continue;
+          const d = new Date(dateStr + 'T12:00:00');
+          ci.setHours(0,0,0,0); d.setHours(0,0,0,0);
+          if (co) { co.setHours(0,0,0,0); }
+          if (d >= ci && (!co || d < co)) {
+            return { lat: hp.lat, lng: hp.lng, name: hp.name };
+          }
+        }
+        // Fallback: find the most recent hotel before this date
+        let best = null, bestDiff = Infinity;
+        for (const hp of hotelPins) {
+          const rd = hp.reservation_details;
+          const ci = rd.check_in ? new Date(rd.check_in + (rd.check_in.includes('T') ? '' : 'T12:00:00')) : null;
+          if (!ci) continue;
+          const d = new Date(dateStr + 'T12:00:00');
+          const diff = d.getTime() - ci.getTime();
+          if (diff >= 0 && diff < bestDiff) { bestDiff = diff; best = hp; }
+        }
+        if (best) return { lat: best.lat, lng: best.lng, name: best.name };
+        // Last resort: use any pin with lat/lng from this collection
+        const anyPin = collectionPins.find(p => p.lat && p.lng);
+        return anyPin ? { lat: anyPin.lat, lng: anyPin.lng, name: '' } : null;
+      };
+
+      // Weather code to emoji/label
+      const weatherCodeMap = {
+        0: { emoji: '☀️', label: 'Clear' },
+        1: { emoji: '🌤️', label: 'Mostly clear' },
+        2: { emoji: '⛅', label: 'Partly cloudy' },
+        3: { emoji: '☁️', label: 'Overcast' },
+        45: { emoji: '🌫️', label: 'Foggy' },
+        48: { emoji: '🌫️', label: 'Fog' },
+        51: { emoji: '🌦️', label: 'Light drizzle' },
+        53: { emoji: '🌦️', label: 'Drizzle' },
+        55: { emoji: '🌧️', label: 'Heavy drizzle' },
+        56: { emoji: '🌧️', label: 'Freezing drizzle' },
+        57: { emoji: '🌧️', label: 'Freezing drizzle' },
+        61: { emoji: '🌦️', label: 'Light rain' },
+        63: { emoji: '🌧️', label: 'Rain' },
+        65: { emoji: '🌧️', label: 'Heavy rain' },
+        66: { emoji: '🌧️', label: 'Freezing rain' },
+        67: { emoji: '🌧️', label: 'Freezing rain' },
+        71: { emoji: '🌨️', label: 'Light snow' },
+        73: { emoji: '🌨️', label: 'Snow' },
+        75: { emoji: '❄️', label: 'Heavy snow' },
+        77: { emoji: '🌨️', label: 'Snow grains' },
+        80: { emoji: '🌦️', label: 'Light showers' },
+        81: { emoji: '🌧️', label: 'Showers' },
+        82: { emoji: '🌧️', label: 'Heavy showers' },
+        85: { emoji: '🌨️', label: 'Snow showers' },
+        86: { emoji: '❄️', label: 'Heavy snow showers' },
+        95: { emoji: '⛈️', label: 'Thunderstorm' },
+        96: { emoji: '⛈️', label: 'Thunderstorm + hail' },
+        99: { emoji: '⛈️', label: 'Thunderstorm + hail' },
+      };
+
+      // Fetch weather for all itinerary days
+      useEffect(() => {
+        if (!days.length) return;
+        // Group days by location (lat/lng)
+        const locationGroups = {};
+        const dayDates = [];
+        days.forEach(day => {
+          if (!day.date) return;
+          const loc = getLocationForDate(day.date);
+          if (!loc) return;
+          const key = `${loc.lat.toFixed(2)},${loc.lng.toFixed(2)}`;
+          if (!locationGroups[key]) locationGroups[key] = { lat: loc.lat, lng: loc.lng, dates: [] };
+          locationGroups[key].dates.push(day.date);
+          dayDates.push(day.date);
+        });
+
+        if (dayDates.length === 0) return;
+        // Skip dates we already have
+        const needed = dayDates.filter(d => !weatherData[d]);
+        if (needed.length === 0) return;
+
+        const fetchForGroup = async (lat, lng, dates) => {
+          const sorted = [...dates].sort();
+          const startDate = sorted[0];
+          const endDate = sorted[sorted.length - 1];
+          const today = new Date();
+          today.setHours(0,0,0,0);
+          const endD = new Date(endDate + 'T12:00:00');
+          const diffDays = Math.ceil((endD - today) / (1000 * 60 * 60 * 24));
+
+          const results = {};
+
+          // Forecast dates (within ~16 days)
+          const forecastDates = sorted.filter(d => {
+            const dd = new Date(d + 'T12:00:00');
+            return Math.ceil((dd - today) / (1000*60*60*24)) <= 16 && dd >= today;
+          });
+
+          if (forecastDates.length > 0) {
+            try {
+              const resp = await fetch(
+                `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,precipitation_sum&start_date=${forecastDates[0]}&end_date=${forecastDates[forecastDates.length - 1]}&timezone=auto`
+              );
+              if (resp.ok) {
+                const data = await resp.json();
+                if (data.daily) {
+                  data.daily.time.forEach((date, i) => {
+                    if (sorted.includes(date)) {
+                      results[date] = {
+                        high: Math.round(data.daily.temperature_2m_max[i]),
+                        low: Math.round(data.daily.temperature_2m_min[i]),
+                        code: data.daily.weather_code[i],
+                        rainChance: data.daily.precipitation_probability_max?.[i] ?? null,
+                        rainMm: data.daily.precipitation_sum?.[i] ?? null,
+                        isHistorical: false,
+                      };
+                    }
+                  });
+                }
+              }
+            } catch (e) { console.warn('Weather forecast fetch failed:', e); }
+          }
+
+          // Historical average for dates beyond forecast range
+          const historicalDates = sorted.filter(d => !results[d]);
+          if (historicalDates.length > 0) {
+            // Use last year's dates for historical data
+            for (const d of historicalDates) {
+              const dd = new Date(d + 'T12:00:00');
+              const lastYear = new Date(dd);
+              lastYear.setFullYear(lastYear.getFullYear() - 1);
+              const lyStr = lastYear.toISOString().split('T')[0];
+              try {
+                const resp = await fetch(
+                  `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lng}&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_sum&start_date=${lyStr}&end_date=${lyStr}&timezone=auto`
+                );
+                if (resp.ok) {
+                  const data = await resp.json();
+                  if (data.daily?.time?.length > 0) {
+                    results[d] = {
+                      high: Math.round(data.daily.temperature_2m_max[0]),
+                      low: Math.round(data.daily.temperature_2m_min[0]),
+                      code: data.daily.weather_code[0],
+                      rainMm: data.daily.precipitation_sum?.[0] ?? null,
+                      rainChance: null, // not available for historical
+                      isHistorical: true,
+                    };
+                  }
+                }
+              } catch (e) { console.warn('Historical weather fetch failed:', e); }
+            }
+          }
+
+          return results;
+        };
+
+        // Fetch for all location groups
+        (async () => {
+          const allResults = {};
+          for (const group of Object.values(locationGroups)) {
+            const results = await fetchForGroup(group.lat, group.lng, group.dates);
+            Object.assign(allResults, results);
+          }
+          if (Object.keys(allResults).length > 0) {
+            setWeatherData(prev => ({ ...prev, ...allResults }));
+          }
+        })();
+      }, [days.map(d => d.date).join(','), collectionPins.filter(p => p.category === 'hotel').length]);
 
       // Load itineraries for this collection
       useEffect(() => {
@@ -13701,6 +13914,8 @@
                   onFlyTo={onFlyTo}
                   transitError={transitErrors[day.id]}
                   onRecalcTransit={(dayId) => { transitCacheRef.current = {}; calculateTransitForDay(dayId); }}
+                  weather={weatherData[day.date]}
+                  weatherCodeMap={weatherCodeMap}
                 />
               ))}
 
@@ -13749,6 +13964,14 @@
                           <div className="flex items-center gap-2">
                             <span className="text-xs font-bold text-gray-400 w-6">D{day.day_number}</span>
                             <span className="dark:text-white">{formatDayDate(day.date)}</span>
+                            {weatherData[day.date] && (() => {
+                              const w = weatherCodeMap[weatherData[day.date].code] || weatherCodeMap[0];
+                              return (
+                                <span className="text-sm" title={w.label}>
+                                  {w.emoji} <span className="text-xs text-gray-400">{weatherData[day.date].high}°/{weatherData[day.date].low}°</span>
+                                </span>
+                              );
+                            })()}
                           </div>
                           <span className="text-xs text-gray-400">{dayItems.length} item{dayItems.length !== 1 ? 's' : ''}</span>
                         </button>
@@ -14363,10 +14586,10 @@
           thumbCanvas.getContext('2d').drawImage(croppedCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
           const thumb = thumbCanvas.toDataURL('image/jpeg', 0.6);
 
-          // 2. OCR — upscale small crops
+          // 2. OCR — upscale + grayscale + contrast for better recognition
           const ocrCanvas = (() => {
             const longSide = Math.max(croppedCanvas.width, croppedCanvas.height) || 1;
-            const scale = longSide < 1600 ? 1600 / longSide : 1;
+            const scale = longSide < 2400 ? 2400 / longSide : 1;
             const c = document.createElement('canvas');
             c.width = Math.round(croppedCanvas.width * scale);
             c.height = Math.round(croppedCanvas.height * scale);
@@ -14374,6 +14597,18 @@
             ctx.fillStyle = '#ffffff';
             ctx.fillRect(0, 0, c.width, c.height);
             ctx.drawImage(croppedCanvas, 0, 0, c.width, c.height);
+            // Grayscale + contrast boost for cleaner OCR
+            try {
+              const imgData = ctx.getImageData(0, 0, c.width, c.height);
+              const d = imgData.data;
+              for (let i = 0; i < d.length; i += 4) {
+                let gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+                gray = ((gray / 255 - 0.5) * 1.4 + 0.5) * 255;
+                gray = Math.max(0, Math.min(255, gray));
+                d[i] = d[i+1] = d[i+2] = gray;
+              }
+              ctx.putImageData(imgData, 0, 0);
+            } catch (e) { /* canvas tainted — use as-is */ }
             return c;
           })();
 
@@ -14394,8 +14629,8 @@
               if (/^\(?\s*MAP\s*[:;.]?/i.test(l)) return false;
               if (/^[A-Z]\d+\s+[A-Z]\d/i.test(l)) return false;
               const wordish = (l.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]/g) || []).length;
-              if (l.length >= 3 && wordish / l.length < 0.4) return false;
-              if (l.length <= 2 && !/[.!?]/.test(l)) return false;
+              if (l.length >= 3 && wordish / l.length < 0.25) return false;
+              if (l.length <= 1) return false;
               return true;
             })
             .map(l => l.replace(/\s*\|\s*/g, ' '));
@@ -15410,7 +15645,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v30';
+const CACHE_NAME = 'bo-wander-v33';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
