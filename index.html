@@ -2716,11 +2716,13 @@
       const [showEmojiPicker, setShowEmojiPicker] = useState(false);
       const [confirmingDelete, setConfirmingDelete] = useState(false);
       const [showHours, setShowHours] = useState(false);
+      const [tabelogEditing, setTabelogEditing] = useState(false);
+      const [tabelogInput, setTabelogInput] = useState('');
 
       const hasGroup = coLocatedPins.length > 1;
 
       // Reset editing state when pin changes
-      useEffect(() => { setEditing(false); setConfirmingDelete(false); }, [pin?.id]);
+      useEffect(() => { setEditing(false); setConfirmingDelete(false); setTabelogEditing(false); }, [pin?.id]);
 
       const startEditing = () => {
         // Extract legacy "Source: [label](url)" markdown from description into sources[]
@@ -3419,52 +3421,55 @@
                     </div>
                   </div>
                 )}
-                {pin.tabelog_rating ? (
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs font-semibold" style={{ color: '#E63E1C' }}>Tabelog</span>
-                      <span className="text-amber-400 text-xs">⭐</span>
-                      <span className="text-xs font-bold text-gray-800 dark:text-gray-200">{pin.tabelog_rating.toFixed(2)}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <a href={pin.tabelog_url || getTabelogSearchUrl(pin.name)} target="_blank" rel="noopener noreferrer"
-                        className="text-xs hover:underline whitespace-nowrap" style={{ color: '#E63E1C' }}>
-                        {pin.tabelog_url ? 'View on Tabelog ↗' : 'Search Tabelog ↗'}
-                      </a>
-                      <button onClick={() => { const r = prompt('Update Tabelog rating (1-5):', pin.tabelog_rating); if (r && !isNaN(parseFloat(r)) && parseFloat(r) >= 1 && parseFloat(r) <= 5) onInlineUpdate({ tabelog_rating: parseFloat(r) }); }}
-                        className="text-xs text-gray-400 hover:text-gray-600">✏️</button>
-                      <button onClick={() => { if (confirm('Remove Tabelog rating?')) onInlineUpdate({ tabelog_rating: null, tabelog_url: null }); }}
-                        className="text-xs text-gray-400 hover:text-red-400">✕</button>
-                    </div>
-                  </div>
-                ) : (() => {
+                {(() => {
                   const col = collections?.find(c => c.id === pin.collection_id);
-                  const showTabelog = isJapanCollection(col) && isFoodCategory(pin.category);
-                  return showTabelog ? (
+                  const showTabelog = pin.tabelog_rating || (isJapanCollection(col) && isFoodCategory(pin.category));
+                  if (!showTabelog) return null;
+                  return (
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5">
                         <span className="text-xs font-semibold" style={{ color: '#E63E1C' }}>Tabelog</span>
-                        <span className="text-xs text-gray-400 italic">not set</span>
+                        {tabelogEditing ? (
+                          <form className="flex items-center gap-1" onSubmit={(e) => {
+                            e.preventDefault();
+                            const val = parseFloat(tabelogInput);
+                            if (!isNaN(val) && val >= 1 && val <= 5) {
+                              onInlineUpdate({ ...pin, tabelog_rating: val });
+                              setTabelogEditing(false);
+                            }
+                          }}>
+                            <input type="number" step="0.01" min="1" max="5" value={tabelogInput}
+                              onChange={e => setTabelogInput(e.target.value)}
+                              className="w-14 px-1 py-0.5 text-xs border rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white"
+                              autoFocus placeholder="3.47" />
+                            <button type="submit" className="text-xs px-1.5 py-0.5 rounded bg-blue-500 text-white">Save</button>
+                            <button type="button" onClick={() => setTabelogEditing(false)} className="text-xs text-gray-400">Cancel</button>
+                          </form>
+                        ) : pin.tabelog_rating ? (
+                          <React.Fragment>
+                            <span className="text-amber-400 text-xs">⭐</span>
+                            <span className="text-xs font-bold text-gray-800 dark:text-gray-200">{pin.tabelog_rating.toFixed(2)}</span>
+                          </React.Fragment>
+                        ) : (
+                          <span className="text-xs text-gray-400 italic">not set</span>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2">
-                        <a href={getTabelogSearchUrl(pin.name)} target="_blank" rel="noopener noreferrer"
-                          className="text-xs hover:underline whitespace-nowrap" style={{ color: '#E63E1C' }}>
-                          Search ↗
-                        </a>
-                        <button onClick={() => {
-                          const r = prompt('Enter Tabelog rating (1-5):');
-                          if (r && !isNaN(parseFloat(r)) && parseFloat(r) >= 1 && parseFloat(r) <= 5) {
-                            const url = prompt('Paste Tabelog URL (optional):');
-                            const updates = { tabelog_rating: parseFloat(r) };
-                            if (url && url.includes('tabelog.com')) updates.tabelog_url = url;
-                            onInlineUpdate(updates);
-                          }
-                        }} className="text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-slate-700 hover:bg-gray-200 dark:hover:bg-slate-600" style={{ color: '#E63E1C' }}>
-                          + Add rating
-                        </button>
-                      </div>
+                      {!tabelogEditing && (
+                        <div className="flex items-center gap-2">
+                          <a href={pin.tabelog_url || getTabelogSearchUrl(pin.name)} target="_blank" rel="noopener noreferrer"
+                            className="text-xs hover:underline whitespace-nowrap" style={{ color: '#E63E1C' }}>
+                            {pin.tabelog_url ? 'View ↗' : 'Search ↗'}
+                          </a>
+                          <button onClick={() => { setTabelogInput(pin.tabelog_rating ? String(pin.tabelog_rating) : ''); setTabelogEditing(true); }}
+                            className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">{pin.tabelog_rating ? '✏️' : '+ Add'}</button>
+                          {pin.tabelog_rating && (
+                            <button onClick={() => { if (confirm('Remove Tabelog rating?')) onInlineUpdate({ ...pin, tabelog_rating: null, tabelog_url: null }); }}
+                              className="text-xs text-gray-400 hover:text-red-400">✕</button>
+                          )}
+                        </div>
+                      )}
                     </div>
-                  ) : null;
+                  );
                 })()}
                 {pin.yelp_rating && (
                   <div className="flex items-center justify-between">
@@ -4007,7 +4012,7 @@
                   {onFromPhoto && (
                     <button
                       onClick={() => { onFromPhoto(); setIsFocused(false); setQuery(''); }}
-                      className={`px-2.5 py-2.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm ${!onFetchTabelog && showDropdown ? '' : 'rounded-r-full'} border-r dark:border-slate-600`}
+                      className={`px-2.5 py-2.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm ${onFetchTabelog ? 'border-r dark:border-slate-600' : (showDropdown ? '' : 'rounded-r-full')}`}
                       title="Add from photo"
                     >
                       📸
@@ -14264,7 +14269,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v19';
+const CACHE_NAME = 'bo-wander-v20';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
