@@ -1782,10 +1782,9 @@
     };
     const isFoodCategory = (cat) => ['restaurant', 'cafe', 'treats', 'bar', 'boba', 'mochi', 'tea'].includes(cat);
 
-    const getTabelogSearchUrl = (name, address) => {
-      const areaHint = (address || '').split(',').slice(-2).join(' ').trim();
-      const query = `${name} ${areaHint}`.trim();
-      return `https://tabelog.com/en/rstLst/?vs=1&sw=${encodeURIComponent(query)}`;
+    const getTabelogSearchUrl = (name) => {
+      // Just search by name — adding address makes searches too specific and fail
+      return `https://tabelog.com/en/rstLst/?vs=1&sw=${encodeURIComponent(name || '')}`;
     };
 
     const isCustomIcon = (emoji) => emoji && (emoji.startsWith('data:') || emoji.startsWith('http'));
@@ -3428,7 +3427,7 @@
                       <span className="text-xs font-bold text-gray-800 dark:text-gray-200">{pin.tabelog_rating.toFixed(2)}</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <a href={pin.tabelog_url || getTabelogSearchUrl(pin.name, pin.address)} target="_blank" rel="noopener noreferrer"
+                      <a href={pin.tabelog_url || getTabelogSearchUrl(pin.name)} target="_blank" rel="noopener noreferrer"
                         className="text-xs hover:underline whitespace-nowrap" style={{ color: '#E63E1C' }}>
                         {pin.tabelog_url ? 'View on Tabelog ↗' : 'Search Tabelog ↗'}
                       </a>
@@ -3448,7 +3447,7 @@
                         <span className="text-xs text-gray-400 italic">not set</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <a href={getTabelogSearchUrl(pin.name, pin.address)} target="_blank" rel="noopener noreferrer"
+                        <a href={getTabelogSearchUrl(pin.name)} target="_blank" rel="noopener noreferrer"
                           className="text-xs hover:underline whitespace-nowrap" style={{ color: '#E63E1C' }}>
                           Search ↗
                         </a>
@@ -13573,7 +13572,7 @@
                   const max = Math.min(colPins.length, 5);
                   if (!confirm(`Open Tabelog search for ${max} pins without ratings? (${colPins.length} total missing)\n\nYou can then add ratings from each pin's detail view.`)) return;
                   for (let i = 0; i < max; i++) {
-                    const url = getTabelogSearchUrl(colPins[i].name, colPins[i].address);
+                    const url = getTabelogSearchUrl(colPins[i].name);
                     window.open(url, '_blank');
                   }
                   showToast(`Opened ${max} Tabelog searches. Add ratings from each pin's detail view.`);
@@ -14265,7 +14264,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v18';
+const CACHE_NAME = 'bo-wander-v19';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
