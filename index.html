@@ -1887,6 +1887,37 @@
       return `${mon} ${d.getDate()}`;
     };
 
+    // Normalize a pin name for same-place matching (strip common suffixes/prefixes)
+    const normalizePinName = (name) => {
+      if (!name) return '';
+      return name.toLowerCase()
+        .replace(/\b(reservation|booking|ticket|tour|activity|experience|admission|entry|visit|auction|tuna auction)\b/gi, '')
+        .replace(/[^a-z0-9　-鿿＀-￯]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+
+    // Check if two pins refer to the same place (for merging spot + activity)
+    const isSamePlacePin = (a, b) => {
+      if (!a || !b || a.id === b.id) return false;
+      // Must be different types — one spot, one activity (or hotel)
+      const aIsBooking = a.category === 'activity' || a.category === 'hotel';
+      const bIsBooking = b.category === 'activity' || b.category === 'hotel';
+      // If both are bookings or neither is, don't merge
+      if (aIsBooking === bIsBooking) return false;
+      // Compare normalized names
+      const na = normalizePinName(a.name);
+      const nb = normalizePinName(b.name);
+      if (na && nb && (na.includes(nb) || nb.includes(na))) return true;
+      // Compare addresses if both have one
+      if (a.address && b.address) {
+        const aa = a.address.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const ab = b.address.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (aa && ab && aa.length > 5 && (aa === ab || aa.includes(ab) || ab.includes(aa))) return true;
+      }
+      return false;
+    };
+
     // Pick the most relevant pin from a co-located group based on today's date
     // Priority: current stay (today within check-in..check-out) > nearest upcoming > nearest past
     const pickRelevantPin = (group) => {
@@ -2563,22 +2594,26 @@
             .split('\n').map(l => l.trim())
             .filter(l => {
               if (!l) return false;
+              // Filter out map reference lines
+              if (/^\(?\s*MAP\s*[:;.]?/i.test(l)) return false;
+              if (/^[A-Z]\d+\s+[A-Z]\d/i.test(l)) return false;
               const wordish = (l.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]/g) || []).length;
               if (l.length >= 3 && wordish / l.length < 0.4) return false;
               if (l.length <= 2 && !/[.!?]/.test(l)) return false;
               return true;
             })
             .map(l => l.replace(/\s*\|\s*/g, ' '));
-          // Join lines into paragraphs: single newlines become spaces, blank lines become paragraph breaks
+          // Join lines into paragraphs and clean map references
           const ocrText = ocrLines.reduce((acc, line, i) => {
             if (!acc) return line;
-            // If previous line ended with sentence-ending punctuation or this line starts with a capital, start new paragraph
             const prevEndsSection = /[.!?:]\s*$/.test(ocrLines[i - 1] || '');
             const startsWithCap = /^[A-Z\u3040-\u30ff\u4e00-\u9fff]/.test(line);
             if (prevEndsSection && startsWithCap) return acc + '\n\n' + line;
-            // Otherwise join with space (the line break was just word-wrap in the image)
             return acc + ' ' + line;
-          }, '').replace(/\n{3,}/g, '\n\n').trim();
+          }, '').replace(/\n{3,}/g, '\n\n')
+            .replace(/\s*\(MAP[^)]*\)/gi, '')
+            .replace(/\bMAP\s*[:;.]?\s*\(?\d+\)?\s*P\d+\s*[A-Z]\d*/gi, '')
+            .trim();
 
           const wordChars = (ocrText.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]{2,}/g) || []).length;
           const isGoodOcr = ocrText && ocrConfidence >= 40 && wordChars >= 3;
@@ -2928,18 +2963,21 @@
               </button>
             </div>
 
-            {/* Co-located pins tab bar */}
+            {/* Same-place merged pins tab bar (Place | Activity) */}
             {hasGroup && !editing && (
               <div className="flex gap-1 bg-gray-100 dark:bg-slate-800 rounded-lg p-1">
                 {[...coLocatedPins].sort((a, b) => {
-                  const da = a.reservation_details?.check_in ? new Date(a.reservation_details.check_in) : new Date(9999, 0);
-                  const db = b.reservation_details?.check_in ? new Date(b.reservation_details.check_in) : new Date(9999, 0);
-                  return da - db;
-                }).map((p, i) => {
+                  // Spot pin first, then activity/hotel
+                  const aBook = a.category === 'activity' || a.category === 'hotel' ? 1 : 0;
+                  const bBook = b.category === 'activity' || b.category === 'hotel' ? 1 : 0;
+                  return aBook - bBook;
+                }).map((p) => {
                   const isActive = p.id === pin.id;
-                  const rd = p.reservation_details;
-                  const dateLabel = formatPinDate(rd);
-                  const label = dateLabel || `Stay ${i + 1}`;
+                  const isBooking = p.category === 'activity' || p.category === 'hotel';
+                  const catData = PIN_CATEGORIES[p.category] || PIN_CATEGORIES.other;
+                  const label = isBooking
+                    ? (p.category === 'activity' ? '🎫 Activity' : '🏨 Hotel')
+                    : `${catData.icon || '📍'} Place`;
                   return (
                     <button
                       key={p.id}
@@ -2950,7 +2988,7 @@
                           : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
                       }`}
                     >
-                      {label}{rd?.check_out ? ` → ${formatPinDate({ check_in: rd.check_out })}` : ''}
+                      {label}
                     </button>
                   );
                 })}
@@ -6444,59 +6482,157 @@
       const full = text.replace(/\n/g, ' ');
       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
 
+      // Detect transport subtype
       if (/shinkansen|bullet\s*train|JR\s+pass|nozomi|hikari|kodama|sakura|mizuho|hayabusa|kagayaki|train|rail/i.test(full)) {
         result.type = 'train';
-      } else if (/transfer|shuttle|pickup|pick[\s-]?up|airport.*car|car.*airport|private\s+(?:car|vehicle|driver)|limousine|chauffeur/i.test(full)) {
+      } else if (/transfer|shuttle|pickup|pick[\s-]?up|airport.*(?:car|hotel)|(?:car|hotel).*airport|private\s+(?:car|vehicle|driver)|limousine|chauffeur|drop[\s-]?off/i.test(full)) {
         result.type = 'transfer';
       } else {
         result.type = 'flight';
       }
 
-      const carrierPatterns = [
-        /(?:airline|carrier|operator|company)[:\s]+([^\n,]{3,40})/i,
-        /(?:Japan\s+Airlines|JAL|ANA|All\s+Nippon|United|Delta|American|Southwest|JetBlue|Spirit|Alaska|Hawaiian|Emirates|Qatar|Singapore|Cathay|Korean\s+Air|Asiana|Turkish|Lufthansa|British\s+Airways|Air\s+France|KLM|Qantas|Virgin|Ryanair|EasyJet|Peach|Jetstar|Air\s+Do|Skymark|Solaseed|StarFlyer)/i,
-        /(?:Shinkansen|Tokaido|Sanyo|Hokuriku|Tohoku|Joetsu|Nozomi|Hikari|Kodama|Sakura|Mizuho|Hayabusa|Kagayaki|Tsubame)/i,
-      ];
-      for (const pat of carrierPatterns) {
-        const m = full.match(pat);
-        if (m) { result.carrier = (m[1] || m[0]).trim(); break; }
+      // ===== SHINKANSEN / JR TRAIN FORMAT =====
+      // Format: "Tokyo(11:39)-->NOZOMI 155-->Kyoto(13:51)"
+      const shinkansenRoute = full.match(/([A-Za-z][\w\s-]*?)\((\d{1,2}:\d{2})\)\s*-{1,3}>\s*((?:NOZOMI|HIKARI|KODAMA|SAKURA|MIZUHO|HAYABUSA|KAGAYAKI|TSUBAME|YAMABIKO|TSUBASA|KOMACHI|HAYATE|ASAMA|TANIGAWA|NASUNO|MAX)\s*\d*)\s*-{1,3}>\s*([A-Za-z][\w\s-]*?)\((\d{1,2}:\d{2})\)/i);
+      if (shinkansenRoute) {
+        result.from = shinkansenRoute[1].replace(/[\s-]+$/, '').trim();
+        result.departure_time = shinkansenRoute[2];
+        result.carrier = shinkansenRoute[3].trim();
+        result.to = shinkansenRoute[4].replace(/[\s-]+$/, '').trim();
+        result.arrival_time = shinkansenRoute[5];
       }
 
-      const flightNum = full.match(/(?:flight|flt)[\s#:]*([A-Z]{2}\s*\d{1,5})/i);
-      const trainNum = full.match(/(?:train|service)[\s#:]*(\w{1,5}\s*\d{1,5})/i);
-      if (flightNum) result.carrier = (result.carrier ? result.carrier + ' ' : '') + flightNum[1].trim();
-      if (trainNum && result.type === 'train') result.carrier = (result.carrier ? result.carrier + ' ' : '') + trainNum[1].trim();
-
-      const routePatterns = [
-        /(?:from|departure|depart(?:ing)?|origin)[:\s]+([^\n→➡>]{3,60}?)(?:\s*(?:→|➡|->|>|to)\s*|\s+(?:to|→)\s+)([^\n,]{3,60})/i,
-        /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*(?:→|➡|->|>|–|—|to)\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/,
-        /([A-Z]{3})\s*(?:→|➡|->|>|–|—|to)\s*([A-Z]{3})/,
-      ];
-      for (const pat of routePatterns) {
-        const m = full.match(pat);
-        if (m) { result.from = m[1].trim(); result.to = m[2].trim(); break; }
-      }
-
-      const datePatterns = [
-        /(?:date|depart(?:ure)?|travel)\s*(?:date)?[:\s]+(\d{4}[\-\/]\d{2}[\-\/]\d{2})/i,
-        /(\d{4}[\-\/]\d{2}[\-\/]\d{2})/,
-        /(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})/i,
-        /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}/i,
-      ];
-      for (const pat of datePatterns) {
-        const m = full.match(pat);
-        if (m) {
-          const ds = m[1] || m[0];
-          const d = new Date(ds);
-          if (!isNaN(d.getTime())) { result.date = d.toISOString().split('T')[0]; break; }
-          result.date = ds; break;
+      // ===== CARRIER / AIRLINE / TRAIN NAME =====
+      if (!result.carrier) {
+        const carrierPatterns = [
+          /(?:airline|carrier|operator|company|provided\s+by)[:\s]+([^\n,]{3,40})/i,
+          /(?:Japan\s+Airlines|JAL|ANA|All\s+Nippon|United|Delta|American|Southwest|JetBlue|Spirit|Alaska|Hawaiian|Emirates|Qatar|Singapore|Cathay|Korean\s+Air|Asiana|Turkish|Lufthansa|British\s+Airways|Air\s+France|KLM|Qantas|Virgin|Ryanair|EasyJet|Peach|Jetstar|Air\s+Do|Skymark|Solaseed|StarFlyer)/i,
+          /(?:NOZOMI|HIKARI|KODAMA|SAKURA|MIZUHO|HAYABUSA|KAGAYAKI|TSUBAME)\s*\d*/i,
+        ];
+        for (const pat of carrierPatterns) {
+          const m = full.match(pat);
+          if (m) { result.carrier = (m[1] || m[0]).trim(); break; }
         }
       }
 
-      const depMatch = full.match(/(?:depart(?:ure|s|ing)?|leave?s?)\s*(?:at|time)?[:\s]+(\d{1,2}:\d{2}\s*(?:AM|PM)?)/i);
-      const arrMatch = full.match(/(?:arriv(?:al|es?|ing)?)\s*(?:at|time)?[:\s]+(\d{1,2}:\d{2}\s*(?:AM|PM)?)/i);
-      if (depMatch) result.departure_time = depMatch[1].trim();
-      if (arrMatch) result.arrival_time = arrMatch[1].trim();
+      // Flight number
+      const flightNum = full.match(/(?:flight|flt)\s*(?:#|no\.?|number)?[:\s]*([A-Z]{2}\s*\d{1,5})/i);
+      if (flightNum) {
+        const fn = flightNum[1].trim();
+        result.carrier = result.carrier ? `${result.carrier} ${fn}` : fn;
+      }
+
+      // ===== ROUTE / FROM-TO =====
+      if (!result.from || !result.to) {
+        const routePatterns = [
+          // Labeled from/to
+          /(?:from|departure|depart(?:ing)?|origin)[:\s]+([^\n→➡>]{3,60}?)(?:\s*(?:→|➡|->|-->|>|to)\s*|\s+(?:to|→)\s+)([^\n,]{3,60})/i,
+          // Arrow/dash separators
+          /([A-Z][\w\s]+?(?:\([A-Z]{3}\))?)\s*(?:→|➡|->|-->|>)\s*([A-Z][\w\s]+?(?:\([A-Z]{3}\))?)\s*(?:\n|$|,)/,
+          // Airport codes
+          /([A-Z]{3})\s*(?:→|➡|->|-->|>|–|—|to)\s*([A-Z]{3})/,
+          // "Pick-up and drop-off" pattern (transfers)
+          // Look for location blocks after "Pick-up" section headers
+        ];
+        for (const pat of routePatterns) {
+          const m = full.match(pat);
+          if (m) { result.from = m[1].trim(); result.to = m[2].trim(); break; }
+        }
+      }
+
+      // Transfer-specific: pick-up / drop-off locations from Booking.com format
+      if (!result.from && result.type === 'transfer') {
+        // Strategy 1: Look for location lines after date markers like "Sat, 2 May"
+        const locationLines = [];
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s*\d{1,2}\s+\w{3,}/i.test(line)) {
+            // Scan next few lines for a location (address with comma)
+            for (let j = i + 1; j < Math.min(i + 3, lines.length); j++) {
+              if (lines[j].length > 10 && lines[j].includes(',')) {
+                locationLines.push(lines[j]);
+                break;
+              }
+            }
+          }
+        }
+        // Strategy 2: Look for lines containing airport/hotel keywords
+        if (locationLines.length < 2) {
+          for (const line of lines) {
+            if (line.length > 15 && /(?:airport|international|terminal|station|hotel|suites?|inn|resort|hostel)/i.test(line) && line.includes(',')) {
+              if (!locationLines.includes(line)) locationLines.push(line);
+              if (locationLines.length >= 2) break;
+            }
+          }
+        }
+        if (locationLines.length >= 2) {
+          // Extract short name: take text before first comma with a number, or first segment
+          const shortName = (loc) => {
+            // "Narita International Airport (NRT), 1-1 Furugome..." → "Narita International Airport (NRT)"
+            const parts = loc.split(',');
+            return parts[0].trim();
+          };
+          result.from = shortName(locationLines[0]);
+          result.to = shortName(locationLines[1]);
+        } else if (locationLines.length === 1) {
+          result.from = locationLines[0].split(',')[0].trim();
+        }
+      }
+
+      // ===== DATE =====
+      // Strategy 1: labeled departure/travel date
+      const travelDatePatterns = [
+        /(?:depart(?:ure|ing)?)\s*date[:\s]+([A-Za-z]+\s+\d{1,2},?\s+\d{4})/i,
+        /(?:depart(?:ure|ing)?|travel|journey)\s*date[:\s]+(\d{4}[\-\/]\d{2}[\-\/]\d{2})/i,
+      ];
+      for (const pat of travelDatePatterns) {
+        const m = full.match(pat);
+        if (m) {
+          const d = new Date(m[1].trim());
+          if (!isNaN(d.getTime())) { result.date = d.toISOString().split('T')[0]; break; }
+        }
+      }
+      // Strategy 2: short date lines like "Sat, 2 May" (Booking.com format) — take the FIRST one
+      if (!result.date) {
+        for (const line of lines) {
+          const shortDate = line.match(/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),?\s*(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*)$/i);
+          if (shortDate) {
+            // Assume current or next year
+            const withYear = shortDate[1] + ' 2026';
+            const d = new Date(withYear);
+            if (!isNaN(d.getTime())) { result.date = d.toISOString().split('T')[0]; break; }
+          }
+        }
+      }
+      // Strategy 3: fallback — find dates, skip booking/order-labeled ones
+      if (!result.date) {
+        const bookingLabels = /(?:book(?:ed|ing)|order(?:ed)?|purchas(?:e|ed)|creat(?:e|ed)|issu(?:e|ed)|confirm(?:ed|ation)|subject|from:|to:)/i;
+        for (const line of lines) {
+          if (bookingLabels.test(line)) continue;
+          // "Month Day, Year" format
+          const mdy = line.match(/((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})/i);
+          if (mdy) {
+            const d = new Date(mdy[1]);
+            if (!isNaN(d.getTime())) { result.date = d.toISOString().split('T')[0]; break; }
+          }
+          // ISO format
+          const iso = line.match(/(\d{4}[\-\/]\d{2}[\-\/]\d{2})/);
+          if (iso) {
+            const d = new Date(iso[1]);
+            if (!isNaN(d.getTime())) { result.date = d.toISOString().split('T')[0]; break; }
+          }
+        }
+      }
+
+      // ===== TIMES =====
+      if (!result.departure_time) {
+        // Generic labeled departure/arrival times
+        const depMatch = full.match(/(?:depart(?:ure|s|ing)?|leave?s?|pick[\s-]?up\s*time)\s*(?:at|time)?[:\s]+(\d{1,2}:\d{2}\s*(?:AM|PM)?)/i);
+        const arrMatch = full.match(/(?:arriv(?:al|es?|ing)?|drop[\s-]?off\s*time)\s*(?:at|time)?[:\s]+(\d{1,2}:\d{2}\s*(?:AM|PM)?)/i);
+        if (depMatch) result.departure_time = depMatch[1].trim();
+        if (arrMatch) result.arrival_time = arrMatch[1].trim();
+      }
+      // Time range: "10:30 - 13:00"
       if (!result.departure_time) {
         const timeRange = full.match(/(\d{1,2}:\d{2}\s*(?:AM|PM)?)\s*(?:[-–—→>]|to)\s*(\d{1,2}:\d{2}\s*(?:AM|PM)?)/i);
         if (timeRange) {
@@ -6504,29 +6640,92 @@
           result.arrival_time = timeRange[2].trim();
         }
       }
+      // Transfer with flight tracking: "15:00" after date line
+      if (!result.departure_time && result.type === 'transfer') {
+        for (const line of lines) {
+          const timeOnly = line.match(/^(\d{1,2}:\d{2})$/);
+          if (timeOnly) { result.departure_time = timeOnly[1]; break; }
+        }
+      }
 
-      const seatMatch = full.match(/(?:seat|car|coach|carriage)\s*(?:#|no\.?|number)?[:\s]+([A-Z0-9][-A-Z0-9]{0,8})/i);
-      if (seatMatch) result.seat = seatMatch[1].trim();
+      // ===== CAR / SEAT =====
+      // Shinkansen format: "Car.5 Seat.1-D"
+      const carSeatMatches = full.match(/Car\.?\s*(\d+)\s+Seat\.?\s*([\w-]+)/gi);
+      if (carSeatMatches) {
+        // Collect all car/seat combos
+        const seats = carSeatMatches.map(m => {
+          const parsed = m.match(/Car\.?\s*(\d+)\s+Seat\.?\s*([\w-]+)/i);
+          return parsed ? `Car ${parsed[1]}, Seat ${parsed[2]}` : m;
+        });
+        result.seat = seats.join(' | ');
+      }
+      if (!result.seat) {
+        // Generic: "seat 14A", "coach B", "car 7"
+        const seatMatch = full.match(/(?:seat|car|coach|carriage)\s*(?:#|no\.?|number)?[:\s]+([A-Z0-9][\w-]{0,8})/i);
+        if (seatMatch) result.seat = seatMatch[1].trim();
+      }
 
+      // ===== CONFIRMATION / BOOKING NUMBER =====
+      // Must match actual codes/numbers, not common words like "Service", "details"
       const confPatterns = [
-        /(?:booking|confirmation|reservation|order|reference|e-?ticket)\s*(?:#|no\.?|number|ref|code)?[:\s]+([A-Z0-9][-A-Z0-9]{3,20})/i,
+        /(?:booking|reservation)\s+(?:reference|ref|number|no\.?|#|ID|code)[:\s]+(\d{4,20})/i,
+        /(?:booking|reservation)\s+(?:reference|ref|number|no\.?|#|ID|code)[:\s]+([A-Z0-9]{4,20})/i,
+        /(?:confirmation|order|reference)\s*(?:#|no\.?|number|code)[:\s]+([A-Z0-9]{4,20})/i,
+        /(?:reservation\s+number|booking\s+ID)[:\s]+(\d{3,20})/i,
         /(?:PNR|record\s+locator)[:\s]+([A-Z0-9]{5,8})/i,
       ];
       for (const pat of confPatterns) {
         const m = full.match(pat);
-        if (m) { result.confirmation = m[1].trim(); break; }
+        if (m) {
+          const val = m[1].trim();
+          // Skip common words that aren't actual codes
+          if (/^(service|details|confirmed|confirmation|number|email|sent)$/i.test(val)) continue;
+          result.confirmation = val;
+          break;
+        }
       }
 
-      const paxMatch = full.match(/(?:passenger|travele?r|guest|pax)s?[:\s]+(\d+|[^\n,]{3,60})/i);
-      if (paxMatch) result.passengers = paxMatch[1].trim();
+      // ===== PASSENGERS =====
+      // "Adult(s): 2" format
+      const adultMatch = full.match(/Adult\s*\(?s?\)?[:\s]+(\d+)/i);
+      if (adultMatch) {
+        result.passengers = `${adultMatch[1]} adult${parseInt(adultMatch[1]) > 1 ? 's' : ''}`;
+      }
       if (!result.passengers) {
-        const nameMatch = full.match(/(?:passenger|travele?r|guest)\s*(?:name)?[:\s]+([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s*[,&]\s*[A-Z][a-z]+\s+[A-Z][a-z]+)*)/);
-        if (nameMatch) result.passengers = nameMatch[1].trim();
+        const paxMatch = full.match(/(?:passenger|travele?r|guest|pax)s?\s*(?:selection)?[:\s]+(\d+|[^\n,]{3,40})/i);
+        if (paxMatch) result.passengers = paxMatch[1].trim();
+        // "Maximum N passengers"
+        if (!result.passengers) {
+          const maxPax = full.match(/(?:maximum|max)\s+(\d+)\s+passenger/i);
+          if (maxPax) result.passengers = maxPax[1];
+        }
       }
 
-      const priceMatch = full.match(/(?:US)?\s*\$\s*[\d,]+\.?\d*|€\s*[\d,]+\.?\d*|£\s*[\d,]+\.?\d*|¥\s*[\d,]+|[\d,]+\.?\d*\s*(?:USD|EUR|GBP|JPY)/i);
-      if (priceMatch) result.cost = priceMatch[0].trim();
+      // ===== PRICE / COST =====
+      // "Total: 28,740 Yen" or "Total is 29,040 Yen"
+      const totalYen = full.match(/(?:total|price|cost|fare|amount)\s*(?:is|:)\s*([\d,]+)\s*yen/i);
+      if (totalYen) {
+        result.cost = `¥${totalYen[1]}`;
+      }
+      if (!result.cost) {
+        // Standard currency patterns
+        const pricePatterns = [
+          /(?:total\s*(?:price|cost|amount)?|price|cost|fare)\s*(?:is|:)?\s*((?:US)?\s*\$\s*[\d,]+\.?\d*|€\s*[\d,]+\.?\d*|£\s*[\d,]+\.?\d*|¥\s*[\d,]+|[\d,]+\.?\d*\s*(?:USD|EUR|GBP|JPY|Yen))/i,
+          /(?:US)?\s*\$\s*[\d,]+\.?\d*|€\s*[\d,]+\.?\d*|£\s*[\d,]+\.?\d*|¥\s*[\d,]+/i,
+        ];
+        for (const pat of pricePatterns) {
+          const m = full.match(pat);
+          if (m) { result.cost = (m[1] || m[0]).trim(); break; }
+        }
+      }
 
+      // ===== FLIGHT NUMBER (for transfers with flight tracking) =====
+      if (result.type === 'transfer') {
+        const fn = full.match(/flight\s*(?:#|no\.?|number)?[:\s]*([A-Z]{2}\s*\d{1,5})/i);
+        if (fn) result.notes = `Flight: ${fn[1].trim()}`;
+      }
+
+      // ===== TITLE =====
       if (result.from && result.to) {
         result.title = `${result.from} → ${result.to}`;
         if (result.carrier) result.title += ` (${result.carrier})`;
@@ -7119,6 +7318,78 @@
               )}
             </div>
           </div>
+        </div>
+      );
+    };
+
+    // PDF inline preview for upload review
+    const PdfPreview = ({ fileDataUrl }) => {
+      const canvasContainerRef = useRef(null);
+      const [pageCount, setPageCount] = useState(0);
+      const [error, setError] = useState(false);
+
+      useEffect(() => {
+        if (!fileDataUrl || !canvasContainerRef.current) return;
+        const container = canvasContainerRef.current;
+        container.innerHTML = '';
+
+        (async () => {
+          try {
+            const parts = fileDataUrl.match(/^data:[^;]+;base64,(.*)$/);
+            if (!parts) { setError(true); return; }
+            const binary = atob(parts[1]);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+            const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+            setPageCount(pdf.numPages);
+            const maxPages = Math.min(pdf.numPages, 3); // render first 3 pages
+
+            for (let i = 1; i <= maxPages; i++) {
+              const page = await pdf.getPage(i);
+              const viewport = page.getViewport({ scale: 1.5 });
+              const canvas = document.createElement('canvas');
+              canvas.width = viewport.width;
+              canvas.height = viewport.height;
+              canvas.style.width = '100%';
+              canvas.style.height = 'auto';
+              canvas.style.display = 'block';
+              if (i > 1) {
+                const divider = document.createElement('div');
+                divider.style.height = '2px';
+                divider.className = 'bg-gray-200 dark:bg-slate-700';
+                container.appendChild(divider);
+              }
+              container.appendChild(canvas);
+              const ctx = canvas.getContext('2d');
+              await page.render({ canvasContext: ctx, viewport }).promise;
+            }
+          } catch (e) {
+            console.error('PDF preview failed:', e);
+            setError(true);
+          }
+        })();
+      }, [fileDataUrl]);
+
+      if (error) {
+        return (
+          <div className="flex items-center justify-center py-8 text-gray-400">
+            <div className="text-center">
+              <span className="text-4xl block mb-2">📄</span>
+              <span className="text-sm">PDF preview unavailable</span>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div>
+          <div ref={canvasContainerRef} />
+          {pageCount > 3 && (
+            <div className="text-center py-2 text-xs text-gray-400 dark:text-gray-500 border-t dark:border-slate-700">
+              Showing 3 of {pageCount} pages
+            </div>
+          )}
         </div>
       );
     };
@@ -7823,33 +8094,48 @@
 
               {step === 'review' && (
                 <div className="space-y-3">
-                  {/* File info + thumbnail */}
-                  {(extractedText || fileDataUrl) && (
-                    <div className="bg-gray-50 dark:bg-slate-800 rounded-lg p-3 mb-2">
-                      <div className="flex items-start gap-3">
-                        {fileThumbnail && fileThumbnail.startsWith('data:') ? (
-                          <img src={fileThumbnail} alt="" className="w-12 h-12 rounded object-cover flex-shrink-0 cursor-pointer border" onClick={() => openDataFile(fileDataUrl, fileName)} />
-                        ) : fileThumbnail ? (
-                          <span className="text-3xl flex-shrink-0">{fileThumbnail}</span>
-                        ) : null}
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-medium text-gray-500 dark:text-gray-400 truncate">{fileName}</span>
-                            <button
-                              onClick={() => { setStep('upload'); setExtractedText(''); setFileName(''); setFileDataUrl(''); setFileThumbnail(''); }}
-                              className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex-shrink-0 ml-2"
-                            >
-                              Change file
-                            </button>
+                  {/* File preview + info */}
+                  {fileDataUrl && (
+                    <div className="rounded-xl overflow-hidden border dark:border-slate-700 bg-gray-50 dark:bg-slate-800 mb-2">
+                      {/* Large preview area */}
+                      <div className="overflow-y-auto bg-white dark:bg-slate-900" style={{ maxHeight: '35vh' }}>
+                        {fileDataUrl.startsWith('data:image/') ? (
+                          <img
+                            src={fileDataUrl}
+                            alt="Uploaded document"
+                            className="w-full object-contain cursor-pointer"
+                            onClick={() => openDataFile(fileDataUrl, fileName)}
+                          />
+                        ) : fileDataUrl.startsWith('data:application/pdf') ? (
+                          <PdfPreview fileDataUrl={fileDataUrl} />
+                        ) : (
+                          <div className="flex items-center justify-center py-8 text-gray-400">
+                            <div className="text-center">
+                              <span className="text-4xl block mb-2">📎</span>
+                              <span className="text-sm">{fileName}</span>
+                            </div>
                           </div>
-                          {extractedText && (
-                            <details className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                              <summary className="cursor-pointer hover:text-gray-700 dark:hover:text-gray-300">Show extracted text</summary>
-                              <pre className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap text-xs">{extractedText.slice(0, 2000)}</pre>
-                            </details>
-                          )}
-                        </div>
+                        )}
                       </div>
+                      {/* File info bar */}
+                      <div className="flex items-center justify-between px-3 py-2 border-t dark:border-slate-700">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-xs font-medium text-gray-500 dark:text-gray-400 truncate">{fileName}</span>
+                          <button onClick={() => openDataFile(fileDataUrl, fileName)} className="text-xs text-blue-600 dark:text-blue-400 hover:underline shrink-0">Open</button>
+                        </div>
+                        <button
+                          onClick={() => { setStep('upload'); setExtractedText(''); setFileName(''); setFileDataUrl(''); setFileThumbnail(''); }}
+                          className="text-xs text-blue-600 dark:text-blue-400 hover:underline shrink-0 ml-2"
+                        >
+                          Change file
+                        </button>
+                      </div>
+                      {extractedText && (
+                        <details className="text-xs text-gray-500 dark:text-gray-400 px-3 pb-2">
+                          <summary className="cursor-pointer hover:text-gray-700 dark:hover:text-gray-300">Show extracted text</summary>
+                          <pre className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap text-xs bg-white dark:bg-slate-900 rounded p-2 border dark:border-slate-700">{extractedText.slice(0, 2000)}</pre>
+                        </details>
+                      )}
                     </div>
                   )}
 
@@ -9494,13 +9780,16 @@
                     .map(l => l.trim())
                     .filter(l => {
                       if (!l) return false;
+                      // Filter out map reference lines
+                      if (/^\(?\s*MAP\s*[:;.]?/i.test(l)) return false;
+                      if (/^[A-Z]\d+\s+[A-Z]\d/i.test(l)) return false;
                       const wordish = (l.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]/g) || []).length;
                       if (l.length >= 3 && wordish / l.length < 0.4) return false;
                       if (l.length <= 2 && !/[.!?]/.test(l)) return false;
                       return true;
                     })
                     .map(l => l.replace(/\s*\|\s*/g, ' '));
-                  // Join lines into paragraphs: single newlines become spaces, blank lines become paragraph breaks
+                  // Join lines into paragraphs and clean up map references
                   const cleanedText = ocrLines.reduce((acc, line, i) => {
                     if (!acc) return line;
                     const prevEndsSection = /[.!?:]\s*$/.test(ocrLines[i - 1] || '');
@@ -9508,6 +9797,8 @@
                     if (prevEndsSection && startsWithCap) return acc + '\n\n' + line;
                     return acc + ' ' + line;
                   }, '').replace(/\n{3,}/g, '\n\n')
+                    .replace(/\s*\(MAP[^)]*\)/gi, '')
+                    .replace(/\bMAP\s*[:;.]?\s*\(?\d+\)?\s*P\d+\s*[A-Z]\d*/gi, '')
                     .trim();
                   const existing = (formData.description || '').replace(/\n\n📷 Reading photo…$/, '');
                   const divider = existing ? '\n\n---\n' : '';
@@ -9759,37 +10050,49 @@
         markersRef.current.forEach(marker => map.removeLayer(marker));
         markersRef.current.clear();
 
-        // Add new markers — merge co-located pins into single markers
+        // Add new markers — merge same-place pins (spot + activity) into single markers
         const validPins = pins.filter(p => typeof p.lat === 'number' && typeof p.lng === 'number' && !isNaN(p.lat) && !isNaN(p.lng) && p.lat !== 0 && p.lng !== 0);
-        // Group pins by rounded coords to detect overlaps (within ~10m)
-        const coordGroups = {};
-        validPins.forEach(pin => {
-          const key = `${pin.lat.toFixed(4)},${pin.lng.toFixed(4)}`;
-          if (!coordGroups[key]) coordGroups[key] = [];
-          coordGroups[key].push(pin);
-        });
-        // Build a lookup from pin ID to its co-located group
+        // Group pins that refer to the same place (name/address match between spot + activity)
         const pinGroupMap = {};
-        Object.values(coordGroups).forEach(group => {
-          group.forEach(pin => { pinGroupMap[pin.id] = group; });
-        });
-        // Track which coord groups have already been rendered
-        const renderedGroups = new Set();
+        const matched = new Set();
+        for (let i = 0; i < validPins.length; i++) {
+          if (matched.has(validPins[i].id)) continue;
+          for (let j = i + 1; j < validPins.length; j++) {
+            if (matched.has(validPins[j].id)) continue;
+            if (isSamePlacePin(validPins[i], validPins[j])) {
+              const group = [validPins[i], validPins[j]];
+              // Sort: spot pin first, then activity/hotel
+              group.sort((a, b) => {
+                const aBook = a.category === 'activity' || a.category === 'hotel';
+                const bBook = b.category === 'activity' || b.category === 'hotel';
+                return aBook - bBook;
+              });
+              pinGroupMap[validPins[i].id] = group;
+              pinGroupMap[validPins[j].id] = group;
+              matched.add(validPins[i].id);
+              matched.add(validPins[j].id);
+              break; // each pin matches at most one partner
+            }
+          }
+        }
+        // Track which groups have already been rendered
+        const renderedGroupIds = new Set();
 
         validPins.forEach(pin => {
-          const groupKey = `${pin.lat.toFixed(4)},${pin.lng.toFixed(4)}`;
           const group = pinGroupMap[pin.id] || [pin];
           const isGrouped = group.length > 1;
 
-          // For grouped pins, only render one marker (the first in the group)
+          // For grouped pins, only render one marker (the spot pin)
           if (isGrouped) {
-            if (renderedGroups.has(groupKey)) {
+            const groupId = group.map(p => p.id).sort().join('|');
+            if (renderedGroupIds.has(groupId)) {
               // Still register a reference so selection highlighting works
               const primaryMarker = markersRef.current.get(group[0].id);
               if (primaryMarker) markersRef.current.set(pin.id, primaryMarker);
               return;
             }
-            renderedGroups.add(groupKey);
+            renderedGroupIds.add(groupId);
+            pin = group[0]; // use the spot pin for rendering
           }
 
           const isSelected = isGrouped ? group.some(p => selectedPin?.id === p.id) : selectedPin?.id === pin.id;
@@ -9804,10 +10107,9 @@
           try {
             const marker = L.marker([pin.lat, pin.lng], { icon })
               .on('click', () => {
-                // Pass the group along with the pin for co-located handling
+                // Pass the group along with the pin for same-place handling
                 if (isGrouped) {
-                  const relevant = pickRelevantPin(group);
-                  onSelectPin(relevant, group);
+                  onSelectPin(group[0], group); // spot pin first
                 } else {
                   onSelectPin(pin);
                 }
@@ -10097,29 +10399,41 @@
             break;
         }
 
-        // Merge co-located pins (same coordinates) into groups
-        const coordGroupMap = {};
-        result.forEach(pin => {
-          const key = `${parseFloat(pin.lat).toFixed(4)},${parseFloat(pin.lng).toFixed(4)}`;
-          if (!coordGroupMap[key]) coordGroupMap[key] = [];
-          coordGroupMap[key].push(pin);
-        });
-        // Keep only the first pin per co-located group, attach group info
-        const seen = new Set();
+        // Merge same-place pins (spot + activity at same location) into groups
+        const samePlaceMap = {};
+        const matchedIds = new Set();
+        for (let i = 0; i < result.length; i++) {
+          if (matchedIds.has(result[i].id)) continue;
+          for (let j = i + 1; j < result.length; j++) {
+            if (matchedIds.has(result[j].id)) continue;
+            if (isSamePlacePin(result[i], result[j])) {
+              const group = [result[i], result[j]];
+              group.sort((a, b) => {
+                const aBook = a.category === 'activity' || a.category === 'hotel';
+                const bBook = b.category === 'activity' || b.category === 'hotel';
+                return aBook - bBook; // spot first
+              });
+              samePlaceMap[result[i].id] = group;
+              samePlaceMap[result[j].id] = group;
+              matchedIds.add(result[i].id);
+              matchedIds.add(result[j].id);
+              break;
+            }
+          }
+        }
+        // Keep only one entry per matched group, attach group info
+        const seenGroups = new Set();
         const deduped = [];
         result.forEach(pin => {
-          const key = `${parseFloat(pin.lat).toFixed(4)},${parseFloat(pin.lng).toFixed(4)}`;
-          if (seen.has(key)) return;
-          seen.add(key);
-          const group = coordGroupMap[key];
-          // Sort group chronologically
-          group.sort((a, b) => {
-            const da = a.reservation_details?.check_in ? new Date(a.reservation_details.check_in) : new Date(9999, 0);
-            const db = b.reservation_details?.check_in ? new Date(b.reservation_details.check_in) : new Date(9999, 0);
-            return da - db;
-          });
-          const representative = group.length > 1 ? pickRelevantPin(group) : group[0];
-          deduped.push({ ...representative, _coLocatedGroup: group.length > 1 ? group : null });
+          const group = samePlaceMap[pin.id];
+          if (group) {
+            const groupId = group.map(p => p.id).sort().join('|');
+            if (seenGroups.has(groupId)) return;
+            seenGroups.add(groupId);
+            deduped.push({ ...group[0], _coLocatedGroup: group }); // spot pin as representative
+          } else {
+            deduped.push({ ...pin, _coLocatedGroup: null });
+          }
         });
 
         // Group by category
@@ -10357,9 +10671,9 @@
                       {grouped[cat.id].map(pin => {
                         const openStatus = getOpenStatus(pin.opening_hours || {});
                         const coGroup = pin._coLocatedGroup;
-                        const dates = coGroup
-                          ? coGroup.map(p => formatPinDate(p.reservation_details)).filter(Boolean)
-                          : [];
+                        const hasActivity = coGroup && coGroup.some(p => p.category === 'activity' || p.category === 'hotel');
+                        const activityDate = coGroup && coGroup.find(p => p.reservation_details)?.reservation_details;
+                        const dateLabel = activityDate ? formatPinDate(activityDate) : null;
                         return (
                           <div
                             key={pin.id}
@@ -10376,9 +10690,9 @@
                             </div>
                             <div className="flex-1 min-w-0">
                               <span className="font-medium dark:text-white text-sm">{pin.name}</span>
-                              {dates.length > 0 && (
+                              {dateLabel && (
                                 <span className="ml-1.5 text-xs text-gray-400 dark:text-gray-500">
-                                  {dates.join(' · ')}
+                                  {dateLabel}
                                 </span>
                               )}
                             </div>
@@ -10386,9 +10700,9 @@
                               {pin.is_vegetarian && (
                                 <span className="text-[10px]" title="Vegetarian-friendly">🌱</span>
                               )}
-                              {coGroup && (
+                              {coGroup && hasActivity && (
                                 <span className="text-xs text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-slate-700 px-1.5 py-0.5 rounded-full">
-                                  {coGroup.length}×
+                                  🎫
                                 </span>
                               )}
                               {pin.google_rating && (
@@ -14049,11 +14363,14 @@
             ocrConfidence = result.data?.confidence || 0;
           } catch (err) { console.warn('OCR failed:', err); }
 
-          // 3. Parse OCR text — first meaningful line is the place name
+          // 3. Parse OCR text — extract place name intelligently
           const ocrLines = rawOcr
             .split('\n').map(l => l.trim())
             .filter(l => {
               if (!l) return false;
+              // Filter out map reference lines like "MAP: 10 P60 B2"
+              if (/^\(?\s*MAP\s*[:;.]?/i.test(l)) return false;
+              if (/^[A-Z]\d+\s+[A-Z]\d/i.test(l)) return false;
               const wordish = (l.match(/[A-Za-z\u3040-\u30ff\u4e00-\u9fff]/g) || []).length;
               if (l.length >= 3 && wordish / l.length < 0.4) return false;
               if (l.length <= 2 && !/[.!?]/.test(l)) return false;
@@ -14061,19 +14378,51 @@
             })
             .map(l => l.replace(/\s*\|\s*/g, ' '));
 
-          // First line = place name, rest = description
-          const placeName = ocrLines[0] || '';
-          const descLines = ocrLines.slice(1);
-          const description = descLines.reduce((acc, line, i) => {
-            if (!acc) return line;
-            const prevEndsSection = /[.!?:]\s*$/.test(descLines[i - 1] || '');
-            const startsWithCap = /^[A-Z\u3040-\u30ff\u4e00-\u9fff]/.test(line);
-            if (prevEndsSection && startsWithCap) return acc + '\n\n' + line;
-            return acc + ' ' + line;
-          }, '').replace(/\n{3,}/g, '\n\n').trim();
+          // Join all text and clean up map references
+          const fullOcrText = ocrLines.join(' ').replace(/\s+/g, ' ')
+            .replace(/\s*\(MAP[^)]*\)/gi, '')
+            .replace(/\bMAP\s*[:;.]?\s*\(?\d+\)?\s*P\d+\s*[A-Z]\d*/gi, '')
+            .trim();
 
-          if (!placeName) {
-            alert('Could not read a place name from the photo. Try a clearer shot with the name visible at the top.');
+          // Extract place name: look for capitalized multi-word proper noun sequences
+          const extractPlaceName = (text) => {
+            if (!text) return '';
+            const commonWords = new Set(['The','A','An','In','At','On','For','To','Of','And','Or','But','Is','It','By','As','With','From','Try','This','That','If','So','Do','Be','Are','Was','Were','Has','Had','Have','Not','All','Just','Also','Very','Most','Some','Any','Each','Every','Into','Out','Up','Down','Over','About','After','Before','More','New','Old','Big','Small','Good','Great','Best','First','Last','One','Two','Here','There','Where','When','How','What','Who','Why','Can','May','Will','Would','Should','Could','Well','Still','Much','Many','Even','Only','Than','Then','Now','Our','Your','My','Its','Get','Got','Let','Take','Make','Alternatively','Despite','Throughout','Although','However']);
+            const candidates = [];
+            const words = text.split(/\s+/);
+            let seq = [];
+            for (let i = 0; i < words.length; i++) {
+              const w = words[i].replace(/^[^A-Za-z\u3040-\u30ff\u4e00-\u9fff]+/, '');
+              const isCapitalized = /^[A-Z\u3040-\u30ff\u4e00-\u9fff]/.test(w);
+              const isCommon = commonWords.has(w.replace(/[^A-Za-z]/g, ''));
+              if (isCapitalized && !isCommon && w.length > 1) {
+                seq.push(words[i]);
+              } else if (seq.length > 0) {
+                const lw = w.toLowerCase().replace(/[^a-z]/g, '');
+                if (['de','du','la','le','di','el','del','des','den','van','von','da','do'].includes(lw) && seq.length >= 1) {
+                  seq.push(words[i]);
+                } else {
+                  if (seq.length >= 2) candidates.push(seq.join(' '));
+                  seq = [];
+                }
+              }
+            }
+            if (seq.length >= 2) candidates.push(seq.join(' '));
+            const cleaned = candidates.map(c =>
+              c.replace(/\s*\(MAP[^)]*\)/gi, '').replace(/[.,;:!?]+$/, '').trim()
+            ).filter(c => c.length >= 4);
+            if (cleaned.length > 0) {
+              cleaned.sort((a, b) => b.length - a.length);
+              return cleaned[0];
+            }
+            return ocrLines[0] || '';
+          };
+
+          const placeName = extractPlaceName(fullOcrText);
+          const description = fullOcrText;
+
+          if (!placeName && !fullOcrText) {
+            alert('Could not read text from the photo. Try a clearer shot.');
             setPhotoToPinProcessing(false);
             return;
           }
@@ -14116,7 +14465,7 @@
             id: Math.random().toString(36).substr(2, 9),
             thumbnail: thumb, full: dataUrl,
             name: 'photo-scan',
-            ocr_text: description,
+            ocr_text: fullOcrText,
             added_at: new Date().toISOString(),
           };
 
@@ -15047,7 +15396,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v26';
+const CACHE_NAME = 'bo-wander-v29';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
