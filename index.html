@@ -13689,29 +13689,37 @@
       return (
         <React.Fragment>
           {/* Transit info between items */}
-          {transitInfo && transitInfo.estimated_time_minutes != null && (
+          {transitInfo && transitInfo.estimated_time_minutes != null && (() => {
+            // Build Google Maps directions URL for a specific mode
+            const mapsUrlForMode = (mode) => {
+              if (!transitInfo.maps_url) return null;
+              return transitInfo.maps_url.replace(/travelmode=\w+/, `travelmode=${mode}`);
+            };
+            return (
             <div className="flex items-center gap-1.5 py-1 px-3 text-xs text-gray-400 dark:text-gray-500">
               <div className="flex-1 border-t dark:border-slate-700 border-dashed"></div>
               {transitInfo.all_modes && Object.keys(transitInfo.all_modes).length > 1 ? (
-                // Show all available modes as small pills
+                // Show all available modes as clickable pills — each opens Google Maps with that mode
                 Object.entries(transitInfo.all_modes).map(([mode, data]) => (
-                  <span key={mode} className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full ${mode === transitInfo.mode ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' : ''}`}>
+                  <a key={mode} href={mapsUrlForMode(mode)} target="_blank" rel="noopener noreferrer"
+                    className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full cursor-pointer hover:opacity-80 transition ${mode === transitInfo.mode ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' : ''}`}
+                    title={`Open ${mode} directions in Google Maps`}
+                  >
                     {mode === 'walking' ? '🚶' : mode === 'transit' ? '🚃' : '🚗'}
                     <span>{data.minutes}m</span>
-                  </span>
+                  </a>
                 ))
               ) : (
-                <>
+                <a href={transitInfo.maps_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 hover:text-blue-500 transition" title="Open directions in Google Maps">
                   <span>{transitInfo.mode === 'walking' ? '🚶' : transitInfo.mode === 'transit' ? '🚃' : '🚗'}</span>
-                  <span>{transitInfo.estimated_time_minutes} min</span>
-                </>
+                  <span>{transitInfo.estimated_time_minutes}m</span>
+                </a>
               )}
-              {transitInfo.maps_url && (
-                <a href={transitInfo.maps_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline ml-0.5">↗</a>
-              )}
+              <a href={transitInfo.maps_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline ml-0.5">↗</a>
               <div className="flex-1 border-t dark:border-slate-700 border-dashed"></div>
             </div>
-          )}
+            );
+          })()}
 
           {/* Item row */}
           <div
@@ -14089,36 +14097,37 @@
 
               {/* Auto-matched travel docs for this day */}
               {dayDocs && dayDocs.length > 0 && (
-                <div className="mt-2 border-t dark:border-slate-700 pt-2">
-                  <div className="text-xs text-gray-400 dark:text-gray-500 px-1 mb-1 flex items-center gap-1">
-                    <span>📋</span> Docs for this day
-                  </div>
-                  <div className="space-y-1">
-                    {dayDocs.map(doc => {
-                      const typeInfo = TRAVEL_DOC_TYPES[doc.type] || TRAVEL_DOC_TYPES.general;
-                      const time = doc.departure_time || '';
-                      const conf = doc.confirmation ? `#${doc.confirmation}` : '';
-                      const cost = doc.cost || '';
-                      const meta = [time, doc.carrier, conf, cost].filter(Boolean).join(' · ');
-                      return (
-                        <div
-                          key={doc.id}
-                          className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-gray-50 dark:bg-slate-800/60 border dark:border-slate-700/50"
-                        >
-                          <span className="text-sm shrink-0">{typeInfo.icon}</span>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{doc.title}</div>
-                            {meta && <div className="text-[10px] text-gray-400 dark:text-gray-500 truncate">{meta}</div>}
+                <div className="mt-2 pt-2 border-t dark:border-slate-700">
+                  <div className="rounded-lg border border-amber-200 dark:border-amber-800/50 bg-amber-50/50 dark:bg-amber-900/10 overflow-hidden">
+                    <div className="px-3 py-1.5 bg-amber-100/60 dark:bg-amber-900/20 border-b border-amber-200/60 dark:border-amber-800/30">
+                      <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-400 tracking-wide uppercase">📋 Bookings & Docs</span>
+                    </div>
+                    <div className="divide-y divide-amber-200/40 dark:divide-amber-800/20">
+                      {dayDocs.map(doc => {
+                        const typeInfo = TRAVEL_DOC_TYPES[doc.type] || TRAVEL_DOC_TYPES.general;
+                        const time = doc.departure_time || '';
+                        const conf = doc.confirmation ? `#${doc.confirmation}` : '';
+                        const cost = doc.cost || '';
+                        const meta = [time, doc.carrier, conf, cost].filter(Boolean).join(' · ');
+                        return (
+                          <div key={doc.id} className="flex items-center gap-2.5 px-3 py-2">
+                            <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 text-sm" style={{ backgroundColor: typeInfo.color + '18' }}>
+                              {typeInfo.icon}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs font-medium text-gray-800 dark:text-gray-200 truncate">{doc.title}</div>
+                              {meta && <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate mt-0.5">{meta}</div>}
+                            </div>
+                            {doc.file_data && (
+                              <button
+                                onClick={() => openDataFile(doc.file_data, doc.file_name, doc.id)}
+                                className="text-[10px] font-medium text-amber-600 dark:text-amber-400 hover:text-amber-700 shrink-0 px-1.5 py-0.5 rounded bg-amber-100/60 dark:bg-amber-900/30 hover:bg-amber-200/60 transition"
+                              >📄 View</button>
+                            )}
                           </div>
-                          {doc.file_data && (
-                            <button
-                              onClick={() => openDataFile(doc.file_data, doc.file_name, doc.id)}
-                              className="text-[10px] text-blue-500 hover:text-blue-600 shrink-0"
-                            >View</button>
-                          )}
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
               )}
@@ -15457,9 +15466,9 @@
             if (r.minutes != null) transit[r.mode] = { minutes: r.minutes, meters: r.meters };
           });
 
-          // Pick best mode: prefer transit, then driving, then walking
-          const best = transit.transit || transit.driving || transit.walking;
-          const bestMode = transit.transit ? 'transit' : transit.driving ? 'driving' : 'walking';
+          // Pick best mode: prefer walking, then transit, then driving
+          const best = transit.walking || transit.transit || transit.driving;
+          const bestMode = transit.walking ? 'walking' : transit.transit ? 'transit' : 'driving';
 
           const mapsUrl = `https://www.google.com/maps/dir/?api=1&origin=${origin.lat},${origin.lng}&destination=${destination.lat},${destination.lng}&travelmode=${bestMode === 'driving' ? 'driving' : bestMode === 'transit' ? 'transit' : 'walking'}`;
 
@@ -17554,7 +17563,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v62';
+const CACHE_NAME = 'bo-wander-v63';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
