@@ -6917,8 +6917,8 @@
           .filter(p => p.collection_id === collectionId && (p.attachment || p.reservation_details))
           .map(p => {
             const rd = p.reservation_details || {};
-            const isActivity = rd.booking_type === 'activity';
-            const isRestaurant = rd.booking_type === 'restaurant' || p.category === 'restaurant';
+            const isActivity = rd.booking_type === 'activity' || rd.type === 'activity' || p.category === 'activity';
+            const isRestaurant = rd.booking_type === 'restaurant' || rd.type === 'restaurant' || p.category === 'restaurant';
             let date = '';
             if ((isActivity || isRestaurant) && (rd.date || rd.activity_date)) date = toISO(rd.date || rd.activity_date);
             else if (rd.check_in) date = toISO(rd.check_in);
@@ -17271,7 +17271,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v55';
+const CACHE_NAME = 'bo-wander-v56';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
