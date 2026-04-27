@@ -4784,10 +4784,27 @@
           if (/\b(19|20)\d{2}\b/.test(name)) return false;
           // Contains "by" followed by capitalized name pattern
           if (/\bby\s+[A-Z][a-z]+/.test(name)) return false;
+          // Street address patterns — "123 Main St", "687 Geary St", "2814 19th St", "303 2nd St N102"
+          if (/^\d{1,5}\s+[\w.]+\s+(st|street|ave|avenue|blvd|boulevard|rd|road|dr|drive|ln|lane|way|pl|place|ct|court|pkwy|parkway|hwy|highway|cir|circle)\b/i.test(name.trim())) return false;
+          // Zip code or city-state-zip patterns
+          if (/\b[A-Z]{2}\s+\d{5}\b/.test(name)) return false;
+          // Standalone address-like: starts with number, contains common street suffix
+          if (/^\d+\s+\w+\s+\w+,/.test(name.trim())) return false;
+          // Phone numbers
+          if (/^\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}/.test(name.trim())) return false;
+          // "Visit website", "See more", "Visit Site"
+          if (/^(visit\s+(website|site)|see more|view (map|menu|details|website)|order online)\s*$/i.test(name.trim())) return false;
+          // City, State ZIP pattern — "San Francisco, CA 94133"
+          if (/,\s*[A-Z]{2}\s+\d{5}/.test(name)) return false;
           return true;
         };
 
-        const clean = text.replace(/\r/g, '').trim();
+        // Preprocess: strip markdown link syntax [text](url)
+        // For bullet metadata lines (* [Address](maps url)), preserve bullet + text so they're detectable
+        // For inline links in prose, just keep the text portion
+        const preClean = text.replace(/\r/g, '').trim()
+          .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1'); // [text](url) → text
+        const clean = preClean.trim();
         const lines = clean.split('\n').map(l => l.trim());
 
         // Build a set of caption line indices: a short descriptive line followed (within 3 lines)
@@ -4847,6 +4864,112 @@
         }
 
         const blocks = clean.split(/\n\s*\n+/).map(b => b.trim()).filter(Boolean);
+
+        // Strategy 1.45: Eater / food-guide style — "Name → description → * bullet metadata → photographer"
+        // After markdown link stripping, bullets become "* Address, City, ST ZIP" or "* (415) 555-1234" or "* Visit website"
+        {
+          const eaterMetaLine = (l) => (
+            /^[\*•·\-]\s+/.test(l) || // bullet line (address, phone, website)
+            /^see more\s*$/i.test(l) ||
+            /^visit\s+(website|site)\s*$/i.test(l) ||
+            /^\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}/.test(l) || // phone number
+            isDateLike.test(l) ||
+            /^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(l) // date format
+          );
+          // A photographer credit name: 2-4 capitalized words, no verbs, short
+          const isPhotoCreditName = (l) => {
+            if (!l || l.length > 40 || l.length < 4) return false;
+            if (/[.!?;,:]$/.test(l)) return false;
+            const words = l.split(/\s+/);
+            if (words.length < 2 || words.length > 4) return false;
+            // All words should be capitalized (proper noun pattern)
+            return words.every(w => /^[A-ZÀ-ɏ]/.test(w));
+          };
+          const eaterPlaces = [];
+          // Walk through blocks: heading block (short line = name), next block has description + bullets
+          for (let b = 0; b < blocks.length; b++) {
+            const blockLines = blocks[b].split('\n').map(l => l.trim()).filter(Boolean);
+            if (!blockLines.length) continue;
+            // Check if this block starts with a short heading (place name) followed by description paragraphs
+            // then metadata bullets. In Eater format, each "entry" is one block with:
+            //   Line 0: Place Name
+            //   Lines 1+: description paragraph(s)
+            //   Then bullet lines (* address, * phone, * website)
+            //   Then photographer name
+            // OR it might be split across blocks. Let's handle the single-block case first.
+
+            // Find where bullets start in this block
+            let bulletStart = -1;
+            for (let i = 1; i < blockLines.length; i++) {
+              if (eaterMetaLine(blockLines[i])) {
+                bulletStart = i;
+                break;
+              }
+            }
+
+            // Also check: first line short (name), followed by longer lines (description), then bullets
+            const firstLine = blockLines[0];
+            if (firstLine.length > 80 || firstLine.length < 2) continue;
+            if (/[.!;]$/.test(firstLine)) continue;
+            if (firstLine.split(/\s+/).length > 10) continue;
+            let candidate = firstLine.replace(/^\d{1,2}[\.\)\-–—:]\s*/, '').trim();
+            candidate = candidate.replace(/^[•·\-\*]\s+/, '').trim();
+            if (!candidate || candidate.length < 2 || candidate.length > 80) continue;
+            if (skipPatterns.test(candidate)) continue;
+            if (junkContent.test(candidate)) continue;
+            if (articleTitleLike.test(candidate)) continue;
+            if (candidate.includes('?')) continue;
+            if (!isLikelyPlaceName(candidate)) continue;
+            if (isPhotoCreditName(candidate)) continue;
+
+            // Collect description: lines between name and first bullet (or end of block)
+            const descParts = [];
+            const endIdx = bulletStart > 0 ? bulletStart : blockLines.length;
+            for (let i = 1; i < endIdx; i++) {
+              const ln = blockLines[i];
+              if (ln.length < 25) continue;
+              if (junkContent.test(ln)) continue;
+              if (altTextLike(ln)) continue;
+              if (eaterMetaLine(ln)) continue;
+              if (isPhotoCreditName(ln)) continue;
+              descParts.push(ln);
+            }
+
+            // If no bullets found in this block, check if the NEXT block has bullets (split-block case)
+            if (bulletStart === -1 && b + 1 < blocks.length) {
+              const nextBlockLines = blocks[b + 1].split('\n').map(l => l.trim()).filter(Boolean);
+              const nextHasBullets = nextBlockLines.some(l => eaterMetaLine(l));
+              if (nextHasBullets && descParts.length > 0) {
+                // This confirms the pattern — name + desc in this block, bullets in next
+                // (description already collected above)
+              } else if (descParts.length === 0) {
+                // Maybe description is in the next block before bullets
+                for (const ln of nextBlockLines) {
+                  if (eaterMetaLine(ln)) break;
+                  if (ln.length < 25) continue;
+                  if (junkContent.test(ln)) continue;
+                  if (altTextLike(ln)) continue;
+                  if (isPhotoCreditName(ln)) continue;
+                  descParts.push(ln);
+                }
+              }
+            }
+
+            const desc = descParts.join('\n\n').slice(0, 1500);
+            if (!desc || desc.length < 30) continue;
+
+            eaterPlaces.push({ name: candidate, description: desc, checked: true, loading: false, placeData: null });
+          }
+          if (eaterPlaces.length >= 3) {
+            const seen = new Set();
+            return eaterPlaces.filter(p => {
+              const key = p.name.toLowerCase();
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+          }
+        }
 
         // Strategy 1.5: "Heading + metadata bullets / Photo credit + description" (Time Out / city guide style)
         // A place heading is a single-line block. The NEXT block starts with bullet tags (* Shopping) or Photo:
@@ -17271,7 +17394,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v56';
+const CACHE_NAME = 'bo-wander-v58';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
