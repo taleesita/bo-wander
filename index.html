@@ -1968,22 +1968,29 @@
         .trim();
     };
 
-    // Check if two pins refer to the same place (for merging spot + activity, or same-hotel with different dates)
+    // Check if two pins refer to the same place (for merging spot + booking, or same-hotel with different dates)
     const isSamePlacePin = (a, b) => {
       if (!a || !b || a.id === b.id) return false;
+      // A pin is a "booking" if it has reservation_details
+      const aHasRes = !!a.reservation_details;
+      const bHasRes = !!b.reservation_details;
       const bookingCats = ['activity', 'hotel', 'restaurant'];
-      const aIsBooking = bookingCats.includes(a.category);
-      const bIsBooking = bookingCats.includes(b.category);
-      // Allow merging: (1) spot + booking, or (2) same-category bookings at same place (e.g. two hotel stays)
-      const sameCategory = a.category === b.category;
-      const bothBookings = aIsBooking && bIsBooking;
-      if (aIsBooking === bIsBooking && !sameCategory) return false; // both bookings but different types — don't merge
-      if (!aIsBooking && !bIsBooking) return false; // neither is a booking — don't merge
-      // For same-category bookings, they must have different dates to be worth merging
-      if (sameCategory && bothBookings) {
+      const aIsBookingCat = bookingCats.includes(a.category);
+      const bIsBookingCat = bookingCats.includes(b.category);
+      // Case 1: spot + booking (different types, one has reservation_details)
+      // Case 2: same category, one is a spot (no res details) and one is a booking (has res details) — e.g. restaurant spot + restaurant reservation
+      // Case 3: same category bookings with different dates — e.g. two hotel stays
+      if (aHasRes !== bHasRes) {
+        // One has reservation, one doesn't — always allow merging if names match
+      } else if (aHasRes && bHasRes) {
+        // Both have reservations — must be same category with different dates
+        if (a.category !== b.category) return false;
         const aDate = a.reservation_details?.check_in || a.reservation_details?.date || '';
         const bDate = b.reservation_details?.check_in || b.reservation_details?.date || '';
-        if (aDate && bDate && aDate === bDate) return false; // same date = likely duplicate, don't merge
+        if (aDate && bDate && aDate === bDate) return false; // same date = likely duplicate
+      } else {
+        // Neither has reservation — only merge if one is a booking category and the other isn't
+        if (aIsBookingCat === bIsBookingCat) return false;
       }
       // Compare normalized names
       const na = normalizePinName(a.name);
@@ -3070,10 +3077,9 @@
             {hasGroup && !editing && (
               <div className="flex gap-1 bg-gray-100 dark:bg-slate-800 rounded-lg p-1">
                 {[...coLocatedPins].sort((a, b) => {
-                  // Spot pin first, then bookings sorted by date
-                  const bookingCats = ['activity', 'hotel', 'restaurant'];
-                  const aBook = bookingCats.includes(a.category) ? 1 : 0;
-                  const bBook = bookingCats.includes(b.category) ? 1 : 0;
+                  // Pins without reservation_details (spots) first, then bookings sorted by date
+                  const aBook = a.reservation_details ? 1 : 0;
+                  const bBook = b.reservation_details ? 1 : 0;
                   if (aBook !== bBook) return aBook - bBook;
                   // Both bookings: sort by date
                   const aDate = a.reservation_details?.check_in || a.reservation_details?.date || '';
@@ -3081,16 +3087,19 @@
                   return aDate.localeCompare(bDate);
                 }).map((p) => {
                   const isActive = p.id === pin.id;
-                  const isBooking = p.category === 'activity' || p.category === 'hotel' || p.category === 'restaurant';
+                  const hasRes = !!p.reservation_details;
                   const catData = PIN_CATEGORIES[p.category] || PIN_CATEGORIES.other;
                   // If multiple pins share the same category, show dates to differentiate
-                  const sameCatCount = coLocatedPins.filter(cp => cp.category === p.category).length;
-                  const dateTag = sameCatCount > 1 && p.reservation_details ? formatPinDate(p.reservation_details) : null;
-                  const label = isBooking
-                    ? (dateTag
-                        ? `${p.category === 'activity' ? '🎫' : p.category === 'restaurant' ? '🍽️' : '🏨'} ${dateTag}`
-                        : (p.category === 'activity' ? '🎫 Activity' : p.category === 'restaurant' ? '🍽️ Reservation' : '🏨 Hotel'))
-                    : `${catData.icon || '📍'} Place`;
+                  const sameCatWithRes = coLocatedPins.filter(cp => cp.category === p.category && cp.reservation_details).length;
+                  const dateTag = sameCatWithRes > 1 && hasRes ? formatPinDate(p.reservation_details) : null;
+                  let label;
+                  if (!hasRes) {
+                    label = `${catData.icon || '📍'} Place`;
+                  } else if (dateTag) {
+                    label = `${p.category === 'activity' ? '🎫' : p.category === 'restaurant' ? '🍽️' : '🏨'} ${dateTag}`;
+                  } else {
+                    label = p.category === 'activity' ? '🎫 Activity' : p.category === 'restaurant' ? '🍽️ Reservation' : '🏨 Hotel';
+                  }
                   return (
                     <button
                       key={p.id}
@@ -10850,11 +10859,10 @@
             if (matched.has(validPins[j].id)) continue;
             if (isSamePlacePin(validPins[i], validPins[j])) {
               const group = [validPins[i], validPins[j]];
-              // Sort: spot pin first, then bookings by date
+              // Sort: spot (no reservation_details) first, then bookings by date
               group.sort((a, b) => {
-                const bookingCats = ['activity', 'hotel', 'restaurant'];
-                const aBook = bookingCats.includes(a.category) ? 1 : 0;
-                const bBook = bookingCats.includes(b.category) ? 1 : 0;
+                const aBook = a.reservation_details ? 1 : 0;
+                const bBook = b.reservation_details ? 1 : 0;
                 if (aBook !== bBook) return aBook - bBook;
                 const aDate = a.reservation_details?.check_in || a.reservation_details?.date || '';
                 const bDate = b.reservation_details?.check_in || b.reservation_details?.date || '';
@@ -11207,9 +11215,8 @@
             if (isSamePlacePin(result[i], result[j])) {
               const group = [result[i], result[j]];
               group.sort((a, b) => {
-                const bookingCats = ['activity', 'hotel', 'restaurant'];
-                const aBook = bookingCats.includes(a.category) ? 1 : 0;
-                const bBook = bookingCats.includes(b.category) ? 1 : 0;
+                const aBook = a.reservation_details ? 1 : 0;
+                const bBook = b.reservation_details ? 1 : 0;
                 if (aBook !== bBook) return aBook - bBook;
                 const aDate = a.reservation_details?.check_in || a.reservation_details?.date || '';
                 const bDate = b.reservation_details?.check_in || b.reservation_details?.date || '';
@@ -17264,7 +17271,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v54';
+const CACHE_NAME = 'bo-wander-v55';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
