@@ -1952,10 +1952,14 @@
     const formatPinDate = (rd) => {
       const dateStr = rd?.check_in || rd?.date || '';
       if (!dateStr) return null;
-      const d = new Date(dateStr);
-      if (isNaN(d.getTime())) return null;
-      const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
-      return `${mon} ${d.getDate()}`;
+      // Parse as local date parts to avoid UTC timezone shift
+      // (new Date('2026-05-08') parses as UTC midnight → May 7 in negative-offset timezones)
+      const parts = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (!parts) return null;
+      const month = parseInt(parts[2], 10) - 1;
+      const day = parseInt(parts[3], 10);
+      const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][month];
+      return mon ? `${mon} ${day}` : null;
     };
 
     // Normalize a pin name for same-place matching (strip common suffixes/prefixes)
@@ -7471,16 +7475,13 @@
                         </button>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-slate-800">
-                        <span className="text-2xl">📄</span>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">{fileName}</p>
-                        </div>
+                      <div className="relative bg-gray-50 dark:bg-slate-800">
+                        <embed src={fileData} type="application/pdf" className="w-full" style={{ height: '240px' }} />
                         <button
                           onClick={() => openDataFile(fileData, fileName)}
-                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition"
+                          className="absolute bottom-2 right-2 px-2 py-1 bg-black/60 hover:bg-black/80 text-white text-xs rounded-md backdrop-blur-sm transition"
                         >
-                          View File
+                          Open full size
                         </button>
                       </div>
                     )}
@@ -7619,7 +7620,8 @@
 
       const formatDate = (str) => {
         if (!str) return '';
-        const d = new Date(str);
+        // Append T00:00:00 to YYYY-MM-DD to prevent UTC timezone shift
+        const d = /^\d{4}-\d{2}-\d{2}/.test(str) ? new Date(str.substring(0, 10) + 'T00:00:00') : new Date(str);
         if (isNaN(d.getTime())) return str;
         return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
       };
@@ -17444,7 +17446,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v59';
+const CACHE_NAME = 'bo-wander-v61';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
