@@ -13880,7 +13880,7 @@
 
       return (
         <div
-          className={`rounded-xl overflow-hidden transition-all ${isExpanded ? 'bg-white dark:bg-slate-800/40 shadow-sm ring-1 ring-gray-200 dark:ring-slate-700' : 'hover:bg-gray-50 dark:hover:bg-slate-800/30'}`}
+          className={`rounded-xl overflow-hidden transition-all ${isExpanded ? 'bg-white dark:bg-slate-800/40 shadow-sm ring-2 ring-blue-200 dark:ring-blue-800/50' : 'ring-1 ring-gray-200 dark:ring-slate-700 hover:bg-gray-50 dark:hover:bg-slate-800/30'}`}
           onDragOver={(e) => { if (e.dataTransfer.types.includes('text/pin-id')) e.preventDefault(); }}
           onDrop={handleExternalDrop}
         >
@@ -14125,27 +14125,27 @@
               )}
 
               {/* Day footer actions */}
-              <div className="flex items-center justify-between pt-1 border-t dark:border-slate-700 mt-1 gap-2 flex-wrap">
+              <div className="flex items-center justify-between mt-2 mx--2 px-3 py-1.5 bg-gray-50/80 dark:bg-slate-800/50 border-t border-gray-100 dark:border-slate-700/50 gap-2 flex-wrap -mb-2 rounded-b-xl">
                 <div className="flex items-center gap-2">
                   {totalTransitMin > 0 && (
-                    <span className="text-xs text-gray-400 px-2 py-1">
-                      📊 {items.length} stops · {Math.floor(totalActivityMin / 60) > 0 ? Math.floor(totalActivityMin / 60) + 'h ' : ''}{totalActivityMin % 60}m activities + {totalTransitMin}m travel
+                    <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                      {items.length} stops · {Math.floor(totalActivityMin / 60) > 0 ? Math.floor(totalActivityMin / 60) + 'h ' : ''}{totalActivityMin % 60}m activities + {totalTransitMin}m travel
                     </span>
                   )}
                   {items.length >= 1 && onRecalcTransit && (
                     <button
                       onClick={() => onRecalcTransit(day.id)}
-                      className="text-xs text-blue-500 hover:text-blue-600 px-2 py-1"
+                      className="text-[10px] text-blue-500 hover:text-blue-600"
                       title="Recalculate walking / transit times via Google"
                     >🔄 Travel times</button>
                   )}
                 </div>
                 {!confirmDeleteDay ? (
-                  <button onClick={() => setConfirmDeleteDay(true)} className="text-xs text-red-400 hover:text-red-500 px-2 py-1">Delete day</button>
+                  <button onClick={() => setConfirmDeleteDay(true)} className="text-[10px] text-red-400 hover:text-red-500">Delete day</button>
                 ) : (
                   <div className="flex items-center gap-1">
-                    <button onClick={() => setConfirmDeleteDay(false)} className="text-xs px-2 py-1 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Cancel</button>
-                    <button onClick={() => onDeleteDay(day.id)} className="text-xs px-2 py-1 text-red-600 font-bold hover:text-red-700">Confirm</button>
+                    <button onClick={() => setConfirmDeleteDay(false)} className="text-[10px] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Cancel</button>
+                    <button onClick={() => onDeleteDay(day.id)} className="text-[10px] text-red-600 font-bold hover:text-red-700">Confirm</button>
                   </div>
                 )}
               </div>
@@ -17555,7 +17555,7 @@
               __html: `
                 if ('serviceWorker' in navigator) {
                   const swCode = \`
-const CACHE_NAME = 'bo-wander-v64';
+const CACHE_NAME = 'bo-wander-v65';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
