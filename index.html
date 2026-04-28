@@ -15180,17 +15180,25 @@
         const matched = [];
         const seenIds = new Set();
 
+        // Normalize any date string to YYYY-MM-DD (handles "May 9, 2026", "2026-05-09", etc.)
+        const toISO = (str) => {
+          if (!str) return '';
+          if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.substring(0, 10);
+          const d = new Date(str);
+          return !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : '';
+        };
+
         // 1. Standalone travel docs
         for (const doc of travelDocs) {
           if (doc.type === 'hotel' && doc.check_in) {
-            const ci = doc.check_in.substring(0, 10);
-            const co = doc.check_out ? doc.check_out.substring(0, 10) : ci;
-            if (dayDate >= ci && dayDate <= co) {
+            const ci = toISO(doc.check_in);
+            const co = toISO(doc.check_out) || ci;
+            if (ci && dayDate >= ci && dayDate <= co) {
               matched.push({ ...doc, _source: 'doc', _isHotelStay: true, _isCheckIn: dayDate === ci, _isCheckOut: dayDate === co });
               seenIds.add(doc.id);
             }
           } else {
-            const docDate = (doc.date || doc.check_in || '').substring(0, 10);
+            const docDate = toISO(doc.date || doc.check_in || '');
             if (docDate === dayDate) { matched.push({ ...doc, _source: 'doc' }); seenIds.add(doc.id); }
           }
         }
@@ -15202,9 +15210,9 @@
           const rd = pin.reservation_details;
           const isHotel = pin.category === 'hotel';
           if (isHotel && rd.check_in) {
-            const ci = rd.check_in.substring(0, 10);
-            const co = rd.check_out ? rd.check_out.substring(0, 10) : ci;
-            if (dayDate >= ci && dayDate <= co) {
+            const ci = toISO(rd.check_in);
+            const co = toISO(rd.check_out) || ci;
+            if (ci && dayDate >= ci && dayDate <= co) {
               matched.push({
                 id: pin.id, _source: 'pin', type: 'hotel', title: pin.name,
                 check_in: rd.check_in, check_out: rd.check_out,
@@ -15215,7 +15223,7 @@
               });
             }
           } else {
-            const pinDate = (rd.date || rd.check_in || '').substring(0, 10);
+            const pinDate = toISO(rd.date || rd.check_in || '');
             if (pinDate === dayDate) {
               matched.push({
                 id: pin.id, _source: 'pin',
