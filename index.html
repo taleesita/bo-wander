@@ -6739,6 +6739,8 @@
         type: 'flight',
         title: '', from: '', to: '', date: '', departure_time: '', arrival_time: '',
         carrier: '', seat: '', confirmation: '', passengers: '', cost: '', notes: '',
+        arrival_date: '', duration: '', terminal_depart: '', terminal_arrive: '', flight_class: '', gate: '',
+        segments: [],
       };
       if (!text) return result;
       const full = text.replace(/\n/g, ' ');
@@ -6762,6 +6764,88 @@
         result.carrier = shinkansenRoute[3].trim();
         result.to = shinkansenRoute[4].replace(/[\s-]+$/, '').trim();
         result.arrival_time = shinkansenRoute[5];
+      }
+
+      // ===== UNITED AIRLINES / FLIGHT PDF FORMAT =====
+      // Detect "Flight 1 of 2", "Flight 2 of 2" patterns (multi-segment flights)
+      const flightSegmentMatches = text.match(/(?:Flight\s+(\d+)\s+of\s+(\d+))/gi);
+      if (flightSegmentMatches && flightSegmentMatches.length > 0) {
+        // Parse all segments but use the first as the primary result
+        const segments = [];
+        const segmentRegex = /Flight\s+(\d+)\s+of\s+(\d+)([\s\S]*?)(?=Flight\s+\d+\s+of\s+\d+|$)/g;
+        let segMatch;
+        while ((segMatch = segmentRegex.exec(text)) !== null) {
+          const segmentNum = parseInt(segMatch[1]);
+          const segmentText = segMatch[3];
+          const seg = {
+            segment_number: segmentNum,
+            flight_number: '', from: '', to: '', date: '', departure_time: '', arrival_time: '',
+            duration: '', arrival_next_day: false
+          };
+
+          // Extract flight number (UA837 or UA 837)
+          const fnMatch = segmentText.match(/\b([A-Z]{2})\s*(\d{1,5})\b/);
+          if (fnMatch) seg.flight_number = `${fnMatch[1]}${fnMatch[2]}`;
+
+          // Extract airports with 3-letter codes and city names
+          const airportPairs = segmentText.match(/([A-Z]{3})\s+([^(]*?)(?:\s+\(([A-Z]{3})\))?/g);
+          if (airportPairs && airportPairs.length >= 2) {
+            const airports = segmentText.match(/([A-Z]{3})\s+.*?([A-Z]{3})/);
+            if (airports) {
+              // Extract city names for each airport code
+              const depCityMatch = segmentText.match(new RegExp(airports[1] + '\\s+([^(\\n]*?)(?:\\(|,|\\n|$)'));
+              const arrCityMatch = segmentText.match(new RegExp(airports[3] + '\\s+([^(\\n]*?)(?:\\(|,|\\n|$)'));
+              seg.from = airports[1] + (depCityMatch ? ' ' + depCityMatch[1].trim() : '');
+              seg.to = airports[3] + (arrCityMatch ? ' ' + arrCityMatch[1].trim() : '');
+            }
+          }
+
+          // Extract dates (may have "Fri, May 01, 2026" format or plain month/day)
+          const dateMatches = segmentText.match(/(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*,?\s*)?([A-Za-z]+\s+\d{1,2},?\s+\d{4})/);
+          if (dateMatches) {
+            const d = new Date(dateMatches[1]);
+            if (!isNaN(d.getTime())) seg.date = d.toISOString().split('T')[0];
+          }
+
+          // Extract times (HH:MM or H:MM AM/PM format)
+          const timeMatches = segmentText.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/gi);
+          if (timeMatches && timeMatches.length >= 1) {
+            seg.departure_time = timeMatches[0];
+          }
+          if (timeMatches && timeMatches.length >= 2) {
+            seg.arrival_time = timeMatches[1];
+          }
+
+          // Extract duration (11h 20m or 9h 25m format)
+          const durationMatch = segmentText.match(/(\d+)h\s*(\d+)m/);
+          if (durationMatch) seg.duration = `${durationMatch[1]}h ${durationMatch[2]}m`;
+
+          // Check for "+1 day" arrival indicator (next-day arrival)
+          if (/\+1\s*day/i.test(segmentText)) seg.arrival_next_day = true;
+
+          segments.push(seg);
+        }
+
+        result.segments = segments;
+        // Use first segment as primary result
+        if (segments.length > 0) {
+          const primary = segments[0];
+          result.carrier = primary.flight_number || result.carrier;
+          result.from = primary.from || result.from;
+          result.to = primary.to || result.to;
+          result.date = primary.date || result.date;
+          result.departure_time = primary.departure_time || result.departure_time;
+          result.arrival_time = primary.arrival_time || result.arrival_time;
+          result.duration = primary.duration;
+          if (primary.arrival_next_day) {
+            // Calculate arrival date (next day from departure)
+            if (result.date) {
+              const d = new Date(result.date);
+              d.setDate(d.getDate() + 1);
+              result.arrival_date = d.toISOString().split('T')[0];
+            }
+          }
+        }
       }
 
       // ===== CARRIER / AIRLINE / TRAIN NAME =====
@@ -6978,6 +7062,31 @@
         for (const pat of pricePatterns) {
           const m = full.match(pat);
           if (m) { result.cost = (m[1] || m[0]).trim(); break; }
+        }
+      }
+
+      // ===== FLIGHT CLASS (e.g., "United Economy (XN)" or "Business Class") =====
+      if (!result.flight_class) {
+        const classPatterns = [
+          /(?:class|cabin)[:\s]+([^(\n]{3,40})/i,
+          /(?:United\s+)?(?:economy|business|first|premium\s+economy|economy\s+plus)\s*\(?([A-Z]{2})?\)?/i,
+          /\(([A-Z]{2})\)\s+(?:seat|cabin|class)/i,
+        ];
+        for (const pat of classPatterns) {
+          const m = full.match(pat);
+          if (m) { result.flight_class = (m[1] || m[0]).trim(); break; }
+        }
+      }
+
+      // ===== CONFIRMATION NUMBER (also check for "Confirmation Number: XXXXX" format) =====
+      if (!result.confirmation) {
+        const confPatterns2 = [
+          /confirmation\s+number\s*:\s*([A-Z0-9]{5,20})/i,
+          /confirmation\s*:\s*([A-Z0-9]{4,20})/i,
+        ];
+        for (const pat of confPatterns2) {
+          const m = full.match(pat);
+          if (m) { result.confirmation = m[1].trim(); break; }
         }
       }
 
@@ -7812,6 +7921,12 @@
       const [passengers, setPassengers] = useState('');
       const [transportNotes, setTransportNotes] = useState('');
       const [transportDate, setTransportDate] = useState('');
+      // Flight-specific fields
+      const [terminalDepart, setTerminalDepart] = useState('');
+      const [terminalArrive, setTerminalArrive] = useState('');
+      const [flightDuration, setFlightDuration] = useState('');
+      const [arrivalDate, setArrivalDate] = useState('');
+      const [flightClass, setFlightClass] = useState('');
       const geocodeTimerRef = useRef(null);
       const fileInputRef = useRef(null);
 
@@ -7860,6 +7975,14 @@
           setPrice(parsed.cost);
           setTransportNotes(parsed.notes);
           setTourName(parsed.title);
+          // Flight-specific fields
+          if (newType === 'flight') {
+            setTerminalDepart(parsed.terminal_depart || '');
+            setTerminalArrive(parsed.terminal_arrive || '');
+            setFlightDuration(parsed.duration || '');
+            setArrivalDate(parsed.arrival_date ? toISODate(parsed.arrival_date) : '');
+            setFlightClass(parsed.flight_class || '');
+          }
           return;
         }
         if (newType === 'activity') {
@@ -8210,6 +8333,14 @@
           setPrice(parsed.cost);
           setTransportNotes(parsed.notes);
           setTourName(parsed.title);
+          // Flight-specific fields
+          if (detectedType === 'flight') {
+            setTerminalDepart(parsed.terminal_depart || '');
+            setTerminalArrive(parsed.terminal_arrive || '');
+            setFlightDuration(parsed.duration || '');
+            setArrivalDate(parsed.arrival_date ? toISODate(parsed.arrival_date) : '');
+            setFlightClass(parsed.flight_class || '');
+          }
         } else if (detectedType === 'activity') {
           const parsed = parseActivityText(text);
           setTourName(parsed.tourName);
@@ -8303,6 +8434,14 @@
               notes: transportNotes,
               file_data: fileDataUrl || null,
               file_name: fileName || '',
+              // Flight-specific fields
+              ...(bookingType === 'flight' && {
+                terminal_depart: terminalDepart,
+                terminal_arrive: terminalArrive,
+                duration: flightDuration,
+                arrival_date: arrivalDate,
+                flight_class: flightClass,
+              }),
             });
             if (onTransportSaved) onTransportSaved();
             onClose();
@@ -8932,6 +9071,35 @@
                       {usdPrice && <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">≈ {usdPrice} USD</p>}
                     </div>
                   </div>
+                  {bookingType === 'flight' && <>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Terminal (Depart)</label>
+                        <input type="text" value={terminalDepart} onChange={e => setTerminalDepart(e.target.value)} placeholder="e.g. Terminal 1" className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+                      <div>
+                        <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Terminal (Arrive)</label>
+                        <input type="text" value={terminalArrive} onChange={e => setTerminalArrive(e.target.value)} placeholder="e.g. Terminal 2" className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Duration</label>
+                        <input type="text" value={flightDuration} onChange={e => setFlightDuration(e.target.value)} placeholder="e.g. 11h 20m" className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+                      <div>
+                        <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Arrival Date</label>
+                        <input type="date" value={arrivalDate} onChange={e => setArrivalDate(e.target.value)} className={inputClass} data-1p-ignore />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Class</label>
+                        <input type="text" value={flightClass} onChange={e => setFlightClass(e.target.value)} placeholder="e.g. Economy, Business" className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+                      <div></div>
+                    </div>
+                  </>}
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Notes</label>
                     <textarea value={transportNotes} onChange={e => setTransportNotes(e.target.value)} placeholder="Gate info, pickup instructions, etc." className={inputClass + " h-16 resize-none"} autoComplete="off" data-1p-ignore />
@@ -13671,6 +13839,42 @@
       const touchStartY = useRef(0);
       const touchActive = useRef(false);
 
+      // Transit doc items — render differently (non-draggable, distinct styling)
+      if (item._isTransitDoc) {
+        const doc = item._doc;
+        const formatT = (t) => {
+          if (!t) return '';
+          const [h, m] = t.split(':');
+          const hr = parseInt(h);
+          return `${hr % 12 || 12}:${m} ${hr >= 12 ? 'PM' : 'AM'}`;
+        };
+        const meta = [doc.carrier, doc.seat ? `Seat ${doc.seat}` : '', doc.confirmation ? `#${doc.confirmation}` : ''].filter(Boolean).join(' · ');
+        const route = doc.from && doc.to ? `${doc.from} → ${doc.to}` : '';
+        const arrTime = doc.arrival_time ? `→ ${formatT(doc.arrival_time)}${doc.arrival_date && doc.arrival_date !== doc.date ? ' +1' : ''}` : '';
+        return (
+          <div className="flex items-center gap-2 px-2 py-2 rounded-lg bg-blue-50/60 dark:bg-blue-900/15 border border-blue-200/60 dark:border-blue-800/40" data-drag-index={index}>
+            <span className="text-lg flex-shrink-0">{item.emoji}</span>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono text-blue-600 dark:text-blue-400 flex-shrink-0">{formatT(doc.departure_time)}</span>
+                <span className="text-sm font-medium truncate dark:text-white">{route || doc.title}</span>
+                {arrTime && <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0">{arrTime}</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                {doc.duration && <span className="text-xs text-gray-400">{doc.duration}</span>}
+                {meta && <span className="text-xs text-gray-400 truncate">{meta}</span>}
+              </div>
+            </div>
+            {doc.file_data && (
+              <button
+                onClick={() => openDataFile(doc.file_data, doc.file_name, doc.id)}
+                className="text-[10px] text-blue-500 hover:text-blue-600 shrink-0"
+              >View</button>
+            )}
+          </div>
+        );
+      }
+
       // If item has its own scheduled_time, prefer that. Otherwise fall back to auto-computed time from day start.
       const timeStr = item.scheduled_time || autoTime || '';
       const isAutoTime = !item.scheduled_time && !!autoTime;
@@ -13838,7 +14042,35 @@
       const itemsByOrder = [...items].sort((a, b) => (a.order_in_day || 0) - (b.order_in_day || 0));
       const orderedItems = items.filter(i => i.scheduled_time).sort((a, b) => a.scheduled_time.localeCompare(b.scheduled_time));
       const unorderedItems = items.filter(i => !i.scheduled_time);
-      const allSorted = orderedItems.length > 0 ? [...orderedItems, ...unorderedItems] : itemsByOrder;
+
+      // Inject transit docs (flights/trains/transfers) as virtual itinerary items
+      const transitItems = (dayDocs || [])
+        .filter(d => ['flight', 'train', 'transfer'].includes(d.type) && d.departure_time)
+        .map(doc => ({
+          id: `transit-${doc.id}`,
+          _isTransitDoc: true,
+          _doc: doc,
+          type: 'transit',
+          name: doc.title || `${doc.from || ''} → ${doc.to || ''}`,
+          emoji: doc.type === 'flight' ? '✈️' : doc.type === 'train' ? '🚄' : '🚐',
+          scheduled_time: doc.departure_time,
+          estimated_duration_minutes: doc.duration ? (() => {
+            const hm = doc.duration.match(/(\d+)\s*h\s*(\d+)?\s*m?/);
+            return hm ? (parseInt(hm[1]) * 60 + (parseInt(hm[2]) || 0)) : 0;
+          })() : 0,
+          description: [doc.carrier, doc.confirmation ? `#${doc.confirmation}` : '', doc.arrival_time ? `Arr: ${doc.arrival_time}` : ''].filter(Boolean).join(' · '),
+        }));
+
+      const allReal = orderedItems.length > 0 ? [...orderedItems, ...unorderedItems] : itemsByOrder;
+      // Merge transit items into the sorted list by time
+      const allSorted = [...allReal, ...transitItems].sort((a, b) => {
+        const ta = a.scheduled_time || '';
+        const tb = b.scheduled_time || '';
+        if (ta && tb) return ta.localeCompare(tb);
+        if (ta) return -1;
+        if (tb) return 1;
+        return 0;
+      });
 
       // Compute auto-scheduled times when day has a start_time
       const autoTimes = {};
@@ -14147,11 +14379,11 @@
                 <span>+</span> Add item
               </button>
 
-              {/* Auto-matched travel docs for this day (excluding hotels — shown at top) */}
-              {dayDocs && dayDocs.filter(d => !d._isHotelStay).length > 0 && (
+              {/* Auto-matched travel docs for this day (excluding hotels at top + transit in timeline) */}
+              {dayDocs && dayDocs.filter(d => !d._isHotelStay && !(['flight', 'train', 'transfer'].includes(d.type) && d.departure_time)).length > 0 && (
                 <div className="mt-1.5 pt-1.5 border-t border-dashed dark:border-slate-700">
                   <div className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-2 mb-1">Bookings & Docs</div>
-                  {dayDocs.filter(d => !d._isHotelStay).map(doc => {
+                  {dayDocs.filter(d => !d._isHotelStay && !(['flight', 'train', 'transfer'].includes(d.type) && d.departure_time)).map(doc => {
                     const typeInfo = TRAVEL_DOC_TYPES[doc.type] || TRAVEL_DOC_TYPES.general;
                     const time = doc.departure_time || '';
                     const conf = doc.confirmation ? `#${doc.confirmation}` : '';
