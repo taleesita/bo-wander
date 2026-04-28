@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v80';
+    const APP_VERSION = 'v81';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -14586,7 +14586,9 @@
             }
           }
         }
-        // Clamp to window
+        // Clamp to window and round to nearest 15 minutes for cleaner display
+        bestTime = Math.max(meal.windowStart, Math.min(meal.windowEnd, bestTime));
+        bestTime = Math.round(bestTime / 15) * 15;
         bestTime = Math.max(meal.windowStart, Math.min(meal.windowEnd, bestTime));
         const h = Math.floor(bestTime / 60);
         const m = Math.round(bestTime % 60);
@@ -14846,20 +14848,42 @@
                   onMoveDown={() => { if (idx < allSorted.length - 1) handleDrop(idx + 1, item.id, idx); }}
                   onAddMeal={item._isMealSlot ? (meal) => {
                     // Find anchor location near the meal time
+                    // Include transit docs — for trains/flights, use destination pin's location
                     let anchor = null;
-                    const timedItems = itemsByOrder
-                      .map(it => {
+                    const mealMins = (() => { const [h,m] = meal.time.split(':').map(Number); return h * 60 + m; })();
+                    const allAnchorItems = [
+                      ...itemsByOrder.map(it => {
                         const t = it.scheduled_time || autoTimes[it.id];
                         if (!t || !/^\d{2}:\d{2}$/.test(t)) return null;
                         const [h, m] = t.split(':').map(Number);
-                        return { item: it, mins: h * 60 + m };
-                      })
-                      .filter(Boolean);
-                    const targetMin = (meal.windowStart + meal.windowEnd) / 2;
-                    if (timedItems.length > 0) {
-                      timedItems.sort((a, b) => Math.abs(a.mins - targetMin) - Math.abs(b.mins - targetMin));
-                      const best = timedItems[0].item;
-                      if (best.lat && best.lng) anchor = { lat: best.lat, lng: best.lng };
+                        return { mins: h * 60 + m, endMins: h * 60 + m + (it.estimated_duration_minutes || 0), lat: it.lat, lng: it.lng };
+                      }),
+                      ...transitItems.map(ti => {
+                        const t = ti.scheduled_time;
+                        if (!t) return null;
+                        const [h, m] = t.split(':').map(Number);
+                        const dur = ti.estimated_duration_minutes || 0;
+                        // For transit, use the check-in hotel on this day as destination anchor
+                        const checkInHotel = (dayDocs || []).find(d => d._isHotelStay && d._isCheckIn);
+                        const hotelPin = checkInHotel ? pins.find(p => p.category === 'hotel' && p.name && checkInHotel.title && p.name.toLowerCase().includes(checkInHotel.title.toLowerCase().substring(0, 10))) : null;
+                        const lat = hotelPin?.lat || ti.lat;
+                        const lng = hotelPin?.lng || ti.lng;
+                        return { mins: h * 60 + m, endMins: h * 60 + m + dur, lat, lng };
+                      }),
+                    ].filter(Boolean);
+                    // Find the item closest to (and ideally just before) this meal
+                    if (allAnchorItems.length > 0) {
+                      // Prefer the item whose end time is closest to (but before) the meal time
+                      const before = allAnchorItems.filter(a => a.endMins <= mealMins && a.lat && a.lng);
+                      if (before.length > 0) {
+                        before.sort((a, b) => b.endMins - a.endMins); // latest first
+                        anchor = { lat: before[0].lat, lng: before[0].lng };
+                      } else {
+                        // Fallback: closest by start time
+                        allAnchorItems.sort((a, b) => Math.abs(a.mins - mealMins) - Math.abs(b.mins - mealMins));
+                        const best = allAnchorItems[0];
+                        if (best.lat && best.lng) anchor = { lat: best.lat, lng: best.lng };
+                      }
                     }
                     if (!anchor && day.starting_point?.lat) anchor = { lat: day.starting_point.lat, lng: day.starting_point.lng };
                     if (!anchor) {
