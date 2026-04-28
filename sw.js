@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bo-wander-v66';
+const CACHE_NAME = 'bo-wander-v67';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
@@ -23,12 +23,20 @@ const CDN_URLS = [
 
 self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => {
-      // Cache app shell
-      cache.addAll(['/', '/index.html']).catch(() => {});
-      // Cache CDN resources individually (don't fail install if one CDN is slow)
-      return Promise.allSettled(
-        CDN_URLS.map(url => cache.add(url).catch(() => console.log('[SW] Failed to cache:', url)))
+    caches.open(CACHE_NAME).then(async cache => {
+      // Cache the app shell — this MUST succeed for offline to work
+      try {
+        await cache.addAll(['/', '/index.html']);
+        console.log('[SW] App shell cached successfully');
+      } catch (e) {
+        // If addAll fails, try individually
+        console.warn('[SW] addAll failed, trying individual:', e);
+        try { await cache.add('/'); } catch (e2) { console.warn('[SW] Failed to cache /:', e2); }
+        try { await cache.add('/index.html'); } catch (e2) { console.warn('[SW] Failed to cache /index.html:', e2); }
+      }
+      // Cache CDN resources individually (don't block install)
+      await Promise.allSettled(
+        CDN_URLS.map(url => cache.add(url).catch(() => console.log('[SW] CDN cache skip:', url)))
       );
     })
   );
@@ -46,12 +54,10 @@ self.addEventListener('activate', event => {
   self.clients.claim();
 });
 
-// Detect map tile requests
 function isTileRequest(url) {
   return url.includes('tile.openstreetmap.org') || url.includes('tile.') || url.match(/\/\d+\/\d+\/\d+\.png/);
 }
 
-// Detect API calls that should never be cached
 function isApiCall(url) {
   return url.includes('googleapis.com') || url.includes('firestore.googleapis.com')
       || url.includes('firebase') || url.includes('photon.komoot.io')
@@ -62,8 +68,40 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = event.request.url;
 
-  // API calls: network only, no caching
   if (isApiCall(url)) return;
+
+  // Navigation requests (page loads): cache-first, network fallback
+  // This is the critical path for offline — always try cache first
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      caches.match('/index.html').then(cached => {
+        if (cached) {
+          // Serve cached version immediately, update in background
+          fetch(event.request).then(resp => {
+            if (resp.ok) {
+              caches.open(CACHE_NAME).then(c => {
+                c.put('/', resp.clone());
+                c.put('/index.html', resp.clone());
+              });
+            }
+          }).catch(() => {});
+          return cached;
+        }
+        // No cache — must go to network
+        return fetch(event.request).then(resp => {
+          if (resp.ok) {
+            const clone = resp.clone();
+            caches.open(CACHE_NAME).then(c => {
+              c.put('/', clone.clone());
+              c.put('/index.html', clone);
+            });
+          }
+          return resp;
+        });
+      })
+    );
+    return;
+  }
 
   // Map tiles: cache-first with LRU eviction
   if (isTileRequest(url)) {
@@ -74,11 +112,9 @@ self.addEventListener('fetch', event => {
           return fetch(event.request).then(resp => {
             if (resp.ok) {
               cache.put(event.request, resp.clone());
-              // Evict old tiles if cache is too large
               cache.keys().then(keys => {
                 if (keys.length > MAX_TILE_CACHE) {
-                  const toDelete = keys.slice(0, keys.length - MAX_TILE_CACHE);
-                  toDelete.forEach(k => cache.delete(k));
+                  keys.slice(0, keys.length - MAX_TILE_CACHE).forEach(k => cache.delete(k));
                 }
               });
             }
@@ -90,8 +126,7 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // CDN + app shell: stale-while-revalidate
-  // Serve from cache immediately, update in background
+  // CDN + other resources: stale-while-revalidate
   event.respondWith(
     caches.match(event.request).then(cached => {
       const fetchPromise = fetch(event.request).then(resp => {
