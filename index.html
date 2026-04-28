@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v72';
+    const APP_VERSION = 'v73';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -6850,9 +6850,20 @@
           if (foundAirports.length >= 1) seg.from = `${foundAirports[0].city} (${foundAirports[0].code})`;
           if (foundAirports.length >= 2) seg.to = `${foundAirports[1].city} (${foundAirports[1].code})`;
 
-          // Duration: "11h 20m"
-          const durMatch = chunk.match(/(\d+)h\s*(\d+)m/);
-          if (durMatch) seg.duration = `${durMatch[1]}h ${durMatch[2]}m`;
+          // Duration: "11h 20m", "11 h 20 m", "Duration: 11:20", "Travel time 11 hr 20 min"
+          const durMatch = chunk.match(/(\d+)\s*h(?:rs?|ours?)?\s*(\d+)\s*m(?:in(?:s|utes)?)?/i);
+          if (durMatch) {
+            seg.duration = `${durMatch[1]}h ${durMatch[2]}m`;
+          } else {
+            // Try "Duration: HH:MM" format
+            const durMatch2 = chunk.match(/(?:duration|travel\s*time|flight\s*time)[:\s]*(\d{1,2}):(\d{2})/i);
+            if (durMatch2) seg.duration = `${parseInt(durMatch2[1])}h ${parseInt(durMatch2[2])}m`;
+          }
+
+          // Class: try to clean up — "United Economy (XN)" → "United Economy"
+          if (seg.flight_class) {
+            seg.flight_class = seg.flight_class.replace(/\s*\([A-Z]{1,3}\)\s*$/, '').trim();
+          }
 
           segments.push(seg);
         }
@@ -7030,9 +7041,17 @@
         result.seat = seats.join(' | ');
       }
       if (!result.seat) {
-        // Generic: "seat 14A", "coach B", "car 7"
-        const seatMatch = full.match(/(?:seat|car|coach|carriage)\s*(?:#|no\.?|number)?[:\s]+([A-Z0-9][\w-]{0,8})/i);
-        if (seatMatch) result.seat = seatMatch[1].trim();
+        // Seat number patterns: "Seat 14A", "Seat: 22C", "seat assignment: 14A"
+        // Must look like an actual seat (number + optional letter, or letter + number)
+        const seatPatterns = [
+          /seat\s*(?:assignment|#|no\.?|number)?[:\s]+(\d{1,3}[A-Z])/i,  // "seat 14A"
+          /seat\s*(?:assignment|#|no\.?|number)?[:\s]+([A-Z]\d{1,3})/i,  // "seat A14"
+          /(?:coach|carriage)\s*(?:#|no\.?)?[:\s]+([A-Z0-9]{1,3})/i,    // "coach B"
+        ];
+        for (const pat of seatPatterns) {
+          const m = full.match(pat);
+          if (m) { result.seat = m[1].trim(); break; }
+        }
       }
 
       // ===== CONFIRMATION / BOOKING NUMBER =====
@@ -7072,8 +7091,23 @@
       }
       // United Airlines: "Traveler Details\nLASTNAME/FIRSTNAME" format
       if (!result.passengers) {
-        const travelerMatch = text.match(/Traveler\s+Details\s*\n\s*([A-Z]{2,}\/[A-Z]{2,}(?:\s+[A-Z]{2,})*)/);
-        if (travelerMatch) result.passengers = travelerMatch[1].trim();
+        const travelerSection = text.match(/Traveler\s+Details\s*\n([\s\S]*?)(?=\n\s*\n|\nPurchase|$)/i);
+        if (travelerSection) {
+          const names = travelerSection[1].split('\n')
+            .map(l => l.trim())
+            .filter(l => /^[A-Z]{2,}\/[A-Z]{2,}/.test(l))
+            .map(l => {
+              // "LASTNAME/FIRSTNAME MIDDLE" → "Firstname Lastname"
+              const parts = l.split('/');
+              if (parts.length >= 2) {
+                const last = parts[0].trim();
+                const first = parts[1].trim().split(/\s+/)[0];
+                return first.charAt(0) + first.slice(1).toLowerCase() + ' ' + last.charAt(0) + last.slice(1).toLowerCase();
+              }
+              return l;
+            });
+          if (names.length > 0) result.passengers = names.join(', ');
+        }
       }
 
       // ===== PRICE / COST =====
@@ -7083,10 +7117,9 @@
         result.cost = `¥${totalYen[1]}`;
       }
       if (!result.cost) {
-        // Standard currency patterns
+        // Standard currency patterns — only labeled prices, no greedy fallback
         const pricePatterns = [
-          /(?:total\s*(?:price|cost|amount)?|price|cost|fare)\s*(?:is|:)?\s*((?:US)?\s*\$\s*[\d,]+\.?\d*|€\s*[\d,]+\.?\d*|£\s*[\d,]+\.?\d*|¥\s*[\d,]+|[\d,]+\.?\d*\s*(?:USD|EUR|GBP|JPY|Yen))/i,
-          /(?:US)?\s*\$\s*[\d,]+\.?\d*|€\s*[\d,]+\.?\d*|£\s*[\d,]+\.?\d*|¥\s*[\d,]+/i,
+          /(?:total\s*(?:price|cost|amount|charge)?|(?:trip\s+)?total|price|cost|fare|amount\s*(?:due|paid|charged))\s*(?:is|:)?\s*((?:US)?\s*\$\s*[\d,]+\.?\d*|€\s*[\d,]+\.?\d*|£\s*[\d,]+\.?\d*|¥\s*[\d,]+|[\d,]+\.?\d*\s*(?:USD|EUR|GBP|JPY|Yen))/i,
         ];
         for (const pat of pricePatterns) {
           const m = full.match(pat);
@@ -7126,9 +7159,16 @@
       }
 
       // ===== TITLE =====
+      // Use short city names: "San Francisco, CA, US (SFO)" → "San Francisco"
+      const shortCity = (loc) => {
+        if (!loc) return '';
+        // Extract just the city name before any comma or parenthetical
+        const code = loc.match(/\(([A-Z]{3})\)/);
+        const city = loc.split(',')[0].replace(/\s*\([A-Z]{3}\)\s*$/, '').trim();
+        return city || (code ? code[1] : loc);
+      };
       if (result.from && result.to) {
-        result.title = `${result.from} → ${result.to}`;
-        if (result.carrier) result.title += ` (${result.carrier})`;
+        result.title = `${shortCity(result.from)} → ${shortCity(result.to)}`;
       } else if (result.carrier) {
         result.title = result.carrier;
       }
@@ -7689,8 +7729,24 @@
             {/* Seat / Passengers */}
             {(type === 'flight' || type === 'train') && (
               <div className="grid grid-cols-2 gap-3">
-                <div><label className={labelClass}>Seat</label><input className={inputClass} value={seat} onChange={e => setSeat(e.target.value)} placeholder="Car.5 Seat.1-D/E" /></div>
-                <div><label className={labelClass}>Passengers</label><input type="number" min="1" className={inputClass} value={passengers} onChange={e => setPassengers(e.target.value)} placeholder="2" /></div>
+                <div><label className={labelClass}>{type === 'train' ? 'Seat / Car' : 'Seat'}</label><input className={inputClass} value={seat} onChange={e => setSeat(e.target.value)} placeholder={type === 'train' ? 'Car 5, Seat 1-D' : '14A'} /></div>
+                <div>
+                  <label className={labelClass}>Passengers</label>
+                  <div className="flex gap-2 flex-wrap mt-1">
+                    {['Taly', 'Doug', 'Noa'].map(pName => {
+                      const sel = (passengers || '').split(',').map(s => s.trim()).filter(Boolean);
+                      const on = sel.includes(pName);
+                      return (
+                        <label key={pName} className="flex items-center gap-1 cursor-pointer">
+                          <input type="checkbox" checked={on}
+                            onChange={() => { const u = on ? sel.filter(s => s !== pName) : [...sel, pName]; setPassengers(u.join(', ')); }}
+                            className="w-3.5 h-3.5 rounded border-gray-300 text-blue-600" />
+                          <span className="text-xs text-gray-600 dark:text-gray-400">{pName}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -9300,73 +9356,95 @@
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">{bookingType === 'flight' ? 'Airline / Flight #' : bookingType === 'train' ? 'Train Line / #' : 'Operator'}</label>
                     <input type="text" value={carrier} onChange={e => setCarrier(e.target.value)} placeholder={bookingType === 'flight' ? 'e.g. JAL 123' : bookingType === 'train' ? 'e.g. Nozomi 225' : 'e.g. Booking.com'} className={inputClass} autoComplete="off" data-1p-ignore />
                   </div>
-                  <div>
-                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Date</label>
-                    <input type="date" value={transportDate} onChange={e => setTransportDate(e.target.value)} className={inputClass} data-1p-ignore />
-                  </div>
+                  {/* Departure: date + time stacked */}
                   <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Departure Date</label>
+                      <input type="date" value={transportDate} onChange={e => setTransportDate(e.target.value)} className={inputClass} data-1p-ignore />
+                    </div>
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Departure Time</label>
                       <input type="time" value={departTime} onChange={e => setDepartTime(e.target.value)} className={inputClass} data-1p-ignore />
                     </div>
-                    <div>
-                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Arrival Time</label>
-                      <input type="time" value={arriveTime} onChange={e => setArriveTime(e.target.value)} className={inputClass} data-1p-ignore />
-                    </div>
                   </div>
+                  {/* Arrival: date + time stacked */}
+                  {['flight', 'train'].includes(bookingType) && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Arrival Date</label>
+                        <input type="date" value={arrivalDate} onChange={e => setArrivalDate(e.target.value)} className={inputClass} data-1p-ignore />
+                      </div>
+                      <div>
+                        <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Arrival Time</label>
+                        <input type="time" value={arriveTime} onChange={e => setArriveTime(e.target.value)} className={inputClass} data-1p-ignore />
+                      </div>
+                    </div>
+                  )}
+                  {/* Duration + Class (flight/train only) */}
+                  {['flight', 'train'].includes(bookingType) && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Duration</label>
+                        <input type="text" value={flightDuration} onChange={e => setFlightDuration(e.target.value)} placeholder="e.g. 11h 20m" className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+                      <div>
+                        <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Class</label>
+                        <input type="text" value={flightClass} onChange={e => setFlightClass(e.target.value)} placeholder="e.g. Economy, Business" className={inputClass} autoComplete="off" data-1p-ignore />
+                      </div>
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Confirmation #</label>
                       <input type="text" value={confirmationNumber} onChange={e => setConfirmationNumber(e.target.value)} placeholder="Booking reference" className={inputClass} autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" />
                     </div>
                     <div>
-                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Seat / Car</label>
-                      <input type="text" value={seat} onChange={e => setSeat(e.target.value)} placeholder="e.g. 14A" className={inputClass} autoComplete="off" data-1p-ignore />
+                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">{bookingType === 'train' ? 'Seat / Car' : 'Seat'}</label>
+                      <input type="text" value={seat} onChange={e => setSeat(e.target.value)} placeholder={bookingType === 'train' ? 'e.g. Car 5, Seat 1-D' : 'e.g. 14A'} className={inputClass} autoComplete="off" data-1p-ignore />
+                    </div>
+                  </div>
+                  {/* Passengers as checkboxes */}
+                  <div>
+                    <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Passengers</label>
+                    <div className="flex gap-3 flex-wrap">
+                      {['Taly', 'Doug', 'Noa'].map(name => {
+                        const selected = (passengers || '').split(',').map(s => s.trim()).filter(Boolean);
+                        const isChecked = selected.includes(name);
+                        return (
+                          <label key={name} className="flex items-center gap-1.5 cursor-pointer">
+                            <input type="checkbox" checked={isChecked}
+                              onChange={() => {
+                                const updated = isChecked ? selected.filter(s => s !== name) : [...selected, name];
+                                setPassengers(updated.join(', '));
+                              }}
+                              className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+                            <span className="text-sm text-gray-700 dark:text-gray-300">{name}</span>
+                          </label>
+                        );
+                      })}
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Passengers</label>
-                      <input type="text" value={passengers} onChange={e => setPassengers(e.target.value)} placeholder="e.g. 2 adults" className={inputClass} autoComplete="off" data-1p-ignore />
-                    </div>
                     <div>
                       <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Price</label>
                       <input type="text" value={price} onChange={e => setPrice(e.target.value)} placeholder="e.g. ¥14,720" className={inputClass} autoComplete="off" data-1p-ignore />
                       {usdPrice && <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">≈ {usdPrice} USD</p>}
                     </div>
-                  </div>
-                  {bookingType === 'flight' && (
-                    <div className="grid grid-cols-2 gap-2">
+                    {bookingType === 'flight' && (
                       <div>
                         <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Terminal (Depart)</label>
                         <input type="text" value={terminalDepart} onChange={e => setTerminalDepart(e.target.value)} placeholder="e.g. Terminal 1" className={inputClass} autoComplete="off" data-1p-ignore />
                       </div>
+                    )}
+                  </div>
+                  {bookingType === 'flight' && (
+                    <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Terminal (Arrive)</label>
                         <input type="text" value={terminalArrive} onChange={e => setTerminalArrive(e.target.value)} placeholder="e.g. Terminal 2" className={inputClass} autoComplete="off" data-1p-ignore />
                       </div>
+                      <div></div>
                     </div>
-                  )}
-                  {['flight', 'train'].includes(bookingType) && (
-                    <>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Duration</label>
-                          <input type="text" value={flightDuration} onChange={e => setFlightDuration(e.target.value)} placeholder="e.g. 11h 20m" className={inputClass} autoComplete="off" data-1p-ignore />
-                        </div>
-                        <div>
-                          <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Arrival Date</label>
-                          <input type="date" value={arrivalDate} onChange={e => setArrivalDate(e.target.value)} className={inputClass} data-1p-ignore />
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Class</label>
-                          <input type="text" value={flightClass} onChange={e => setFlightClass(e.target.value)} placeholder="e.g. Economy, Business" className={inputClass} autoComplete="off" data-1p-ignore />
-                        </div>
-                        <div></div>
-                      </div>
-                    </>
                   )}
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Notes</label>
