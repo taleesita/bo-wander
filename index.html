@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v77';
+    const APP_VERSION = 'v78';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -14294,13 +14294,15 @@
         };
         const meta = [doc.carrier, doc.seat ? `Seat ${doc.seat}` : '', doc.confirmation ? `#${doc.confirmation}` : ''].filter(Boolean).join(' · ');
         const route = doc.from && doc.to ? `${doc.from} → ${doc.to}` : '';
-        const arrTime = doc.arrival_time ? `→ ${formatT(doc.arrival_time)}${doc.arrival_date && doc.arrival_date !== doc.date ? ' +1' : ''}` : '';
+        const isArrivalDay = doc._isArrivalDay;
+        const arrTime = !isArrivalDay && doc.arrival_time ? `→ ${formatT(doc.arrival_time)}${doc.arrival_date && doc.arrival_date !== doc.date ? ' +1' : ''}` : '';
+        const displayTime = isArrivalDay ? `Arrives ${formatT(doc.arrival_time)}` : formatT(doc.departure_time);
         return (
           <div className="flex items-center gap-2 px-2 py-2 rounded-lg bg-blue-50/60 dark:bg-blue-900/15 border border-blue-200/60 dark:border-blue-800/40" data-drag-index={index}>
             <span className="text-lg flex-shrink-0">{item.emoji}</span>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
-                <span className="text-xs font-mono text-blue-600 dark:text-blue-400 flex-shrink-0">{formatT(doc.departure_time)}</span>
+                <span className="text-xs font-mono text-blue-600 dark:text-blue-400 flex-shrink-0">{displayTime}</span>
                 <span className="text-sm font-medium truncate dark:text-white">{route || doc.title}</span>
                 {arrTime && <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0">{arrTime}</span>}
               </div>
@@ -14516,21 +14518,26 @@
 
       // Inject transit docs (flights/trains/transfers) as virtual itinerary items
       const transitItems = (dayDocs || [])
-        .filter(d => ['flight', 'train', 'transfer'].includes(d.type) && d.departure_time)
-        .map(doc => ({
-          id: `transit-${doc.id}`,
-          _isTransitDoc: true,
-          _doc: doc,
-          type: 'transit',
-          name: doc.title || `${doc.from || ''} → ${doc.to || ''}`,
-          emoji: doc.type === 'flight' ? '✈️' : doc.type === 'train' ? '🚄' : '🚐',
-          scheduled_time: doc.departure_time,
-          estimated_duration_minutes: doc.duration ? (() => {
-            const hm = doc.duration.match(/(\d+)\s*h\s*(\d+)?\s*m?/);
-            return hm ? (parseInt(hm[1]) * 60 + (parseInt(hm[2]) || 0)) : 0;
-          })() : 0,
-          description: [doc.carrier, doc.confirmation ? `#${doc.confirmation}` : '', doc.arrival_time ? `Arr: ${doc.arrival_time}` : ''].filter(Boolean).join(' · '),
-        }));
+        .filter(d => ['flight', 'train', 'transfer'].includes(d.type) && (d.departure_time || d.arrival_time))
+        .map(doc => {
+          // For overnight flights showing on arrival day, use arrival_time as the schedule time
+          const isArrivalDay = doc._isArrivalDay;
+          const schedTime = isArrivalDay ? (doc.arrival_time || doc.departure_time) : doc.departure_time;
+          return {
+            id: `transit-${doc.id}`,
+            _isTransitDoc: true,
+            _doc: doc,
+            type: 'transit',
+            name: doc.title || `${doc.from || ''} → ${doc.to || ''}`,
+            emoji: doc.type === 'flight' ? '✈️' : doc.type === 'train' ? '🚄' : '🚐',
+            scheduled_time: schedTime,
+            estimated_duration_minutes: isArrivalDay ? 0 : (doc.duration ? (() => {
+              const hm = doc.duration.match(/(\d+)\s*h\s*(\d+)?\s*m?/);
+              return hm ? (parseInt(hm[1]) * 60 + (parseInt(hm[2]) || 0)) : 0;
+            })() : 0),
+            description: [doc.carrier, doc.confirmation ? `#${doc.confirmation}` : '', doc.arrival_time ? `Arr: ${doc.arrival_time}` : ''].filter(Boolean).join(' · '),
+          };
+        });
 
       const allReal = orderedItems.length > 0 ? [...orderedItems, ...unorderedItems] : itemsByOrder;
 
@@ -15945,7 +15952,15 @@
             }
           } else {
             const docDate = toISO(doc.date || doc.check_in || '');
-            if (docDate === dayDate) { matched.push({ ...doc, _source: 'doc' }); seenIds.add(doc.id); }
+            const docArrivalDate = toISO(doc.arrival_date || '');
+            if (docDate === dayDate) {
+              matched.push({ ...doc, _source: 'doc' });
+              seenIds.add(doc.id);
+            } else if (docArrivalDate && docArrivalDate === dayDate && ['flight', 'train', 'transfer'].includes(doc.type) && !seenIds.has(doc.id)) {
+              // Also show transit docs on their arrival day (e.g. overnight flights)
+              matched.push({ ...doc, _source: 'doc', _isArrivalDay: true });
+              seenIds.add(doc.id);
+            }
           }
         }
 
