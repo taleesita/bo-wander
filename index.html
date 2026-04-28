@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v76';
+    const APP_VERSION = 'v77';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -7486,7 +7486,7 @@
                                   {doc.to && <div><span className="text-gray-400 dark:text-gray-500">To</span><div className="text-gray-800 dark:text-gray-200 font-medium">{doc.to}</div></div>}
                                   {doc.seat && <div><span className="text-gray-400 dark:text-gray-500">Seat</span><div className="text-gray-800 dark:text-gray-200">{doc.seat}</div></div>}
                                   {doc.confirmation && <div><span className="text-gray-400 dark:text-gray-500">Confirmation</span><div className="text-gray-800 dark:text-gray-200 font-mono">{doc.confirmation}</div></div>}
-                                  {doc.passengers && <div><span className="text-gray-400 dark:text-gray-500">{doc.type === 'restaurant' ? 'Party Size' : 'Passengers'}</span><div className="text-gray-800 dark:text-gray-200">{doc.passengers}</div></div>}
+                                  {doc.passengers && doc.type === 'restaurant' && <div><span className="text-gray-400 dark:text-gray-500">Party Size</span><div className="text-gray-800 dark:text-gray-200">{doc.passengers}</div></div>}
                                   {doc.carrier && doc.type === 'restaurant' && <div><span className="text-gray-400 dark:text-gray-500">Booked via</span><div className="text-gray-800 dark:text-gray-200">{doc.carrier}</div></div>}
                                   {doc.check_in && <div><span className="text-gray-400 dark:text-gray-500">Check-in</span><div className="text-gray-800 dark:text-gray-200">{doc.check_in}</div></div>}
                                   {doc.check_out && <div><span className="text-gray-400 dark:text-gray-500">Check-out</span><div className="text-gray-800 dark:text-gray-200">{doc.check_out}</div></div>}
@@ -7581,6 +7581,11 @@
       const [address, setAddress] = useState(doc?.address || '');
       const [checkIn, setCheckIn] = useState(doc?.check_in || '');
       const [checkOut, setCheckOut] = useState(doc?.check_out || '');
+      const [arrivalDate, setArrivalDate] = useState(doc?.arrival_date || '');
+      const [duration, setDuration] = useState(doc?.duration || '');
+      const [flightClass, setFlightClass] = useState(doc?.flight_class || '');
+      const [terminalDepart, setTerminalDepart] = useState(doc?.terminal_depart || '');
+      const [terminalArrive, setTerminalArrive] = useState(doc?.terminal_arrive || '');
       const [fileData, setFileData] = useState(doc?.file_data || null);
       const [fileName, setFileName] = useState(doc?.file_name || '');
       const [saving, setSaving] = useState(false);
@@ -7626,10 +7631,13 @@
           id: doc?.id || Date.now().toString(),
           type, title: title.trim(), date,
           departure_time: departureTime, arrival_time: arrivalTime,
+          arrival_date: arrivalDate,
           from, to, carrier, seat, confirmation,
-          passengers: passengers ? parseInt(passengers) : null,
+          passengers: type === 'restaurant' ? (passengers ? parseInt(passengers) : null) : passengers,
           cost, notes, address,
           check_in: checkIn, check_out: checkOut,
+          duration, flight_class: flightClass,
+          terminal_depart: terminalDepart, terminal_arrive: terminalArrive,
           file_data: fileData, file_name: fileName,
         };
         await onSave(data);
@@ -7744,29 +7752,40 @@
               </>
             ) : <>
 
-            {/* Date */}
-            <div className={type === 'hotel' ? 'grid grid-cols-2 gap-3' : ''}>
-              {type === 'hotel' ? (
-                <>
-                  <div><label className={labelClass}>Check-in</label><input type="date" className={inputClass} value={checkIn} onChange={e => { setCheckIn(e.target.value); if (!date) setDate(e.target.value); }} /></div>
-                  <div><label className={labelClass}>Check-out</label><input type="date" className={inputClass} value={checkOut} onChange={e => setCheckOut(e.target.value)} /></div>
-                </>
-              ) : type === 'restaurant' ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <div><label className={labelClass}>Date</label><input type="date" className={inputClass} value={date} onChange={e => setDate(e.target.value)} /></div>
-                  <div><label className={labelClass}>Time</label><input type="time" className={inputClass} value={departureTime} onChange={e => setDepartureTime(e.target.value)} /></div>
-                </div>
-              ) : (
-                <div><label className={labelClass}>Date</label><input type="date" className={inputClass} value={date} onChange={e => setDate(e.target.value)} /></div>
-              )}
-            </div>
-
-            {/* Time (transport types) */}
-            {(type === 'flight' || type === 'train' || type === 'transfer' || type === 'activity') && (
+            {/* Date & Time */}
+            {type === 'hotel' ? (
               <div className="grid grid-cols-2 gap-3">
-                <div><label className={labelClass}>Departure</label><input type="time" className={inputClass} value={departureTime} onChange={e => setDepartureTime(e.target.value)} /></div>
-                <div><label className={labelClass}>Arrival</label><input type="time" className={inputClass} value={arrivalTime} onChange={e => setArrivalTime(e.target.value)} /></div>
+                <div><label className={labelClass}>Check-in</label><input type="date" className={inputClass} value={checkIn} onChange={e => { setCheckIn(e.target.value); if (!date) setDate(e.target.value); }} /></div>
+                <div><label className={labelClass}>Check-out</label><input type="date" className={inputClass} value={checkOut} onChange={e => setCheckOut(e.target.value)} /></div>
               </div>
+            ) : type === 'restaurant' ? (
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className={labelClass}>Date</label><input type="date" className={inputClass} value={date} onChange={e => setDate(e.target.value)} /></div>
+                <div><label className={labelClass}>Time</label><input type="time" className={inputClass} value={departureTime} onChange={e => setDepartureTime(e.target.value)} /></div>
+              </div>
+            ) : (type === 'flight' || type === 'train' || type === 'transfer') ? (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div><label className={labelClass}>Departure Date</label><input type="date" className={inputClass} value={date} onChange={e => setDate(e.target.value)} /></div>
+                  <div><label className={labelClass}>Departure Time</label><input type="time" className={inputClass} value={departureTime} onChange={e => setDepartureTime(e.target.value)} /></div>
+                </div>
+                {(type === 'flight' || type === 'train') && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><label className={labelClass}>Arrival Date</label><input type="date" className={inputClass} value={arrivalDate} onChange={e => setArrivalDate(e.target.value)} /></div>
+                    <div><label className={labelClass}>Arrival Time</label><input type="time" className={inputClass} value={arrivalTime} onChange={e => setArrivalTime(e.target.value)} /></div>
+                  </div>
+                )}
+              </>
+            ) : type === 'activity' ? (
+              <>
+                <div><label className={labelClass}>Date</label><input type="date" className={inputClass} value={date} onChange={e => setDate(e.target.value)} /></div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div><label className={labelClass}>Start Time</label><input type="time" className={inputClass} value={departureTime} onChange={e => setDepartureTime(e.target.value)} /></div>
+                  <div><label className={labelClass}>End Time</label><input type="time" className={inputClass} value={arrivalTime} onChange={e => setArrivalTime(e.target.value)} /></div>
+                </div>
+              </>
+            ) : (
+              <div><label className={labelClass}>Date</label><input type="date" className={inputClass} value={date} onChange={e => setDate(e.target.value)} /></div>
             )}
 
             {/* Carrier / Airline / Train / Platform */}
@@ -7774,6 +7793,14 @@
               <div>
                 <label className={labelClass}>{type === 'flight' ? 'Airline / Flight #' : type === 'train' ? 'Train name / #' : type === 'restaurant' ? 'Platform / Booked via' : 'Provider'}</label>
                 <input className={inputClass} value={carrier} onChange={e => setCarrier(e.target.value)} placeholder={type === 'flight' ? 'UA837' : type === 'train' ? 'NOZOMI 155' : type === 'restaurant' ? 'e.g. TableCheck, OpenTable' : 'Transfer company'} />
+              </div>
+            )}
+
+            {/* Duration & Class (flight/train) */}
+            {(type === 'flight' || type === 'train') && (
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className={labelClass}>Duration</label><input className={inputClass} value={duration} onChange={e => setDuration(e.target.value)} placeholder="11h 20m" /></div>
+                <div><label className={labelClass}>Class</label><input className={inputClass} value={flightClass} onChange={e => setFlightClass(e.target.value)} placeholder="Economy" /></div>
               </div>
             )}
 
@@ -7809,6 +7836,14 @@
             {/* Address (hotel, transfer, restaurant) */}
             {(type === 'hotel' || type === 'transfer' || type === 'restaurant') && (
               <div><label className={labelClass}>Address</label><input className={inputClass} value={address} onChange={e => setAddress(e.target.value)} placeholder="Full address" /></div>
+            )}
+
+            {/* Terminals (flight only) */}
+            {type === 'flight' && (
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className={labelClass}>Terminal (Depart)</label><input className={inputClass} value={terminalDepart} onChange={e => setTerminalDepart(e.target.value)} placeholder="Terminal 3" /></div>
+                <div><label className={labelClass}>Terminal (Arrive)</label><input className={inputClass} value={terminalArrive} onChange={e => setTerminalArrive(e.target.value)} placeholder="Terminal 1" /></div>
+              </div>
             )}
 
             {/* Confirmation & Cost */}
