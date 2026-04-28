@@ -13977,8 +13977,11 @@
           {/* Expanded content */}
           {isExpanded && (
             <div className="p-2 space-y-1">
-              {/* Hotel staying-at indicator */}
-              {dayDocs && dayDocs.filter(d => d._isHotelStay).map(hotel => (
+              {/* Hotel staying-at indicator (check-out first, then staying, then check-in) */}
+              {dayDocs && dayDocs.filter(d => d._isHotelStay).sort((a, b) => {
+                const order = (h) => h._isCheckOut ? 0 : h._isCheckIn ? 2 : 1;
+                return order(a) - order(b);
+              }).map(hotel => (
                 <button
                   key={`stay-${hotel.id}`}
                   onClick={() => {
@@ -17611,55 +17614,53 @@
             document.body
           )}
 
-          {/* Service Worker Registration */}
-          {typeof navigator !== 'undefined' && 'serviceWorker' in navigator && (
-            <script dangerouslySetInnerHTML={{
-              __html: `
-                if ('serviceWorker' in navigator) {
-                  // Request persistent storage so Safari doesn't evict our cache
-                  if (navigator.storage && navigator.storage.persist) {
-                    navigator.storage.persist().then(granted => {
-                      console.log('[SW] Persistent storage:', granted ? 'granted' : 'denied');
-                    });
-                  }
-
-                  navigator.serviceWorker.register('/sw.js', { scope: '/' })
-                    .then(reg => {
-                      console.log('[SW] Registered:', reg.scope);
-                      // Check for updates periodically (every 30 min while page is open)
-                      setInterval(() => reg.update(), 30 * 60 * 1000);
-                      // Detect new SW waiting and auto-activate it
-                      reg.addEventListener('updatefound', () => {
-                        const newSW = reg.installing;
-                        if (newSW) {
-                          newSW.addEventListener('statechange', () => {
-                            if (newSW.state === 'activated') {
-                              console.log('[SW] New version activated');
-                            }
-                          });
-                        }
-                      });
-                    })
-                    .catch(err => console.warn('[SW] Registration failed:', err));
-
-                  // When a new SW takes over, reload to get fresh content
-                  let refreshing = false;
-                  navigator.serviceWorker.addEventListener('controllerchange', () => {
-                    if (!refreshing) {
-                      refreshing = true;
-                      console.log('[SW] Controller changed, reloading for fresh content');
-                      window.location.reload();
-                    }
-                  });
-                }
-              `
-            }} />
-          )}
+          {/* SW registration moved to standalone script tag below React */}
         </div>
       );
     }
 
     ReactDOM.createRoot(document.getElementById('root')).render(<ErrorBoundary><BoWanderApp /></ErrorBoundary>);
+  </script>
+
+  <!-- Service Worker Registration (must be a real script tag, not inside React) -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      // Request persistent storage so Safari doesn't evict our cache
+      if (navigator.storage && navigator.storage.persist) {
+        navigator.storage.persist().then(function(granted) {
+          console.log('[SW] Persistent storage:', granted ? 'granted' : 'denied');
+        });
+      }
+
+      navigator.serviceWorker.register('/sw.js', { scope: '/' })
+        .then(function(reg) {
+          console.log('[SW] Registered:', reg.scope);
+          // Check for updates periodically (every 30 min while page is open)
+          setInterval(function() { reg.update(); }, 30 * 60 * 1000);
+          // Detect new SW waiting and auto-activate it
+          reg.addEventListener('updatefound', function() {
+            var newSW = reg.installing;
+            if (newSW) {
+              newSW.addEventListener('statechange', function() {
+                if (newSW.state === 'activated') {
+                  console.log('[SW] New version activated');
+                }
+              });
+            }
+          });
+        })
+        .catch(function(err) { console.warn('[SW] Registration failed:', err); });
+
+      // When a new SW takes over, reload to get fresh content
+      var refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function() {
+        if (!refreshing) {
+          refreshing = true;
+          console.log('[SW] Controller changed, reloading for fresh content');
+          window.location.reload();
+        }
+      });
+    }
   </script>
 </body>
 </html>
