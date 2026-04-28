@@ -25,14 +25,19 @@ self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(async cache => {
       // Cache the app shell — this MUST succeed for offline to work
+      // Use fetch + put instead of cache.add for more control
       try {
-        await cache.addAll(['/', '/index.html']);
-        console.log('[SW] App shell cached successfully');
+        const resp = await fetch('/index.html', { cache: 'no-cache' });
+        if (resp.ok) {
+          const clone = resp.clone();
+          await cache.put('/index.html', resp);
+          await cache.put('/', clone);
+          console.log('[SW] App shell cached successfully');
+        } else {
+          console.warn('[SW] App shell fetch returned', resp.status);
+        }
       } catch (e) {
-        // If addAll fails, try individually
-        console.warn('[SW] addAll failed, trying individual:', e);
-        try { await cache.add('/'); } catch (e2) { console.warn('[SW] Failed to cache /:', e2); }
-        try { await cache.add('/index.html'); } catch (e2) { console.warn('[SW] Failed to cache /index.html:', e2); }
+        console.warn('[SW] Failed to cache app shell:', e);
       }
       // Cache CDN resources individually (don't block install)
       await Promise.allSettled(
@@ -45,11 +50,30 @@ self.addEventListener('install', event => {
 
 self.addEventListener('activate', event => {
   event.waitUntil(
-    caches.keys().then(names =>
-      Promise.all(names.map(n => {
+    (async () => {
+      // Clean old caches
+      const names = await caches.keys();
+      await Promise.all(names.map(n => {
         if (n !== CACHE_NAME && n !== TILE_CACHE) return caches.delete(n);
-      }))
-    )
+      }));
+      // Ensure we have the app shell cached even after activation
+      // (covers the case where install cache was evicted by Safari)
+      const cache = await caches.open(CACHE_NAME);
+      const existing = await cache.match('/index.html');
+      if (!existing) {
+        console.log('[SW] Cache empty after activation, re-caching app shell');
+        try {
+          const resp = await fetch('/index.html', { cache: 'no-cache' });
+          if (resp.ok) {
+            const clone = resp.clone();
+            await cache.put('/index.html', resp);
+            await cache.put('/', clone);
+          }
+        } catch (e) {
+          console.warn('[SW] Re-cache failed:', e);
+        }
+      }
+    })()
   );
   self.clients.claim();
 });
@@ -64,41 +88,61 @@ function isApiCall(url) {
       || url.includes('allorigins') || url.includes('corsproxy');
 }
 
+// Offline fallback page when cache is completely empty
+const OFFLINE_HTML = `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bo Wander - Offline</title>
+<style>body{font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#1e293b;color:#e2e8f0;text-align:center}
+.c{max-width:320px;padding:20px}h1{font-size:48px;margin:0}h2{font-size:18px;margin:8px 0 16px}p{font-size:14px;color:#94a3b8;line-height:1.5}
+button{margin-top:16px;padding:10px 24px;border:none;border-radius:8px;background:#3b82f6;color:white;font-size:14px;cursor:pointer}</style></head>
+<body><div class="c"><h1>🗺️</h1><h2>Bo Wander is offline</h2><p>Open the app while connected to the internet first, then it'll work offline on future visits.</p>
+<button onclick="location.reload()">Try Again</button></div></body></html>`;
+
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = event.request.url;
 
   if (isApiCall(url)) return;
 
-  // Navigation requests (page loads): cache-first, network fallback
-  // This is the critical path for offline — always try cache first
+  // Navigation requests (page loads): cache-first with network update
   if (event.request.mode === 'navigate') {
     event.respondWith(
-      caches.match('/index.html').then(cached => {
+      (async () => {
+        const cache = await caches.open(CACHE_NAME);
+        // Try cache first (multiple keys in case one works)
+        let cached = await cache.match('/index.html')
+                  || await cache.match('/')
+                  || await caches.match(event.request);
+
         if (cached) {
-          // Serve cached version immediately, update in background
-          fetch(event.request).then(resp => {
+          // Serve cached immediately, update in background
+          try {
+            const resp = await fetch(event.request);
             if (resp.ok) {
-              caches.open(CACHE_NAME).then(c => {
-                c.put('/', resp.clone());
-                c.put('/index.html', resp.clone());
-              });
+              const clone = resp.clone();
+              cache.put('/', resp.clone());
+              cache.put('/index.html', clone);
             }
-          }).catch(() => {});
+          } catch (e) { /* offline, that's fine */ }
           return cached;
         }
-        // No cache — must go to network
-        return fetch(event.request).then(resp => {
+
+        // No cache — try network
+        try {
+          const resp = await fetch(event.request);
           if (resp.ok) {
             const clone = resp.clone();
-            caches.open(CACHE_NAME).then(c => {
-              c.put('/', clone.clone());
-              c.put('/index.html', clone);
-            });
+            cache.put('/', resp.clone());
+            cache.put('/index.html', clone);
           }
           return resp;
-        });
-      })
+        } catch (e) {
+          // Completely offline with no cache — show friendly error
+          return new Response(OFFLINE_HTML, {
+            status: 503,
+            headers: { 'Content-Type': 'text/html' },
+          });
+        }
+      })()
     );
     return;
   }
