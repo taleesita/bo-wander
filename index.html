@@ -13488,6 +13488,33 @@
         filteredPins = pins.slice(0, 20);
       }
 
+      // Deduplicate co-located pins (spot + reservation for same place)
+      // Keep the spot pin as representative so clicking it opens merged view
+      const dedupedPins = (() => {
+        const matched = new Set();
+        const result = [];
+        for (let i = 0; i < filteredPins.length; i++) {
+          if (matched.has(filteredPins[i].id)) continue;
+          let representative = filteredPins[i];
+          for (let j = i + 1; j < filteredPins.length; j++) {
+            if (matched.has(filteredPins[j].id)) continue;
+            if (isSamePlacePin(filteredPins[i], filteredPins[j])) {
+              matched.add(filteredPins[j].id);
+              // Prefer the spot pin (no reservation_details) as representative
+              if (filteredPins[j].reservation_details && !filteredPins[i].reservation_details) {
+                // i is already the spot — keep it
+              } else if (filteredPins[i].reservation_details && !filteredPins[j].reservation_details) {
+                representative = filteredPins[j];
+              }
+            }
+          }
+          matched.add(representative.id);
+          result.push(representative);
+        }
+        return result;
+      })();
+      filteredPins = dedupedPins;
+
       const handleSave = () => {
         let lat = item?.lat || 0, lng = item?.lng || 0;
         let finalName = name;
@@ -13950,6 +13977,28 @@
           {/* Expanded content */}
           {isExpanded && (
             <div className="p-2 space-y-1">
+              {/* Hotel staying-at indicator */}
+              {dayDocs && dayDocs.filter(d => d._isHotelStay).map(hotel => (
+                <button
+                  key={`stay-${hotel.id}`}
+                  onClick={() => {
+                    const pinId = hotel._pinId || hotel.id;
+                    let hotelPin = pins.find(p => p.id === pinId);
+                    // Fallback: try matching by name for doc-sourced hotels
+                    if (!hotelPin && hotel.title) {
+                      hotelPin = pins.find(p => p.category === 'hotel' && p.name && p.name.toLowerCase().includes(hotel.title.toLowerCase()));
+                    }
+                    if (hotelPin) onFlyTo(hotelPin);
+                  }}
+                  className="w-full flex items-center gap-1.5 px-2 py-1 text-[11px] text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition"
+                >
+                  <span>🏨</span>
+                  <span className="truncate">
+                    {hotel._isCheckIn ? 'Check in · ' : hotel._isCheckOut ? 'Check out · ' : 'Staying at '}
+                    {hotel.title}
+                  </span>
+                </button>
+              ))}
               {/* Starting point + start time */}
               <div className="flex items-center gap-1">
                 <button
@@ -14095,11 +14144,11 @@
                 <span>+</span> Add item
               </button>
 
-              {/* Auto-matched travel docs for this day */}
-              {dayDocs && dayDocs.length > 0 && (
+              {/* Auto-matched travel docs for this day (excluding hotels — shown at top) */}
+              {dayDocs && dayDocs.filter(d => !d._isHotelStay).length > 0 && (
                 <div className="mt-1.5 pt-1.5 border-t border-dashed dark:border-slate-700">
                   <div className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-2 mb-1">Bookings & Docs</div>
-                  {dayDocs.map(doc => {
+                  {dayDocs.filter(d => !d._isHotelStay).map(doc => {
                     const typeInfo = TRAVEL_DOC_TYPES[doc.type] || TRAVEL_DOC_TYPES.general;
                     const time = doc.departure_time || '';
                     const conf = doc.confirmation ? `#${doc.confirmation}` : '';
@@ -15136,7 +15185,10 @@
           if (doc.type === 'hotel' && doc.check_in) {
             const ci = doc.check_in.substring(0, 10);
             const co = doc.check_out ? doc.check_out.substring(0, 10) : ci;
-            if (dayDate >= ci && dayDate <= co) { matched.push({ ...doc, _source: 'doc' }); seenIds.add(doc.id); }
+            if (dayDate >= ci && dayDate <= co) {
+              matched.push({ ...doc, _source: 'doc', _isHotelStay: true, _isCheckIn: dayDate === ci, _isCheckOut: dayDate === co });
+              seenIds.add(doc.id);
+            }
           } else {
             const docDate = (doc.date || doc.check_in || '').substring(0, 10);
             if (docDate === dayDate) { matched.push({ ...doc, _source: 'doc' }); seenIds.add(doc.id); }
@@ -15158,6 +15210,8 @@
                 check_in: rd.check_in, check_out: rd.check_out,
                 confirmation: rd.confirmation_number, cost: rd.price,
                 carrier: rd.booking_source, file_data: pin.attachment, file_name: pin.attachment_name,
+                _isHotelStay: true, _isCheckIn: dayDate === ci, _isCheckOut: dayDate === co,
+                _pinId: pin.id,
               });
             }
           } else {
