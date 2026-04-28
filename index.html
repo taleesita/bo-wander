@@ -14367,32 +14367,64 @@
 
       const allReal = orderedItems.length > 0 ? [...orderedItems, ...unorderedItems] : itemsByOrder;
 
-      // Build meal slot placeholders at natural meal times
-      // Only show if no meal-like item already exists near that time window
+      // Build meal slot placeholders that slot into natural gaps in the day
+      // Windows updated to realistic ranges; default time adapts to surrounding items
       const mealDefs = [
-        { name: 'Breakfast', emoji: '🥐', time: '07:30', windowStart: 6 * 60, windowEnd: 9.5 * 60, mealType: 'breakfast' },
-        { name: 'Lunch', emoji: '🍱', time: '12:30', windowStart: 11.5 * 60, windowEnd: 14 * 60, mealType: 'lunch' },
-        { name: 'Dinner', emoji: '🍽️', time: '18:00', windowStart: 17 * 60, windowEnd: 19.5 * 60, mealType: 'dinner' },
+        { name: 'Breakfast', emoji: '🥐', defaultTime: 9 * 60, windowStart: 7.5 * 60, windowEnd: 10 * 60, mealType: 'breakfast' },
+        { name: 'Lunch', emoji: '🍱', defaultTime: 12.5 * 60, windowStart: 12 * 60, windowEnd: 14 * 60, mealType: 'lunch' },
+        { name: 'Dinner', emoji: '🍽️', defaultTime: 18.5 * 60, windowStart: 17.5 * 60, windowEnd: 19 * 60, mealType: 'dinner' },
       ];
       const foodCats = new Set(['restaurant', 'cafe', 'treats', 'bar']);
-      const existingMealTimes = [...allReal, ...transitItems].map(it => {
+      const allTimedItems = [...allReal, ...transitItems].map(it => {
         const t = it.scheduled_time;
         if (!t) return null;
         const [h, m] = t.split(':').map(Number);
-        return { mins: h * 60 + m, isMeal: foodCats.has(pins.find(p => p.id === it.pin_id)?.category) || it.type === 'meal' || it.emoji === '🍱' || it.emoji === '🥐' || it.emoji === '🍽️' || it.emoji === '🍣' || it.emoji === '🍜' || it.emoji === '☕' || it.emoji === '🍺' };
-      }).filter(Boolean);
+        const dur = it.estimated_duration_minutes || it.duration_minutes || 60;
+        const startMins = h * 60 + m;
+        return { startMins, endMins: startMins + dur, isMeal: foodCats.has(pins.find(p => p.id === it.pin_id)?.category) || it.type === 'meal' || it.emoji === '🍱' || it.emoji === '🥐' || it.emoji === '🍽️' || it.emoji === '🍣' || it.emoji === '🍜' || it.emoji === '☕' || it.emoji === '🍺' };
+      }).filter(Boolean).sort((a, b) => a.startMins - b.startMins);
 
       const mealSlots = mealDefs.filter(meal => {
-        // Don't show slot if a meal-like item already exists in this window
-        return !existingMealTimes.some(e => e.isMeal && e.mins >= meal.windowStart && e.mins <= meal.windowEnd);
-      }).map(meal => ({
-        id: `meal-slot-${meal.mealType}`,
-        _isMealSlot: true,
-        _mealDef: meal,
-        scheduled_time: meal.time,
-        name: meal.name,
-        emoji: meal.emoji,
-      }));
+        // Don't show if a meal-like item already exists in this window
+        return !allTimedItems.some(e => e.isMeal && e.startMins >= meal.windowStart && e.startMins <= meal.windowEnd);
+      }).map(meal => {
+        // Find the best time: look for a gap in the schedule within the window
+        // Default to the meal's default time, but shift if there's an item occupying that spot
+        let bestTime = meal.defaultTime;
+        // Items that overlap with or are near this meal window
+        const nearby = allTimedItems.filter(e => e.endMins > meal.windowStart && e.startMins < meal.windowEnd);
+        if (nearby.length > 0) {
+          // Try to slot right after the last item that ends before or at the window midpoint
+          // or right before the first item that starts in the window
+          const gapAfterLast = nearby.reduce((best, e) => {
+            if (e.endMins >= meal.windowStart && e.endMins <= meal.windowEnd) return Math.max(best, e.endMins);
+            return best;
+          }, meal.windowStart);
+          // If there's space after the last nearby item ends, use that
+          if (gapAfterLast > meal.windowStart && gapAfterLast <= meal.windowEnd) {
+            bestTime = gapAfterLast;
+          } else {
+            // Slot before the first item in the window
+            const firstInWindow = nearby.find(e => e.startMins >= meal.windowStart);
+            if (firstInWindow && firstInWindow.startMins - 60 >= meal.windowStart) {
+              bestTime = firstInWindow.startMins - 60;
+            }
+          }
+        }
+        // Clamp to window
+        bestTime = Math.max(meal.windowStart, Math.min(meal.windowEnd, bestTime));
+        const h = Math.floor(bestTime / 60);
+        const m = Math.round(bestTime % 60);
+        const timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+        return {
+          id: `meal-slot-${meal.mealType}`,
+          _isMealSlot: true,
+          _mealDef: { ...meal, time: timeStr },
+          scheduled_time: timeStr,
+          name: meal.name,
+          emoji: meal.emoji,
+        };
+      });
 
       // Merge transit items and meal slots into the sorted list by time
       const allSorted = [...allReal, ...transitItems, ...mealSlots].sort((a, b) => {
