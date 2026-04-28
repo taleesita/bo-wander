@@ -16787,15 +16787,15 @@
       // Collection view (map + list)
       return (
         <div className={`${darkMode ? 'dark' : ''} h-screen w-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-white overflow-hidden`}>
-          {/* Offline / Back Online banner */}
+          {/* Offline / Back Online pill */}
           {isOffline && (
-            <div className="absolute top-0 left-0 right-0 bg-amber-500 text-white text-center text-xs py-1.5 font-medium" style={{ zIndex: 99999 }}>
-              📡 You're offline — changes are saved locally and will sync when you reconnect
+            <div className="absolute top-2 right-2 bg-amber-500/90 text-white text-[10px] px-2 py-1 rounded-full font-medium shadow-lg backdrop-blur-sm" style={{ zIndex: 99999 }}>
+              📡 Offline
             </div>
           )}
           {showBackOnline && !isOffline && (
-            <div className="absolute top-0 left-0 right-0 bg-green-500 text-white text-center text-xs py-1.5 font-medium transition-opacity" style={{ zIndex: 99999 }}>
-              ✓ Back online — syncing your changes
+            <div className="absolute top-2 right-2 bg-green-500/90 text-white text-[10px] px-2 py-1 rounded-full font-medium shadow-lg backdrop-blur-sm" style={{ zIndex: 99999 }}>
+              ✓ Syncing
             </div>
           )}
 
@@ -17608,9 +17608,41 @@
             <script dangerouslySetInnerHTML={{
               __html: `
                 if ('serviceWorker' in navigator) {
+                  // Request persistent storage so Safari doesn't evict our cache
+                  if (navigator.storage && navigator.storage.persist) {
+                    navigator.storage.persist().then(granted => {
+                      console.log('[SW] Persistent storage:', granted ? 'granted' : 'denied');
+                    });
+                  }
+
                   navigator.serviceWorker.register('/sw.js', { scope: '/' })
-                    .then(reg => console.log('[SW] Registered:', reg.scope))
+                    .then(reg => {
+                      console.log('[SW] Registered:', reg.scope);
+                      // Check for updates periodically (every 30 min while page is open)
+                      setInterval(() => reg.update(), 30 * 60 * 1000);
+                      // Detect new SW waiting and auto-activate it
+                      reg.addEventListener('updatefound', () => {
+                        const newSW = reg.installing;
+                        if (newSW) {
+                          newSW.addEventListener('statechange', () => {
+                            if (newSW.state === 'activated') {
+                              console.log('[SW] New version activated');
+                            }
+                          });
+                        }
+                      });
+                    })
                     .catch(err => console.warn('[SW] Registration failed:', err));
+
+                  // When a new SW takes over, reload to get fresh content
+                  let refreshing = false;
+                  navigator.serviceWorker.addEventListener('controllerchange', () => {
+                    if (!refreshing) {
+                      refreshing = true;
+                      console.log('[SW] Controller changed, reloading for fresh content');
+                      window.location.reload();
+                    }
+                  });
                 }
               `
             }} />
