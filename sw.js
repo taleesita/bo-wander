@@ -1,14 +1,19 @@
-const CACHE_NAME = 'bo-wander-v68';
+const CACHE_NAME = 'bo-wander-v69';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
-const CDN_URLS = [
-  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
-  'https://cdn.tailwindcss.com',
+// Critical CDN resources — app won't render without these
+const CRITICAL_CDN = [
   'https://unpkg.com/react@18/umd/react.production.min.js',
   'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
   'https://unpkg.com/@babel/standalone/babel.min.js',
+  'https://cdn.tailwindcss.com',
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+];
+
+// Optional CDN resources — nice to have offline but not essential
+const OPTIONAL_CDN = [
   'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js',
   'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js',
   'https://cdn.jsdelivr.net/npm/cropperjs@1.6.1/dist/cropper.min.css',
@@ -24,25 +29,43 @@ const CDN_URLS = [
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(async cache => {
-      // Cache the app shell — this MUST succeed for offline to work
-      // Use fetch + put instead of cache.add for more control
+      // 1. Cache the app shell — MUST succeed
       try {
         const resp = await fetch('/index.html', { cache: 'no-cache' });
         if (resp.ok) {
           const clone = resp.clone();
           await cache.put('/index.html', resp);
           await cache.put('/', clone);
-          console.log('[SW] App shell cached successfully');
-        } else {
-          console.warn('[SW] App shell fetch returned', resp.status);
+          console.log('[SW] App shell cached');
         }
       } catch (e) {
         console.warn('[SW] Failed to cache app shell:', e);
       }
-      // Cache CDN resources individually (don't block install)
+
+      // 2. Cache critical CDN resources — MUST succeed for app to render offline
+      for (const url of CRITICAL_CDN) {
+        try {
+          await cache.add(url);
+          console.log('[SW] Cached critical:', url.split('/').pop());
+        } catch (e) {
+          console.warn('[SW] CRITICAL cache failed:', url, e);
+          // Retry once
+          try {
+            await new Promise(r => setTimeout(r, 500));
+            await cache.add(url);
+            console.log('[SW] Cached critical (retry):', url.split('/').pop());
+          } catch (e2) {
+            console.error('[SW] CRITICAL cache failed after retry:', url);
+          }
+        }
+      }
+
+      // 3. Cache optional CDN resources — don't block install
       await Promise.allSettled(
-        CDN_URLS.map(url => cache.add(url).catch(() => console.log('[SW] CDN cache skip:', url)))
+        OPTIONAL_CDN.map(url => cache.add(url).catch(() => console.log('[SW] Optional skip:', url.split('/').pop())))
       );
+
+      console.log('[SW] Install complete');
     })
   );
   self.skipWaiting();
@@ -56,21 +79,24 @@ self.addEventListener('activate', event => {
       await Promise.all(names.map(n => {
         if (n !== CACHE_NAME && n !== TILE_CACHE) return caches.delete(n);
       }));
-      // Ensure we have the app shell cached even after activation
-      // (covers the case where install cache was evicted by Safari)
+      // Verify cache has app shell, re-cache if Safari evicted it
       const cache = await caches.open(CACHE_NAME);
       const existing = await cache.match('/index.html');
       if (!existing) {
-        console.log('[SW] Cache empty after activation, re-caching app shell');
+        console.log('[SW] Cache empty after activation, re-caching');
         try {
           const resp = await fetch('/index.html', { cache: 'no-cache' });
           if (resp.ok) {
-            const clone = resp.clone();
-            await cache.put('/index.html', resp);
-            await cache.put('/', clone);
+            await cache.put('/index.html', resp.clone());
+            await cache.put('/', resp);
           }
-        } catch (e) {
-          console.warn('[SW] Re-cache failed:', e);
+        } catch (e) {}
+      }
+      // Also verify critical CDN resources
+      for (const url of CRITICAL_CDN) {
+        const cached = await cache.match(url);
+        if (!cached) {
+          try { await cache.add(url); } catch (e) {}
         }
       }
     })()
@@ -88,7 +114,7 @@ function isApiCall(url) {
       || url.includes('allorigins') || url.includes('corsproxy');
 }
 
-// Offline fallback page when cache is completely empty
+// Offline fallback page
 const OFFLINE_HTML = `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Bo Wander - Offline</title>
 <style>body{font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#1e293b;color:#e2e8f0;text-align:center}
@@ -103,40 +129,35 @@ self.addEventListener('fetch', event => {
 
   if (isApiCall(url)) return;
 
-  // Navigation requests (page loads): cache-first with network update
+  // Navigation requests: cache-first with background update
   if (event.request.mode === 'navigate') {
     event.respondWith(
       (async () => {
         const cache = await caches.open(CACHE_NAME);
-        // Try cache first (multiple keys in case one works)
         let cached = await cache.match('/index.html')
                   || await cache.match('/')
                   || await caches.match(event.request);
 
         if (cached) {
-          // Serve cached immediately, update in background
+          // Serve cached, update in background
           try {
             const resp = await fetch(event.request);
             if (resp.ok) {
-              const clone = resp.clone();
               cache.put('/', resp.clone());
-              cache.put('/index.html', clone);
+              cache.put('/index.html', resp.clone());
             }
-          } catch (e) { /* offline, that's fine */ }
+          } catch (e) {}
           return cached;
         }
 
-        // No cache — try network
         try {
           const resp = await fetch(event.request);
           if (resp.ok) {
-            const clone = resp.clone();
             cache.put('/', resp.clone());
-            cache.put('/index.html', clone);
+            cache.put('/index.html', resp.clone());
           }
           return resp;
         } catch (e) {
-          // Completely offline with no cache — show friendly error
           return new Response(OFFLINE_HTML, {
             status: 503,
             headers: { 'Content-Type': 'text/html' },
