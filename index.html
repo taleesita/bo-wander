@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v73';
+    const APP_VERSION = 'v74';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -6758,8 +6758,16 @@
       const full = text.replace(/\n/g, ' ');
       const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
 
-      // Detect transport subtype
-      if (/shinkansen|bullet\s*train|JR\s+pass|nozomi|hikari|kodama|sakura|mizuho|hayabusa|kagayaki|train|rail/i.test(full)) {
+      // Detect transport subtype — check for flight indicators first (they're more specific)
+      const isFlightText = /\bflight\s+\d+\s+of\s+\d+\b|e-?ticket|boarding\s+pass|\b(?:UA|AA|DL|WN|B6|AS|HA|NK|F9|JL|NH|SQ|CX|KE|OZ|TK|LH|BA|AF|KL|QF|EK|QR)\d{1,5}\b|\bairline|\bairport|\bterminal\b/i.test(full);
+      const isTrainText = /shinkansen|bullet\s*train|JR\s+pass|\bnozomi\b|\bhikari\b|\bkodama\b|\bsakura\b(?!\s*(?:card|credit|bank|hotel|suite))|mizuho|hayabusa|kagayaki/i.test(full);
+      // "train" as standalone word, but NOT "restraint", "training", etc.
+      const isTrainWord = /\btrain\b(?!ing|ed|er|s\b)/i.test(full) && !/\brestraint\b/i.test(full);
+      const isRail = /\brail\b|\brailway\b|\brailroad\b/i.test(full);
+
+      if (isFlightText) {
+        result.type = 'flight';
+      } else if (isTrainText || ((isTrainWord || isRail) && !isFlightText)) {
         result.type = 'train';
       } else if (/transfer|shuttle|pickup|pick[\s-]?up|airport.*(?:car|hotel)|(?:car|hotel).*airport|private\s+(?:car|vehicle|driver)|limousine|chauffeur|drop[\s-]?off/i.test(full)) {
         result.type = 'transfer';
@@ -6811,11 +6819,14 @@
             departure_time: '', arrival_time: '', duration: '', flight_class: '', arrival_next_day: false,
           };
 
-          // Line 0: "Flight 1 of 2 UA837 Class: United Economy (XN)"
+          // Header: "Flight 1 of 2 UA837 Class: United Economy (XN)"
+          // May span multiple OCR lines, so search the first few lines + the whole chunk
           const headerLine = chunkLines[0] || '';
-          const fnMatch = headerLine.match(/\b([A-Z]{2})(\d{1,5})\b/);
+          const headerBlock = chunkLines.slice(0, 3).join(' ');
+          const fnMatch = headerBlock.match(/\b([A-Z]{2})(\d{1,5})\b/);
           if (fnMatch) seg.flight_number = fnMatch[1] + fnMatch[2];
-          const classMatch = headerLine.match(/Class:\s*(.+)/i);
+          // Look for class in header block first, then whole chunk
+          const classMatch = headerBlock.match(/Class:\s*([^\n(]+)/i) || chunk.match(/Class:\s*([^\n(]+)/i);
           if (classMatch) seg.flight_class = classMatch[1].trim();
 
           // Find dates: "Fri, May 01, 2026" patterns anywhere in chunk
@@ -6847,8 +6858,18 @@
           while ((am = airportPattern.exec(chunk)) !== null) {
             foundAirports.push({ city: am[1].trim(), code: am[2] });
           }
-          if (foundAirports.length >= 1) seg.from = `${foundAirports[0].city} (${foundAirports[0].code})`;
-          if (foundAirports.length >= 2) seg.to = `${foundAirports[1].city} (${foundAirports[1].code})`;
+          // Clean city names: strip OCR noise (stray "AM"/"PM", numbers) from before city name
+          const cleanCity = (raw) => raw.replace(/^(?:AM|PM|am|pm|\d{1,2}:\d{2}\s*(?:AM|PM)?)\s*/i, '').trim();
+          if (foundAirports.length >= 1) {
+            const city = cleanCity(foundAirports[0].city);
+            seg.from = `${city} (${foundAirports[0].code})`;
+            seg.from_code = foundAirports[0].code;
+          }
+          if (foundAirports.length >= 2) {
+            const city = cleanCity(foundAirports[1].city);
+            seg.to = `${city} (${foundAirports[1].code})`;
+            seg.to_code = foundAirports[1].code;
+          }
 
           // Duration: "11h 20m", "11 h 20 m", "Duration: 11:20", "Travel time 11 hr 20 min"
           const durMatch = chunk.match(/(\d+)\s*h(?:rs?|ours?)?\s*(\d+)\s*m(?:in(?:s|utes)?)?/i);
@@ -6858,6 +6879,33 @@
             // Try "Duration: HH:MM" format
             const durMatch2 = chunk.match(/(?:duration|travel\s*time|flight\s*time)[:\s]*(\d{1,2}):(\d{2})/i);
             if (durMatch2) seg.duration = `${parseInt(durMatch2[1])}h ${parseInt(durMatch2[2])}m`;
+          }
+          // Fallback: compute duration from departure/arrival date+time
+          if (!seg.duration && seg.departure_time && seg.arrival_time && seg.date) {
+            try {
+              const parseTime12 = (t) => {
+                const m = t.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+                if (!m) return null;
+                let h = parseInt(m[1]), min = parseInt(m[2]);
+                if (m[3]) {
+                  const ap = m[3].toUpperCase();
+                  if (ap === 'PM' && h !== 12) h += 12;
+                  if (ap === 'AM' && h === 12) h = 0;
+                }
+                return h * 60 + min;
+              };
+              const depMins = parseTime12(seg.departure_time);
+              const arrMins = parseTime12(seg.arrival_time);
+              if (depMins != null && arrMins != null) {
+                const depDate = seg.date;
+                const arrDate = seg.arrival_date || seg.date;
+                const dayDiff = depDate && arrDate ? Math.round((new Date(arrDate + 'T00:00') - new Date(depDate + 'T00:00')) / 86400000) : 0;
+                const totalMins = (dayDiff * 24 * 60) + arrMins - depMins;
+                if (totalMins > 0) {
+                  seg.duration = `${Math.floor(totalMins / 60)}h ${totalMins % 60}m`;
+                }
+              }
+            } catch(e) {}
           }
 
           // Class: try to clean up — "United Economy (XN)" → "United Economy"
@@ -7131,12 +7179,15 @@
       if (!result.flight_class) {
         const classPatterns = [
           /(?:class|cabin)[:\s]+([^(\n]{3,40})/i,
-          /(?:United\s+)?(?:economy|business|first|premium\s+economy|economy\s+plus)\s*\(?([A-Z]{2})?\)?/i,
-          /\(([A-Z]{2})\)\s+(?:seat|cabin|class)/i,
+          // Named class patterns — match "United Economy", "Economy Plus", "Business", "First", "Premium Economy"
+          /\b((?:United\s+)?(?:Economy\s+Plus|Premium\s+Economy|Economy|Business|First)(?:\s+Class)?)\b/i,
         ];
         for (const pat of classPatterns) {
           const m = full.match(pat);
-          if (m) { result.flight_class = (m[1] || m[0]).trim(); break; }
+          if (m) {
+            result.flight_class = (m[1] || m[0]).replace(/\s*\([A-Z]{1,3}\)\s*$/, '').trim();
+            break;
+          }
         }
       }
 
@@ -9424,28 +9475,26 @@
                       })}
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Price</label>
-                      <input type="text" value={price} onChange={e => setPrice(e.target.value)} placeholder="e.g. ¥14,720" className={inputClass} autoComplete="off" data-1p-ignore />
-                      {usdPrice && <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">≈ {usdPrice} USD</p>}
-                    </div>
-                    {bookingType === 'flight' && (
+                  {bookingType === 'flight' && (
+                    <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Terminal (Depart)</label>
                         <input type="text" value={terminalDepart} onChange={e => setTerminalDepart(e.target.value)} placeholder="e.g. Terminal 1" className={inputClass} autoComplete="off" data-1p-ignore />
                       </div>
-                    )}
-                  </div>
-                  {bookingType === 'flight' && (
-                    <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Terminal (Arrive)</label>
                         <input type="text" value={terminalArrive} onChange={e => setTerminalArrive(e.target.value)} placeholder="e.g. Terminal 2" className={inputClass} autoComplete="off" data-1p-ignore />
                       </div>
-                      <div></div>
                     </div>
                   )}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Price</label>
+                      <input type="text" value={price} onChange={e => setPrice(e.target.value)} placeholder="e.g. $1,200" className={inputClass} autoComplete="off" data-1p-ignore />
+                      {usdPrice && <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">≈ {usdPrice} USD</p>}
+                    </div>
+                    <div></div>
+                  </div>
                   <div>
                     <label className="text-sm font-semibold text-gray-700 dark:text-gray-300 block mb-1">Notes</label>
                     <textarea value={transportNotes} onChange={e => setTransportNotes(e.target.value)} placeholder="Gate info, pickup instructions, etc." className={inputClass + " h-16 resize-none"} autoComplete="off" data-1p-ignore />
@@ -10584,7 +10633,7 @@
                           <input type="text" value={rd.confirmation_number || ''} onChange={e => updateRD('confirmation_number', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" />
                         </div>
                         <div>
-                          <label className={labelClass}>Seat / Car</label>
+                          <label className={labelClass}>{rdType === 'train' ? 'Seat / Car' : 'Seat'}</label>
                           <input type="text" value={rd.seat || ''} onChange={e => updateRD('seat', e.target.value)} className={inputClass} autoComplete="off" data-1p-ignore />
                         </div>
                       </div>
