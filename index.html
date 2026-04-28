@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v71';
+    const APP_VERSION = 'v72';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -13849,6 +13849,7 @@
       // filter to food-like pins and sort by distance.
       const mealMode = item?.__mealCategories || null; // array of categories to filter
       const mealType = item?.__mealType || null; // 'breakfast' | 'lunch' | 'dinner'
+      const mealTime = item?.__mealTime || null; // 'HH:MM' string for the meal's target time
       const dayDate = item?.__dayDate || null; // 'YYYY-MM-DD' string for the itinerary day
       const anchorLat = item?.__anchorLat;
       const anchorLng = item?.__anchorLng;
@@ -13889,10 +13890,14 @@
         return 0;
       };
 
-      // Check if pin is open on the itinerary day
+      // Check if pin is open on the itinerary day at the meal's time window
       const isOpenOnDay = (pin) => {
         if (!dayDate || !pin.opening_hours || Object.keys(pin.opening_hours).length === 0) return null; // unknown
+        // Use the meal time if available, otherwise default to noon
+        const timeStr = mealTime || '12:00';
+        const [h, m] = timeStr.split(':').map(Number);
         const d = new Date(dayDate + 'T12:00:00');
+        d.setHours(h, m, 0, 0);
         const status = getOpenStatus(pin.opening_hours, d);
         return status.status !== 'closed';
       };
@@ -13976,6 +13981,7 @@
         const base = { ...(item || {}) };
         delete base.__mealCategories;
         delete base.__mealType;
+        delete base.__mealTime;
         delete base.__dayDate;
         delete base.__anchorLat;
         delete base.__anchorLng;
@@ -13991,33 +13997,33 @@
         onClose();
       };
 
-      const mealEmojis = ['🍱', '🍜', '🍣', '☕', '🍵', '🍺', '🍦', '🥐'];
-
       return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ zIndex: 10001 }} onClick={onClose}>
           <div className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-xl w-full max-w-md shadow-2xl`} onClick={e => e.stopPropagation()}>
             <div className="p-4 space-y-3 max-h-[85vh] overflow-y-auto">
               <div className="flex items-center justify-between">
-                <h3 className="font-bold dark:text-white">{item?.id ? 'Edit Item' : 'Add to Day'}</h3>
+                <h3 className="font-bold dark:text-white">{item?.id ? 'Edit Item' : mealMode ? `Add ${mealType ? mealType.charAt(0).toUpperCase() + mealType.slice(1) : 'Meal'}` : 'Add to Day'}</h3>
                 <button onClick={onClose} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded"><CloseIcon /></button>
               </div>
 
-              {/* Type tabs */}
-              <div className="flex gap-1 bg-gray-100 dark:bg-slate-800 rounded-lg p-1">
-                {[['pin', '📌 Pin'], ['meal', '🍽️ Meal'], ['entry', '✏️ Custom']].map(([t, label]) => (
-                  <button key={t} onClick={() => { setType(t); if (t === 'meal' && !name) { setEmoji('🍱'); setName(''); } }}
-                    className={`flex-1 text-sm py-1.5 rounded-md font-medium transition ${type === t ? 'bg-white dark:bg-slate-700 shadow text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
-                    {label}
-                  </button>
-                ))}
-              </div>
+              {/* Type tabs — hidden when adding via meal slot since it auto-filters pins */}
+              {!mealMode && (
+                <div className="flex gap-1 bg-gray-100 dark:bg-slate-800 rounded-lg p-1">
+                  {[['pin', '📌 Pin'], ['entry', '✏️ Custom']].map(([t, label]) => (
+                    <button key={t} onClick={() => setType(t)}
+                      className={`flex-1 text-sm py-1.5 rounded-md font-medium transition ${type === t ? 'bg-white dark:bg-slate-700 shadow text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {/* Pin selector — only show when adding new, not editing existing */}
               {type === 'pin' && !item?.id && (
                 <div className="space-y-2">
                   {mealMode && !pinSearch && (
                     <p className="text-xs text-blue-600 dark:text-blue-400 flex items-center gap-1">
-                      <span>📍</span> {mealType ? `${mealType.charAt(0).toUpperCase() + mealType.slice(1)} spots` : 'Food pins'}{dayDate ? ` · ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(dayDate + 'T12:00:00').getDay()]}` : ''}{anchorLat != null ? ' · by distance' : ''}
+                      <span>📍</span> {mealType ? `${mealType.charAt(0).toUpperCase() + mealType.slice(1)} spots` : 'Food spots'}{dayDate ? ` · ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date(dayDate + 'T12:00:00').getDay()]}` : ''}{mealTime ? ` ~${(() => { const [h,m] = mealTime.split(':').map(Number); const hr = h % 12 || 12; const ampm = h < 12 ? 'am' : 'pm'; return m > 0 ? `${hr}:${String(m).padStart(2,'0')}${ampm}` : `${hr}${ampm}`; })()}` : ''}{anchorLat != null ? ' · nearby' : ''}
                     </p>
                   )}
                   <input
@@ -14053,26 +14059,13 @@
                 </div>
               )}
 
-              {/* Meal emoji picker */}
-              {type === 'meal' && (
-                <div className="space-y-2">
-                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Meal type</label>
-                  <div className="flex gap-1 flex-wrap">
-                    {mealEmojis.map(e => (
-                      <button key={e} onClick={() => setEmoji(e)}
-                        className={`text-xl p-1.5 rounded-lg transition ${emoji === e ? 'bg-blue-100 dark:bg-blue-900/40 ring-1 ring-blue-400' : 'hover:bg-gray-100 dark:hover:bg-slate-700'}`}>
-                        {e}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {/* Meal emoji picker removed — meal slots now use smart pin filtering */}
 
               {/* Name */}
               <div>
                 <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Name</label>
                 <input type="text" value={name} onChange={e => setName(e.target.value)}
-                  placeholder={type === 'meal' ? 'e.g. Lunch at Tsukiji' : 'Item name'}
+                  placeholder={mealMode ? 'e.g. Lunch at Tsukiji' : 'Item name'}
                   className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
               </div>
 
@@ -14694,11 +14687,12 @@
                       __mealPreset: true,
                       __mealCategories: ['restaurant', 'cafe', 'treats', 'bar', 'shopping'],
                       __mealType: meal.mealType,
+                      __mealTime: meal.time,
                       __dayDate: day.date,
                       __anchorLat: anchor?.lat,
                       __anchorLng: anchor?.lng,
                       type: 'pin',
-                      name: meal.name,
+                      name: '',
                       emoji: meal.emoji,
                       scheduled_time: day.start_time ? '' : meal.time,
                       description: '',
