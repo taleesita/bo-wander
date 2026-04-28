@@ -418,6 +418,8 @@
     };
 
     // ==================== CONSTANTS ====================
+    const APP_VERSION = 'v71';
+
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
     const getGoogleApiKey = () => localStorage.getItem('boWanderGoogleApiKey') || GOOGLE_PLACES_API_KEY;
@@ -13388,6 +13390,9 @@
                       <ApiUsagePanel />
                     </div>
                   </details>
+                </div>
+                <div className="mt-4 pt-3 border-t border-gray-200 dark:border-slate-700 text-center">
+                  <span className="text-xs text-gray-400 dark:text-slate-500">Bo Wander {APP_VERSION}</span>
                 </div>
               </div>
             </div>
