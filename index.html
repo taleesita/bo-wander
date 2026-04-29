@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v82';
+    const APP_VERSION = 'v84';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -14016,6 +14016,9 @@
       );
       const [description, setDescription] = useState(item?.description || '');
       const [pinSearch, setPinSearch] = useState('');
+      const [shortlist, setShortlist] = useState(item?.options || []); // [{pin_id, name, emoji, lat, lng}]
+      const longPressTimer = React.useRef(null);
+      const longPressTriggered = React.useRef(false);
 
       // If a meal preset passed an anchor location (e.g. "sort by proximity to my 12:30 item"),
       // filter to food-like pins and sort by distance.
@@ -14140,6 +14143,38 @@
       filteredPins = dedupedPins;
 
       const handleSave = () => {
+        // Strip transient hint fields that shouldn't be persisted
+        const base = { ...(item || {}) };
+        delete base.__mealCategories;
+        delete base.__mealType;
+        delete base.__mealTime;
+        delete base.__dayDate;
+        delete base.__anchorLat;
+        delete base.__anchorLng;
+        delete base._autoTime;
+        delete base.__mealPreset;
+
+        // If shortlist has 2+ options, save as options item
+        if (shortlist.length >= 2) {
+          const mealName = mealType ? mealType.charAt(0).toUpperCase() + mealType.slice(1) : 'Meal';
+          onSave({
+            ...base,
+            id: item?.id || generateId(),
+            type: 'pin',
+            name: name || `${mealName} Options`,
+            emoji: item?.emoji || '🍽️',
+            scheduled_time: scheduledTime,
+            estimated_duration_minutes: duration === '' ? 60 : (parseInt(duration) || 60),
+            description,
+            options: shortlist,
+            confirmed_option: null,
+            lat: shortlist[0].lat || 0,
+            lng: shortlist[0].lng || 0,
+          });
+          onClose();
+          return;
+        }
+
         let lat = item?.lat || 0, lng = item?.lng || 0;
         let finalName = name;
         let finalEmoji = emoji;
@@ -14151,15 +14186,6 @@
             finalEmoji = pin.emoji || finalEmoji;
           }
         }
-        // Strip transient hint fields that shouldn't be persisted
-        const base = { ...(item || {}) };
-        delete base.__mealCategories;
-        delete base.__mealType;
-        delete base.__mealTime;
-        delete base.__dayDate;
-        delete base.__anchorLat;
-        delete base.__anchorLng;
-        delete base._autoTime;
         onSave({
           ...base,
           id: item?.id || generateId(),
@@ -14168,6 +14194,7 @@
           scheduled_time: scheduledTime,
           estimated_duration_minutes: duration === '' ? 0 : (parseInt(duration) || 0),
           description, lat, lng,
+          options: null, confirmed_option: null,
         });
         onClose();
       };
@@ -14206,30 +14233,68 @@
                     placeholder={mealMode ? 'Search all pins…' : 'Search your pins...'}
                     className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
                   />
+                  {mealMode && <p className="text-[10px] text-gray-400 dark:text-gray-500">Tap to select · Hold to shortlist options</p>}
+                  {shortlist.length >= 2 && (
+                    <div className="flex flex-wrap gap-1 p-1.5 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800/40">
+                      <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium w-full">Shortlisted ({shortlist.length}):</span>
+                      {shortlist.map(s => (
+                        <span key={s.pin_id} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/40 rounded text-[11px] text-amber-800 dark:text-amber-300">
+                          {s.emoji} {s.name.length > 18 ? s.name.substring(0, 18) + '…' : s.name}
+                          <button onClick={() => setShortlist(prev => prev.filter(x => x.pin_id !== s.pin_id))} className="text-amber-500 hover:text-red-500 ml-0.5">×</button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <div className="max-h-56 overflow-y-auto space-y-1 border rounded-lg dark:border-slate-700 p-1">
                     {filteredPins.length === 0 && (
                       <p className="text-xs text-gray-400 text-center py-3">
                         {mealMode ? 'No food pins yet — add some restaurants to your map first.' : 'No pins found'}
                       </p>
                     )}
-                    {filteredPins.map(pin => (
-                      <button key={pin.id}
-                        onClick={() => { setSelectedPinId(pin.id); setName(pin.name); setEmoji(pin.emoji || '📌'); }}
-                        className={`w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-slate-700 ${selectedPinId === pin.id ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-400' : ''}`}>
-                        <span>{pin.emoji || '📌'}</span>
-                        <span className="truncate dark:text-white flex-1 min-w-0">{pin.name}</span>
-                        <span className="flex items-center gap-1 flex-shrink-0">
-                          {pin.mealTags && pin.mealTags.length > 0 && (
-                            <span className="text-[10px] text-purple-400" title={`Tagged: ${pin.mealTags.join(', ')}`}>
-                              {pin.mealTags.includes('breakfast') ? '🌅' : ''}{pin.mealTags.includes('lunch') ? '☀️' : ''}{pin.mealTags.includes('dinner') ? '🌙' : ''}
-                            </span>
-                          )}
-                          {pin.__dist != null && pin.__dist !== Infinity && (
-                            <span className="text-[10px] text-gray-400">{pin.__dist < 1 ? `${Math.round(pin.__dist * 1000)}m` : `${pin.__dist.toFixed(1)}km`}</span>
-                          )}
-                        </span>
-                      </button>
-                    ))}
+                    {filteredPins.map(pin => {
+                      const isShortlisted = shortlist.some(s => s.pin_id === pin.id);
+                      return (
+                        <button key={pin.id}
+                          onClick={() => {
+                            if (longPressTriggered.current) { longPressTriggered.current = false; return; }
+                            setSelectedPinId(pin.id); setName(pin.name); setEmoji(pin.emoji || '📌');
+                            // If already shortlisted, remove from shortlist on tap
+                            if (isShortlisted) setShortlist(prev => prev.filter(x => x.pin_id !== pin.id));
+                          }}
+                          onPointerDown={() => {
+                            if (!mealMode) return;
+                            longPressTriggered.current = false;
+                            longPressTimer.current = setTimeout(() => {
+                              longPressTriggered.current = true;
+                              if (isShortlisted) {
+                                setShortlist(prev => prev.filter(x => x.pin_id !== pin.id));
+                              } else {
+                                setShortlist(prev => [...prev, { pin_id: pin.id, name: pin.name, emoji: pin.emoji || '📌', lat: pin.lat, lng: pin.lng }]);
+                              }
+                            }, 500);
+                          }}
+                          onPointerUp={() => clearTimeout(longPressTimer.current)}
+                          onPointerLeave={() => clearTimeout(longPressTimer.current)}
+                          className={`w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-slate-700 ${
+                            isShortlisted ? 'bg-amber-50 dark:bg-amber-900/20 ring-1 ring-amber-400' :
+                            selectedPinId === pin.id ? 'bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-400' : ''
+                          }`}>
+                          <span>{pin.emoji || '📌'}</span>
+                          <span className="truncate dark:text-white flex-1 min-w-0">{pin.name}</span>
+                          <span className="flex items-center gap-1 flex-shrink-0">
+                            {isShortlisted && <span className="text-[10px] text-amber-500 font-medium">★</span>}
+                            {pin.mealTags && pin.mealTags.length > 0 && (
+                              <span className="text-[10px] text-purple-400" title={`Tagged: ${pin.mealTags.join(', ')}`}>
+                                {pin.mealTags.includes('breakfast') ? '🌅' : ''}{pin.mealTags.includes('lunch') ? '☀️' : ''}{pin.mealTags.includes('dinner') ? '🌙' : ''}
+                              </span>
+                            )}
+                            {pin.__dist != null && pin.__dist !== Infinity && (
+                              <span className="text-[10px] text-gray-400">{pin.__dist < 1 ? `${Math.round(pin.__dist * 1000)}m` : `${pin.__dist.toFixed(1)}km`}</span>
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -14246,16 +14311,16 @@
 
               {/* Time + Duration */}
               <div className="grid grid-cols-2 gap-3">
-                <div>
+                <div className="min-w-0">
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Time</label>
                   <input type="time" value={scheduledTime} onChange={e => setScheduledTime(e.target.value)}
-                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                    className="w-full min-w-0 px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Duration (min)</label>
                   <input type="number" value={duration} onChange={e => setDuration(e.target.value)} min="0" step="5"
                     placeholder="—"
-                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                    className="w-full min-w-0 px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
                   <p className="text-[10px] text-gray-400 mt-0.5">Leave blank for marker</p>
                 </div>
               </div>
@@ -14268,8 +14333,8 @@
               </div>
 
               <button onClick={handleSave}
-                className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition">
-                {item?.id ? 'Save Changes' : 'Add Item'}
+                className={`w-full py-2 text-white rounded-lg text-sm font-medium transition ${shortlist.length >= 2 ? 'bg-amber-500 hover:bg-amber-600' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                {shortlist.length >= 2 ? `Add ${shortlist.length} Options` : item?.id ? 'Save Changes' : 'Add Item'}
               </button>
             </div>
           </div>
@@ -14346,6 +14411,52 @@
             </div>
             <span className="text-[10px] text-gray-300 dark:text-gray-600 group-hover:text-amber-500 transition">tap to find spots</span>
           </button>
+        );
+      }
+
+      // Options item — shows multiple shortlisted pins with pick/remove controls
+      if (item.options && item.options.length >= 2 && !item.confirmed_option) {
+        const formatT = (t) => {
+          if (!t) return '';
+          const [h, m] = t.split(':');
+          const hr = parseInt(h);
+          return `${hr % 12 || 12}:${m} ${hr >= 12 ? 'PM' : 'AM'}`;
+        };
+        return (
+          <div className="rounded-lg border-2 border-dashed border-amber-300 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-900/10 p-2 space-y-1" data-drag-index={index}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono text-amber-600 dark:text-amber-400">{formatT(item.scheduled_time || autoTime)}</span>
+                <span className="text-sm font-medium text-amber-700 dark:text-amber-300">{item.name} ({item.options.length})</span>
+              </div>
+              <button onClick={() => onDelete(item.id)} className="p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded text-gray-400 hover:text-red-500">
+                <TrashIcon />
+              </button>
+            </div>
+            {item.options.map((opt, oi) => (
+              <div key={opt.pin_id || oi} className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-800/40">
+                <span className="text-sm">{opt.emoji}</span>
+                <span className="text-sm truncate flex-1 min-w-0 dark:text-white">{opt.name}</span>
+                <button
+                  onClick={() => {
+                    // Pick this option — convert to regular item
+                    onEdit({
+                      ...item,
+                      pin_id: opt.pin_id,
+                      name: opt.name,
+                      emoji: opt.emoji,
+                      lat: opt.lat,
+                      lng: opt.lng,
+                      options: null,
+                      confirmed_option: opt.pin_id,
+                      _skipForm: true,
+                    });
+                  }}
+                  className="px-2 py-0.5 text-[10px] font-medium bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 rounded hover:bg-amber-200 dark:hover:bg-amber-800/60 transition"
+                >Pick</button>
+              </div>
+            ))}
+          </div>
         );
       }
 
@@ -16602,7 +16713,17 @@
                   onUpdateItems={(reordered) => handleUpdateItems(day.id, reordered)}
                   onDeleteItem={handleDeleteItem}
                   onAddItem={(newItem) => handleAddItem(day.id, newItem)}
-                  onEditItem={(item) => { setEditingItem(item); setAddingToDay(null); }}
+                  onEditItem={(item) => {
+                    if (item._skipForm) {
+                      // Direct save (e.g. picking an option) — update the item without opening form
+                      const cleanItem = { ...item };
+                      delete cleanItem._skipForm;
+                      setItems(prev => prev.map(i => i.id === cleanItem.id ? { ...i, ...cleanItem } : i));
+                      MockFirebase.saveItems([cleanItem]);
+                      return;
+                    }
+                    setEditingItem(item); setAddingToDay(null);
+                  }}
                   onSetStartingPoint={handleSetStartingPoint}
                   onSetStartTime={handleSetStartTime}
                   onDeleteDay={handleDeleteDay}
