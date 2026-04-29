@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bo-wander-v81';
+const CACHE_NAME = 'bo-wander-v82';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
@@ -28,80 +28,142 @@ const OPTIONAL_CDN = [
 
 self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(async cache => {
+    (async () => {
+      const cache = await caches.open(CACHE_NAME);
+      let appShellCached = false;
+
       // 1. Cache the app shell — MUST succeed
-      try {
-        const resp = await fetch('/index.html', { cache: 'no-cache' });
-        if (resp.ok) {
-          const clone = resp.clone();
-          await cache.put('/index.html', resp);
-          await cache.put('/', clone);
-          console.log('[SW] App shell cached');
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const resp = await fetch('/index.html', { cache: 'no-cache' });
+          if (resp.ok) {
+            await cache.put('/index.html', resp.clone());
+            await cache.put('/', resp.clone());
+            appShellCached = true;
+            console.log('[SW] App shell cached (attempt ' + (attempt + 1) + ')');
+            break;
+          }
+        } catch (e) {
+          console.warn('[SW] App shell cache attempt ' + (attempt + 1) + ' failed:', e);
+          if (attempt < 2) await new Promise(r => setTimeout(r, 1000));
         }
-      } catch (e) {
-        console.warn('[SW] Failed to cache app shell:', e);
       }
 
-      // 2. Cache critical CDN resources — MUST succeed for app to render offline
-      for (const url of CRITICAL_CDN) {
-        try {
-          await cache.add(url);
-          console.log('[SW] Cached critical:', url.split('/').pop());
-        } catch (e) {
-          console.warn('[SW] CRITICAL cache failed:', url, e);
-          // Retry once
-          try {
-            await new Promise(r => setTimeout(r, 500));
-            await cache.add(url);
-            console.log('[SW] Cached critical (retry):', url.split('/').pop());
-          } catch (e2) {
-            console.error('[SW] CRITICAL cache failed after retry:', url);
+      // If app shell failed, try to copy from an old cache
+      if (!appShellCached) {
+        console.warn('[SW] App shell caching failed, checking old caches...');
+        const names = await caches.keys();
+        for (const name of names) {
+          if (name.startsWith('bo-wander-v') && name !== CACHE_NAME) {
+            const oldCache = await caches.open(name);
+            const oldResp = await oldCache.match('/index.html');
+            if (oldResp) {
+              await cache.put('/index.html', oldResp.clone());
+              await cache.put('/', oldResp.clone());
+              appShellCached = true;
+              console.log('[SW] Copied app shell from old cache:', name);
+              break;
+            }
           }
         }
       }
 
-      // 3. Cache optional CDN resources — don't block install
+      // 2. Cache critical CDN resources
+      for (const url of CRITICAL_CDN) {
+        // First check if already cached in any existing cache
+        const existing = await caches.match(url);
+        if (existing) {
+          await cache.put(new Request(url), existing.clone());
+          continue;
+        }
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            await cache.add(url);
+            break;
+          } catch (e) {
+            if (attempt === 0) await new Promise(r => setTimeout(r, 500));
+            else console.warn('[SW] Critical cache failed:', url.split('/').pop());
+          }
+        }
+      }
+
+      // 3. Cache optional CDN resources — don't block
       await Promise.allSettled(
-        OPTIONAL_CDN.map(url => cache.add(url).catch(() => console.log('[SW] Optional skip:', url.split('/').pop())))
+        OPTIONAL_CDN.map(async url => {
+          const existing = await caches.match(url);
+          if (existing) {
+            await cache.put(new Request(url), existing.clone());
+            return;
+          }
+          return cache.add(url).catch(() => {});
+        })
       );
 
-      console.log('[SW] Install complete');
-    })
+      console.log('[SW] Install complete, app shell cached:', appShellCached);
+
+      // Only skip waiting after caching is done
+      self.skipWaiting();
+    })()
   );
-  self.skipWaiting();
 });
 
 self.addEventListener('activate', event => {
   event.waitUntil(
     (async () => {
-      // Clean old caches
-      const names = await caches.keys();
-      await Promise.all(names.map(n => {
-        if (n !== CACHE_NAME && n !== TILE_CACHE) return caches.delete(n);
-      }));
-      // Verify cache has app shell, re-cache if Safari evicted it
+      // First verify the new cache actually has the app shell
       const cache = await caches.open(CACHE_NAME);
-      const existing = await cache.match('/index.html');
-      if (!existing) {
-        console.log('[SW] Cache empty after activation, re-caching');
+      let hasAppShell = !!(await cache.match('/index.html'));
+
+      if (!hasAppShell) {
+        console.warn('[SW] New cache missing app shell at activation!');
+        // Try to fetch it
         try {
           const resp = await fetch('/index.html', { cache: 'no-cache' });
           if (resp.ok) {
             await cache.put('/index.html', resp.clone());
-            await cache.put('/', resp);
+            await cache.put('/', resp.clone());
+            hasAppShell = true;
           }
-        } catch (e) {}
+        } catch (e) {
+          // Try copying from old cache before deleting
+          const names = await caches.keys();
+          for (const name of names) {
+            if (name.startsWith('bo-wander-v') && name !== CACHE_NAME) {
+              const oldCache = await caches.open(name);
+              const oldResp = await oldCache.match('/index.html');
+              if (oldResp) {
+                await cache.put('/index.html', oldResp.clone());
+                await cache.put('/', oldResp.clone());
+                hasAppShell = true;
+                console.log('[SW] Rescued app shell from:', name);
+                break;
+              }
+            }
+          }
+        }
       }
-      // Also verify critical CDN resources
+
+      // Only delete old caches AFTER we've confirmed we have the app shell
+      if (hasAppShell) {
+        const names = await caches.keys();
+        await Promise.all(names.map(n => {
+          if (n !== CACHE_NAME && n !== TILE_CACHE) return caches.delete(n);
+        }));
+      } else {
+        console.error('[SW] Cannot verify app shell — keeping old caches as fallback');
+      }
+
+      // Verify critical CDN resources
       for (const url of CRITICAL_CDN) {
         const cached = await cache.match(url);
         if (!cached) {
           try { await cache.add(url); } catch (e) {}
         }
       }
+
+      self.clients.claim();
     })()
   );
-  self.clients.claim();
 });
 
 function isTileRequest(url) {
@@ -133,10 +195,23 @@ self.addEventListener('fetch', event => {
   if (event.request.mode === 'navigate') {
     event.respondWith(
       (async () => {
+        // Try ALL caches, not just the current version — resilience against partial updates
+        let cached = null;
         const cache = await caches.open(CACHE_NAME);
-        let cached = await cache.match('/index.html')
-                  || await cache.match('/')
-                  || await caches.match(event.request);
+        cached = await cache.match('/index.html')
+              || await cache.match('/');
+
+        // Fallback: search all caches for the app shell
+        if (!cached) {
+          const names = await caches.keys();
+          for (const name of names) {
+            if (name.startsWith('bo-wander-v')) {
+              const c = await caches.open(name);
+              cached = await c.match('/index.html') || await c.match('/');
+              if (cached) break;
+            }
+          }
+        }
 
         if (cached) {
           // Serve cached, update in background
@@ -191,9 +266,10 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // CDN + other resources: stale-while-revalidate
+  // CDN + other resources: stale-while-revalidate, search all caches
   event.respondWith(
-    caches.match(event.request).then(cached => {
+    (async () => {
+      let cached = await caches.match(event.request);
       const fetchPromise = fetch(event.request).then(resp => {
         if (resp.ok) {
           caches.open(CACHE_NAME).then(cache => cache.put(event.request, resp.clone()));
@@ -201,6 +277,6 @@ self.addEventListener('fetch', event => {
         return resp;
       }).catch(() => cached);
       return cached || fetchPromise;
-    })
+    })()
   );
 });
