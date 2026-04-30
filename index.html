@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v87';
+    const APP_VERSION = 'v88';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -14344,7 +14344,7 @@
     };
 
     // ---- Single Itinerary Item Row ----
-    const ItineraryItemRow = ({ item, index, isDarkMode, onEdit, onDelete, onDragStart, onDragOver, onDrop, isDragTarget, transitInfo, onFlyTo, autoTime, onMoveUp, onMoveDown, isFirst, isLast, onAddMeal }) => {
+    const ItineraryItemRow = ({ item, index, isDarkMode, onEdit, onDelete, onDragStart, onDragOver, onDrop, isDragTarget, transitInfo, onFlyTo, autoTime, onMoveUp, onMoveDown, isFirst, isLast, onAddMeal, matchedDoc, onViewDoc }) => {
       const [confirmDelete, setConfirmDelete] = useState(false);
       const touchDragRef = useRef(null);
       const touchStartY = useRef(0);
@@ -14590,7 +14590,17 @@
               {item.estimated_duration_minutes > 0 && (
                 <span className="text-xs text-gray-400">{item.estimated_duration_minutes} min</span>
               )}
+              {matchedDoc && (
+                <div className="text-[10px] text-gray-400 dark:text-gray-500 truncate">
+                  {[matchedDoc.departure_time, matchedDoc.carrier, matchedDoc.confirmation ? `#${matchedDoc.confirmation}` : ''].filter(Boolean).join(' · ')}
+                </div>
+              )}
             </div>
+
+            {/* View booking doc */}
+            {matchedDoc?.file_data && onViewDoc && (
+              <button onClick={(e) => { e.stopPropagation(); onViewDoc(matchedDoc); }} className="text-[10px] text-blue-500 hover:text-blue-600 shrink-0 px-1">View</button>
+            )}
 
             {/* Actions */}
             <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition flex-shrink-0">
@@ -14784,6 +14794,16 @@
         if (allSorted[i - 1]._isTransitDoc) {
           suppressTransit.add(allSorted[i].id);
         }
+      }
+
+      // Match booking docs (activity/restaurant) to itinerary items by pin_id
+      const bookingDocs = (dayDocs || []).filter(d => !d._isHotelStay && !['flight', 'train', 'transfer'].includes(d.type));
+      const docByPinId = {};
+      const matchedDocIds = new Set();
+      for (const item of allReal) {
+        if (!item.pin_id) continue;
+        const doc = bookingDocs.find(d => d.id === item.pin_id || d._pinId === item.pin_id);
+        if (doc) { docByPinId[item.id] = doc; matchedDocIds.add(doc.id); }
       }
 
       const totalActivityMin = items.reduce((sum, i) => sum + (i.estimated_duration_minutes || 0), 0);
@@ -15006,6 +15026,8 @@
                   autoTime={autoTimes[item.id]}
                   isFirst={idx === 0}
                   isLast={idx === allSorted.length - 1}
+                  matchedDoc={docByPinId[item.id] || null}
+                  onViewDoc={(doc) => openDataFile(doc.file_data, doc.file_name, doc.id)}
                   onMoveUp={() => { if (idx > 0) handleDrop(idx - 1, item.id, idx); }}
                   onMoveDown={() => { if (idx < allSorted.length - 1) handleDrop(idx + 1, item.id, idx); }}
                   onAddMeal={item._isMealSlot ? (meal) => {
@@ -15085,11 +15107,11 @@
                 <span>+</span> Add item
               </button>
 
-              {/* Auto-matched travel docs for this day (excluding hotels at top + transit in timeline) */}
-              {dayDocs && dayDocs.filter(d => !d._isHotelStay && !(['flight', 'train', 'transfer'].includes(d.type) && d.departure_time)).length > 0 && (
+              {/* Auto-matched travel docs for this day (excluding hotels, transit, and docs already shown inline on items) */}
+              {dayDocs && dayDocs.filter(d => !d._isHotelStay && !(['flight', 'train', 'transfer'].includes(d.type) && d.departure_time) && !matchedDocIds.has(d.id)).length > 0 && (
                 <div className="mt-1.5 pt-1.5 border-t border-dashed dark:border-slate-700">
                   <div className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-2 mb-1">Bookings & Docs</div>
-                  {dayDocs.filter(d => !d._isHotelStay && !(['flight', 'train', 'transfer'].includes(d.type) && d.departure_time)).map(doc => {
+                  {dayDocs.filter(d => !d._isHotelStay && !(['flight', 'train', 'transfer'].includes(d.type) && d.departure_time) && !matchedDocIds.has(d.id)).map(doc => {
                     const typeInfo = TRAVEL_DOC_TYPES[doc.type] || TRAVEL_DOC_TYPES.general;
                     const time = doc.departure_time || '';
                     const conf = doc.confirmation ? `#${doc.confirmation}` : '';
@@ -16866,20 +16888,41 @@
                     const dayItems = items.filter(i => i.day_id === day.id).sort((a, b) => (a.order_in_day || 0) - (b.order_in_day || 0));
                     const docs = getDocsForDate(day.date);
                     const stayHotel = docs.find(d => d._isHotelStay && !d._isCheckOut);
+                    const checkOut = docs.find(d => d._isHotelStay && d._isCheckOut);
+                    const checkIn = docs.find(d => d._isHotelStay && d._isCheckIn);
                     const transitDocs = docs.filter(d => ['flight', 'train', 'transfer'].includes(d.type) && (d.departure_time || d.arrival_time));
+                    // Activity/restaurant docs for inline matching
+                    const bookingDocs = docs.filter(d => !d._isHotelStay && !['flight', 'train', 'transfer'].includes(d.type));
                     const w = weatherData[day.date];
                     const wInfo = w ? (weatherCodeMap[w.code] || weatherCodeMap[0]) : null;
 
-                    // Build sorted timeline items (real items + transit docs)
+                    // Build sorted timeline: items + transit docs
                     const virtualTransit = transitDocs.map(doc => {
                       const isArr = doc._isArrivalDay;
                       const t = isArr ? (doc.arrival_time || doc.departure_time) : doc.departure_time;
                       return { id: `t-${doc.id}`, _isTransitDoc: true, _doc: doc, scheduled_time: t, name: doc.title || `${doc.from||''} → ${doc.to||''}`, emoji: doc.type === 'flight' ? '✈️' : doc.type === 'train' ? '🚄' : '🚐', description: [doc.carrier, doc.confirmation ? `#${doc.confirmation}` : '', doc.duration || ''].filter(Boolean).join(' · '), _isArrival: isArr };
                     });
+
+                    // Compute auto-times for items without scheduled_time (same logic as builder)
+                    const pAutoTimes = {};
+                    if (day.start_time && dayItems.length > 0) {
+                      const [sh, sm] = day.start_time.split(':').map(Number);
+                      let cursor = sh * 60 + sm;
+                      for (const it of dayItems) {
+                        const transitMin = it.transit_info?.estimated_time_minutes || 0;
+                        cursor += transitMin;
+                        pAutoTimes[it.id] = `${String(Math.floor(cursor / 60) % 24).padStart(2, '0')}:${String(cursor % 60).padStart(2, '0')}`;
+                        cursor += (it.estimated_duration_minutes || 0);
+                      }
+                    }
+
                     const timeline = [...dayItems, ...virtualTransit].sort((a, b) => {
-                      const ta = a.scheduled_time || '';
-                      const tb = b.scheduled_time || '';
-                      return ta.localeCompare(tb);
+                      const ta = a.scheduled_time || pAutoTimes[a.id] || '';
+                      const tb = b.scheduled_time || pAutoTimes[b.id] || '';
+                      if (ta && tb) return ta.localeCompare(tb);
+                      if (ta) return -1;
+                      if (tb) return 1;
+                      return (a.order_in_day || 0) - (b.order_in_day || 0);
                     });
 
                     const getTimeLabel = (time) => {
@@ -16893,6 +16936,9 @@
                       return 'LATE EVENING';
                     };
 
+                    // Day title: use hotel name, or a custom title
+                    const dayTitle = stayHotel ? stayHotel.title : checkIn ? checkIn.title : `Day ${day.day_number}`;
+
                     return (
                       <div key={day.id} className={`${dayIdx > 0 ? 'mt-16' : ''}`}>
                         {/* Day header */}
@@ -16900,10 +16946,11 @@
                           <span className="text-5xl font-extralight tracking-tight" style={{ fontFamily: 'Georgia, serif', color: '#c4956a' }}>{String(day.day_number).padStart(2, '0')}</span>
                           <div>
                             <p className="text-xs tracking-[0.2em] uppercase" style={{ color: '#c4956a' }}>{(() => { const d = new Date(day.date + 'T12:00:00'); return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }).toUpperCase(); })()}</p>
-                            <h2 className="text-xl font-light text-gray-800 dark:text-white mt-0.5" style={{ fontFamily: 'Georgia, serif' }}>
-                              {stayHotel ? stayHotel.title : `Day ${day.day_number}`}
-                            </h2>
+                            <h2 className="text-xl font-light text-gray-800 dark:text-white mt-0.5" style={{ fontFamily: 'Georgia, serif' }}>{dayTitle}</h2>
                             {w && wInfo && <p className="text-xs text-gray-400 mt-1">{wInfo.emoji} {w.high}°/{w.low}°{w.rainChance > 0 ? ` · ${w.rainChance}% rain` : ''}</p>}
+                            {checkOut && checkOut.title !== (stayHotel || checkIn || {}).title && (
+                              <p className="text-xs text-gray-400 mt-0.5">Check out {checkOut.title}</p>
+                            )}
                           </div>
                         </div>
 
@@ -16913,16 +16960,28 @@
                         {timeline.length > 0 ? (
                           <div className="relative ml-3 pl-8 border-l-2 border-gray-200 dark:border-slate-700 mt-6">
                             {timeline.map((item, idx) => {
-                              const time = item.scheduled_time;
-                              const prevTime = idx > 0 ? timeline[idx - 1].scheduled_time : null;
+                              const time = item.scheduled_time || pAutoTimes[item.id];
+                              const prevTime = idx > 0 ? (timeline[idx - 1].scheduled_time || pAutoTimes[timeline[idx - 1].id]) : null;
                               const timeLabel = getTimeLabel(time);
                               const prevLabel = getTimeLabel(prevTime);
                               const showLabel = timeLabel && timeLabel !== prevLabel;
 
+                              // Look up pin for description
+                              const pin = item.pin_id ? collectionPins.find(p => p.id === item.pin_id) : null;
+                              const pinDesc = pin?.description || pin?.notes || '';
+                              const displayDesc = item.description || pinDesc;
+
+                              // Match booking doc to this item
+                              const matchedDoc = item.pin_id ? bookingDocs.find(d => d.id === item.pin_id || d._pinId === item.pin_id) : null;
+                              const docMeta = matchedDoc ? [matchedDoc.departure_time, matchedDoc.carrier, matchedDoc.confirmation ? `#${matchedDoc.confirmation}` : ''].filter(Boolean).join(' · ') : '';
+
+                              // Is this an options item?
+                              const isOptions = item.options && item.options.length >= 2 && !item.confirmed_option;
+
                               return (
                                 <div key={item.id} className={`relative pb-8 ${idx === timeline.length - 1 ? 'pb-2' : ''}`}>
                                   {/* Timeline dot */}
-                                  <div className="absolute -left-[25px] w-3 h-3 rounded-full border-2 border-white dark:border-slate-950" style={{ background: item._isTransitDoc ? '#c4956a' : '#94a3b8', top: showLabel ? '28px' : '4px' }}></div>
+                                  <div className="absolute -left-[25px] w-3 h-3 rounded-full border-2 border-white dark:border-slate-950" style={{ background: item._isTransitDoc ? '#c4956a' : isOptions ? '#d97706' : '#94a3b8', top: showLabel ? '28px' : '4px' }}></div>
 
                                   {/* Time-of-day label */}
                                   {showLabel && (
@@ -16935,17 +16994,37 @@
                                   </h3>
                                   {time && <span className="text-xs text-gray-400">{fmtTime(time)}{item._doc?.arrival_time && !item._isArrival ? ` → ${fmtTime(item._doc.arrival_time)}` : ''}</span>}
 
-                                  {/* Description */}
-                                  {item.description && (
-                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">{item.description}</p>
+                                  {/* Options list */}
+                                  {isOptions && (
+                                    <div className="mt-2 space-y-1">
+                                      {item.options.map((opt, oi) => (
+                                        <div key={oi} className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+                                          <span className="text-xs text-amber-500">●</span>
+                                          <span>{opt.emoji} {opt.name}</span>
+                                        </div>
+                                      ))}
+                                      <p className="text-xs text-amber-500 italic mt-1">Deciding between options</p>
+                                    </div>
                                   )}
 
-                                  {/* Duration + notes */}
-                                  {item.estimated_duration_minutes > 0 && (
+                                  {/* Description from item or pin */}
+                                  {displayDesc && !isOptions && (
+                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">{displayDesc}</p>
+                                  )}
+
+                                  {/* Booking doc meta */}
+                                  {docMeta && (
+                                    <div className="mt-2 pl-3 border-l-2 text-xs text-gray-400" style={{ borderColor: '#c4956a33' }}>
+                                      {docMeta}
+                                    </div>
+                                  )}
+
+                                  {/* Duration */}
+                                  {item.estimated_duration_minutes > 0 && !isOptions && (
                                     <p className="text-xs text-gray-400 mt-1">{item.estimated_duration_minutes} min</p>
                                   )}
 
-                                  {/* Tip callout for transit docs */}
+                                  {/* Transit doc confirmation */}
                                   {item._isTransitDoc && item._doc?.confirmation && (
                                     <div className="mt-3 pl-3 border-l-2 text-sm text-gray-500 dark:text-gray-400" style={{ borderColor: '#c4956a33' }}>
                                       Confirmation: #{item._doc.confirmation}
@@ -16958,6 +17037,23 @@
                         ) : (
                           <p className="text-sm text-gray-400 mt-6 italic">No activities planned yet.</p>
                         )}
+
+                        {/* Unmatched booking docs */}
+                        {(() => {
+                          const matchedIds = new Set(timeline.filter(it => it.pin_id).map(it => it.pin_id));
+                          const unmatched = bookingDocs.filter(d => !matchedIds.has(d.id) && !matchedIds.has(d._pinId));
+                          if (unmatched.length === 0) return null;
+                          return (
+                            <div className="mt-4 pt-3 border-t border-dashed border-gray-200 dark:border-slate-800">
+                              <p className="text-xs tracking-[0.1em] uppercase text-gray-400 mb-2">Bookings</p>
+                              {unmatched.map(doc => (
+                                <div key={doc.id} className="text-sm text-gray-500 dark:text-gray-400 mb-1">
+                                  {doc.title}{doc.departure_time ? ` · ${fmtTime(doc.departure_time)}` : ''}{doc.confirmation ? ` · #${doc.confirmation}` : ''}
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()}
                       </div>
                     );
                   })}
