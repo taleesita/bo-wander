@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v88';
+    const APP_VERSION = 'v89';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -16863,11 +16863,12 @@
             />
           )}
 
-          {/* Pretty itinerary preview */}
+          {/* Pretty itinerary preview — portaled to body to escape stacking context */}
           {showPrettyView && activeItinerary && (() => {
             const fmtTime = (t) => { if (!t) return ''; const [h, m] = t.split(':'); const hr = parseInt(h); return `${hr % 12 || 12}:${m} ${hr >= 12 ? 'PM' : 'AM'}`; };
-            return (
-            <div className="fixed inset-0 bg-white dark:bg-slate-950" style={{ zIndex: 10010 }}>
+            return ReactDOM.createPortal(
+            <div className={isDarkMode ? 'dark' : ''}>
+            <div className="fixed inset-0 bg-white dark:bg-slate-950" style={{ zIndex: 99999 }}>
               <div className="h-full overflow-y-auto">
                 {/* Sticky header */}
                 <div className="sticky top-0 bg-white/90 dark:bg-slate-950/90 backdrop-blur-sm border-b border-gray-100 dark:border-slate-800 px-4 py-3 flex items-center justify-between" style={{ zIndex: 1 }}>
@@ -16966,14 +16967,54 @@
                               const prevLabel = getTimeLabel(prevTime);
                               const showLabel = timeLabel && timeLabel !== prevLabel;
 
-                              // Look up pin for description
+                              // Look up pin for rich data
                               const pin = item.pin_id ? collectionPins.find(p => p.id === item.pin_id) : null;
-                              const pinDesc = pin?.description || pin?.notes || '';
-                              const displayDesc = item.description || pinDesc;
+
+                              // Generate template-based description for pretty view
+                              const genDesc = (() => {
+                                if (item._isTransitDoc) return item.description || '';
+                                const rawDesc = item.description || pin?.description || pin?.notes || '';
+                                const cat = pin?.category || '';
+                                const dur = item.estimated_duration_minutes || 0;
+                                const addr = pin?.address || '';
+                                const durStr = dur > 0 ? (dur >= 60 ? `${Math.floor(dur/60)}-hour` : `${dur}-minute`) : '';
+                                const nameStr = item.name || pin?.name || '';
+
+                                // Use raw description if it's a full sentence (has a period or is longish)
+                                if (rawDesc && (rawDesc.includes('.') || rawDesc.length > 60)) return rawDesc;
+
+                                // Build natural sentence from what we know
+                                const parts = [];
+                                if (cat === 'restaurant' || cat === 'cafe') {
+                                  const mealTags = pin?.mealTags || [];
+                                  const mealStr = mealTags.length > 0 ? mealTags.join('/') : '';
+                                  if (cat === 'cafe') {
+                                    parts.push(`Stop by ${nameStr} for coffee${rawDesc ? ' — ' + rawDesc : ''}.`);
+                                  } else if (mealStr) {
+                                    parts.push(`${mealStr.charAt(0).toUpperCase() + mealStr.slice(1)} at ${nameStr}${rawDesc ? ' — ' + rawDesc : ''}.`);
+                                  } else {
+                                    parts.push(`Dine at ${nameStr}${rawDesc ? ' — ' + rawDesc : ''}.`);
+                                  }
+                                } else if (cat === 'activity') {
+                                  parts.push(durStr ? `Spend ${durStr} at ${nameStr}` : `Visit ${nameStr}`);
+                                  parts.push(rawDesc ? ` — ${rawDesc}.` : '.');
+                                } else if (cat === 'treats' || cat === 'bar') {
+                                  parts.push(`Swing by ${nameStr}${rawDesc ? ' — ' + rawDesc : ''}.`);
+                                } else if (cat === 'shopping') {
+                                  parts.push(`Browse ${nameStr}${rawDesc ? ' — ' + rawDesc : ''}.`);
+                                } else if (cat === 'hotel') {
+                                  parts.push(`Check in at ${nameStr}.`);
+                                } else if (nameStr) {
+                                  parts.push(durStr ? `${durStr.charAt(0).toUpperCase() + durStr.slice(1)} stop at ${nameStr}` : `Head to ${nameStr}`);
+                                  parts.push(rawDesc ? ` — ${rawDesc}.` : '.');
+                                }
+                                if (addr && parts.length > 0) parts.push(` Located at ${addr.split(',')[0]}.`);
+                                return parts.join('');
+                              })();
 
                               // Match booking doc to this item
                               const matchedDoc = item.pin_id ? bookingDocs.find(d => d.id === item.pin_id || d._pinId === item.pin_id) : null;
-                              const docMeta = matchedDoc ? [matchedDoc.departure_time, matchedDoc.carrier, matchedDoc.confirmation ? `#${matchedDoc.confirmation}` : ''].filter(Boolean).join(' · ') : '';
+                              const docMeta = matchedDoc ? [matchedDoc.departure_time ? fmtTime(matchedDoc.departure_time) : '', matchedDoc.carrier, matchedDoc.confirmation ? `#${matchedDoc.confirmation}` : ''].filter(Boolean).join(' · ') : '';
 
                               // Is this an options item?
                               const isOptions = item.options && item.options.length >= 2 && !item.confirmed_option;
@@ -17008,8 +17049,8 @@
                                   )}
 
                                   {/* Description from item or pin */}
-                                  {displayDesc && !isOptions && (
-                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">{displayDesc}</p>
+                                  {genDesc && !isOptions && (
+                                    <p className="text-sm text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">{genDesc}</p>
                                   )}
 
                                   {/* Booking doc meta */}
@@ -17017,11 +17058,6 @@
                                     <div className="mt-2 pl-3 border-l-2 text-xs text-gray-400" style={{ borderColor: '#c4956a33' }}>
                                       {docMeta}
                                     </div>
-                                  )}
-
-                                  {/* Duration */}
-                                  {item.estimated_duration_minutes > 0 && !isOptions && (
-                                    <p className="text-xs text-gray-400 mt-1">{item.estimated_duration_minutes} min</p>
                                   )}
 
                                   {/* Transit doc confirmation */}
@@ -17060,7 +17096,8 @@
                 </div>
               </div>
             </div>
-            );
+            </div>
+            , document.body);
           })()}
 
           {/* Day picker for quick-add from pin detail */}
