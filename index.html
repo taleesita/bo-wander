@@ -16976,49 +16976,41 @@
                               // Look up pin for rich data
                               const pin = item.pin_id ? collectionPins.find(p => p.id === item.pin_id) : null;
 
-                              // Generate short blurb for pretty view from pin data
+                              // Generate 2-sentence TLDR blurb for pretty view from pin data
                               const genDesc = (() => {
                                 if (item._isTransitDoc) return '';
                                 const cat = pin?.category || '';
-                                const dur = item.estimated_duration_minutes || 0;
-                                const addr = pin?.address || '';
-                                const nameStr = item.name || pin?.name || '';
+                                if (cat === 'hotel') return '';
                                 const notes = (pin?.notes || '').trim();
                                 const rawDesc = (item.description || pin?.description || '').trim();
 
-                                // Extract a short snippet from raw text — first sentence, max 120 chars, skip junk
-                                const snippet = (() => {
-                                  const src = notes || rawDesc;
+                                // Try to extract a 2-sentence blurb from available text
+                                const extractBlurb = (src) => {
                                   if (!src) return '';
-                                  // Skip if it looks like OCR/email dump, booking confirmation, or raw structured data
-                                  if (src.match(/Subject:|From:|@.*\.(com|co\.jp)|confirmation.*#|Dear\s|Check-in:|Check-out:|Price:|Room:|Booked via:|PIN:|Confirmation #/i)) return '';
-                                  // Skip if it starts with "From photo:" prefix
-                                  const clean = src.replace(/^📸\s*From photo:\s*['']?/i, '').replace(/['']$/,'');
-                                  // Get first sentence
-                                  const firstSent = clean.split(/\.\s/)[0];
-                                  if (firstSent.length > 120) return firstSent.substring(0, 117).replace(/\s+\S*$/, '') + '…';
-                                  return firstSent + (firstSent.endsWith('.') ? '' : '.');
-                                })();
+                                  // Skip booking/email data
+                                  if (src.match(/Subject:|From:|@.*\.(com|co\.jp)|Dear\s|Check-in:|Check-out:|Price:|Room:|Booked via:|PIN:|Confirmation #/i)) return '';
+                                  // Clean prefixes
+                                  let clean = src.replace(/^📸\s*From photo:\s*['']?/i, '').replace(/['']$/,'').trim();
+                                  // Remove source attribution lines (Source: [...](url) --- ...)
+                                  clean = clean.replace(/\s*Source:\s*\[.*?\]\(.*?\)\s*---\s*/g, ' ').trim();
+                                  // Remove "Details:" sections that are just hours/prices
+                                  clean = clean.replace(/\s*Details:.*$/s, '').trim();
+                                  if (!clean) return '';
+                                  // Split into sentences
+                                  const sentences = clean.split(/(?<=\.)\s+/).filter(s => s.length > 10 && !s.match(/^(See |Source:|From |Details:|Duration:|Contact:)/i));
+                                  if (sentences.length === 0) return '';
+                                  // Take first 2 sentences, max ~250 chars total
+                                  let blurb = sentences[0];
+                                  if (sentences.length > 1 && (blurb + ' ' + sentences[1]).length <= 250) {
+                                    blurb += ' ' + sentences[1];
+                                  }
+                                  // Ensure it ends with a period
+                                  if (!blurb.endsWith('.')) blurb += '.';
+                                  return blurb;
+                                };
 
-                                const durStr = dur > 0 ? (dur >= 60 ? `${Math.round(dur/60)} hr` : `${dur} min`) : '';
-                                const addrShort = addr ? addr.split(',')[0].trim() : '';
-                                const meta = [durStr, addrShort].filter(Boolean).join(' · ');
-
-                                if (cat === 'restaurant' || cat === 'cafe') {
-                                  const base = cat === 'cafe' ? `Coffee stop` : `Dining`;
-                                  return snippet ? snippet : (meta ? `${base}. ${meta}.` : '');
-                                } else if (cat === 'activity') {
-                                  return snippet ? snippet : (meta ? `${meta}.` : '');
-                                } else if (cat === 'treats') {
-                                  return snippet || (meta ? `Sweet stop. ${meta}.` : '');
-                                } else if (cat === 'bar') {
-                                  return snippet || (meta ? `Drinks. ${meta}.` : '');
-                                } else if (cat === 'shopping') {
-                                  return snippet || (meta ? `Shopping. ${meta}.` : '');
-                                } else if (cat === 'hotel') {
-                                  return '';
-                                }
-                                return snippet || (meta ? `${meta}.` : '');
+                                // Prefer notes, then description
+                                return extractBlurb(notes) || extractBlurb(rawDesc);
                               })();
 
                               // Match booking doc to this item (by pin_id or name)
@@ -17072,22 +17064,21 @@
                                     <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">{genDesc}</p>
                                   )}
 
-                                  {/* Transit doc meta (carrier · duration) */}
-                                  {transitMeta && (
-                                    <p className="text-xs text-gray-400 mt-1">{transitMeta}</p>
-                                  )}
-
-                                  {/* Booking/transit confirmation */}
-                                  {(item._isTransitDoc ? item._doc?.confirmation : matchedDoc?.confirmation) && (
-                                    <div className="mt-1 pl-3 border-l-2 text-xs text-gray-400" style={{ borderColor: '#c4956a33' }}>
-                                      Confirmation: #{item._isTransitDoc ? item._doc.confirmation : matchedDoc.confirmation}
-                                    </div>
-                                  )}
-
-                                  {/* Non-transit booking doc meta (time · source) */}
-                                  {!item._isTransitDoc && docMeta && (
-                                    <p className="text-xs text-gray-400 mt-1">{docMeta}</p>
-                                  )}
+                                  {/* Booking info block — single clean callout combining all meta */}
+                                  {(() => {
+                                    const conf = item._isTransitDoc ? item._doc?.confirmation : matchedDoc?.confirmation;
+                                    // For transit: carrier · duration · class
+                                    // For bookings: time · source (excluding confirmation since it's shown separately)
+                                    const metaLine = item._isTransitDoc ? transitMeta :
+                                      (matchedDoc ? [matchedDoc.departure_time ? fmtTime(matchedDoc.departure_time) : '', matchedDoc.carrier].filter(Boolean).join(' · ') : '');
+                                    if (!conf && !metaLine) return null;
+                                    return (
+                                      <div className="mt-2 pl-3 border-l-2 text-xs text-gray-400 space-y-0.5" style={{ borderColor: '#c4956a44' }}>
+                                        {metaLine && <p>{metaLine}</p>}
+                                        {conf && <p>Confirmation: #{conf}</p>}
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                               );
                             })}
