@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v86';
+    const APP_VERSION = 'v87';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -14705,6 +14705,8 @@
       const mealSlots = mealDefs.filter(meal => {
         // Don't show meals before arrival on arrival day (e.g. no breakfast if landing at 3 PM)
         if (effectiveDayStartMins > 0 && meal.windowEnd <= effectiveDayStartMins) return false;
+        // Don't show if an options item exists for this meal type (e.g. "Dinner Options")
+        if (allReal.some(it => it.options && it.options.length >= 2 && it.name?.toLowerCase().includes(meal.mealType))) return false;
         // Don't show if a meal-like item already exists in this window
         return !allTimedItems.some(e => e.isMeal && e.startMins >= meal.windowStart && e.startMins <= meal.windowEnd);
       }).map(meal => {
@@ -14905,50 +14907,79 @@
           {/* Expanded content */}
           {isExpanded && (
             <div className="p-2 space-y-1">
-              {/* Hotel staying-at indicator (check-out first, then staying, then check-in) */}
-              {dayDocs && dayDocs.filter(d => d._isHotelStay).sort((a, b) => {
-                const order = (h) => h._isCheckOut ? 0 : h._isCheckIn ? 2 : 1;
-                return order(a) - order(b);
-              }).map(hotel => (
-                <button
-                  key={`stay-${hotel.id}`}
-                  onClick={() => {
-                    const pinId = hotel._pinId || hotel.id;
-                    let hotelPin = pins.find(p => p.id === pinId);
-                    // Fallback: try matching by name for doc-sourced hotels
-                    if (!hotelPin && hotel.title) {
-                      hotelPin = pins.find(p => p.category === 'hotel' && p.name && p.name.toLowerCase().includes(hotel.title.toLowerCase()));
-                    }
-                    if (hotelPin) onFlyTo(hotelPin);
-                  }}
-                  className="w-full flex items-center gap-1.5 px-2 py-1 text-[11px] text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition"
-                >
-                  <span>🏨</span>
-                  <span className="truncate">
-                    {hotel._isCheckIn ? 'Check in · ' : hotel._isCheckOut ? 'Check out · ' : 'Staying at '}
-                    {hotel.title}
-                  </span>
-                </button>
-              ))}
-              {/* Starting point — auto-derived from docs, with manual override */}
-              {autoStartingPoint?.label ? (
-                <button
-                  onClick={() => setShowStartPicker(true)}
-                  className="w-full text-left px-2 py-1 rounded-lg text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700/50 flex items-center gap-1.5"
-                  title="Click to change starting point"
-                >
-                  <span>{autoStartingPoint.emoji || '📍'}</span>
-                  <span className="truncate">{isArrivalDay ? 'Arriving at' : 'Starting from'} {autoStartingPoint.label}</span>
-                  {!day.starting_point?.label && <span className="text-[10px] text-gray-400 ml-auto flex-shrink-0">auto</span>}
-                </button>
-              ) : (
-                <button
-                  onClick={() => setShowStartPicker(true)}
-                  className="w-full text-left px-2 py-1.5 rounded-lg text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700/50 border border-dashed dark:border-slate-700 flex items-center gap-2"
-                >
-                  <span>📍</span> Set starting point...
-                </button>
-              )}
+              {/* Hotel + starting point — merged to avoid duplication */}
+              {(() => {
+                const hotelStays = (dayDocs || []).filter(d => d._isHotelStay).sort((a, b) => {
+                  const order = (h) => h._isCheckOut ? 0 : h._isCheckIn ? 2 : 1;
+                  return order(a) - order(b);
+                });
+                const justStaying = hotelStays.find(h => !h._isCheckIn && !h._isCheckOut);
+                const checkOut = hotelStays.find(h => h._isCheckOut);
+                const checkIn = hotelStays.find(h => h._isCheckIn);
+                // Auto-start matches hotel stay? If so, merge into one line
+                const autoMatchesStay = autoStartingPoint?.label && !day.starting_point?.label && !isArrivalDay && (
+                  justStaying?.title === autoStartingPoint.label ||
+                  checkOut?.title === autoStartingPoint.label
+                );
+                const flyToHotel = (hotel) => {
+                  const pinId = hotel._pinId || hotel.id;
+                  let hotelPin = pins.find(p => p.id === pinId);
+                  if (!hotelPin && hotel.title) hotelPin = pins.find(p => p.category === 'hotel' && p.name && p.name.toLowerCase().includes(hotel.title.toLowerCase()));
+                  if (hotelPin) onFlyTo(hotelPin);
+                };
+                return (
+                  <React.Fragment>
+                    {/* Check-out line */}
+                    {checkOut && (
+                      <button key={`co-${checkOut.id}`} onClick={() => flyToHotel(checkOut)}
+                        className="w-full flex items-center gap-1.5 px-2 py-1 text-[11px] text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition">
+                        <span>🏨</span><span className="truncate">Check out · {checkOut.title}</span>
+                      </button>
+                    )}
+                    {/* Check-in line */}
+                    {checkIn && (
+                      <button key={`ci-${checkIn.id}`} onClick={() => flyToHotel(checkIn)}
+                        className="w-full flex items-center gap-1.5 px-2 py-1 text-[11px] text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition">
+                        <span>🏨</span><span className="truncate">Check in · {checkIn.title}</span>
+                      </button>
+                    )}
+                    {/* Staying at (only if no check-in/out) — doubles as starting point */}
+                    {justStaying && (
+                      <button key={`stay-${justStaying.id}`} onClick={() => flyToHotel(justStaying)}
+                        className="w-full flex items-center gap-1.5 px-2 py-1 text-[11px] text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition">
+                        <span>🏨</span><span className="truncate">Staying at {justStaying.title}</span>
+                      </button>
+                    )}
+                    {/* Arrival day starting point */}
+                    {isArrivalDay && autoStartingPoint?.label && (
+                      <button onClick={() => setShowStartPicker(true)}
+                        className="w-full text-left px-2 py-1 rounded-lg text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700/50 flex items-center gap-1.5"
+                        title="Click to change starting point">
+                        <span>{autoStartingPoint.emoji || '📍'}</span>
+                        <span className="truncate">Arriving at {autoStartingPoint.label}</span>
+                        {!day.starting_point?.label && <span className="text-[10px] text-gray-400 ml-auto flex-shrink-0">auto</span>}
+                      </button>
+                    )}
+                    {/* Manual override or no auto — show picker */}
+                    {!isArrivalDay && !autoMatchesStay && (
+                      autoStartingPoint?.label ? (
+                        <button onClick={() => setShowStartPicker(true)}
+                          className="w-full text-left px-2 py-1 rounded-lg text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700/50 flex items-center gap-1.5"
+                          title="Click to change starting point">
+                          <span>{autoStartingPoint.emoji || '📍'}</span>
+                          <span className="truncate">Starting from {autoStartingPoint.label}</span>
+                          {!day.starting_point?.label && <span className="text-[10px] text-gray-400 ml-auto flex-shrink-0">auto</span>}
+                        </button>
+                      ) : !hotelStays.length ? (
+                        <button onClick={() => setShowStartPicker(true)}
+                          className="w-full text-left px-2 py-1.5 rounded-lg text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700/50 border border-dashed dark:border-slate-700 flex items-center gap-2">
+                          <span>📍</span> Set starting point...
+                        </button>
+                      ) : null
+                    )}
+                  </React.Fragment>
+                );
+              })()}
 
               {/* Transit-fetch error notice (shown once if any segment failed) */}
               {transitError && (
@@ -16719,17 +16750,14 @@
             <div className="px-4 py-2 border-b dark:border-slate-700 flex-shrink-0">
               <div className="flex items-center justify-between">
                 <div>
-                  <span className="text-sm font-semibold dark:text-white">{activeItinerary.trip_name}</span>
-                  <span className="text-xs text-gray-400 ml-2">{days.length} days · {items.length} items</span>
+                  <div className="text-sm font-semibold dark:text-white">{activeItinerary.trip_name}</div>
+                  <div className="text-xs text-gray-400">{days.length} days ({formatDayDate(activeItinerary.start_date)} – {formatDayDate(activeItinerary.end_date)})</div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setShowPrettyView(true)}
-                    className="px-2 py-1 text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition flex items-center gap-1"
-                    title="Preview itinerary"
-                  >👁️ Preview</button>
-                  <span className="text-xs text-gray-400">{formatDayDate(activeItinerary.start_date)} – {formatDayDate(activeItinerary.end_date)}</span>
-                </div>
+                <button
+                  onClick={() => setShowPrettyView(true)}
+                  className="px-2.5 py-1.5 text-xs text-blue-500 hover:text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition flex items-center gap-1"
+                  title="Preview itinerary"
+                >👁️ Preview</button>
               </div>
             </div>
           )}
@@ -16814,7 +16842,9 @@
           )}
 
           {/* Pretty itinerary preview */}
-          {showPrettyView && activeItinerary && (
+          {showPrettyView && activeItinerary && (() => {
+            const fmtTime = (t) => { if (!t) return ''; const [h, m] = t.split(':'); const hr = parseInt(h); return `${hr % 12 || 12}:${m} ${hr >= 12 ? 'PM' : 'AM'}`; };
+            return (
             <div className="fixed inset-0 bg-white dark:bg-slate-950" style={{ zIndex: 10010 }}>
               <div className="h-full overflow-y-auto">
                 {/* Sticky header */}
@@ -16903,7 +16933,7 @@
                                   <h3 className="text-base font-medium text-gray-800 dark:text-white" style={{ fontFamily: 'Georgia, serif' }}>
                                     {item._isTransitDoc && item._isArrival ? 'Arrives ' : ''}{item.emoji} {item.name || 'Untitled'}
                                   </h3>
-                                  {time && <span className="text-xs text-gray-400">{formatTime(time)}{item._doc?.arrival_time && !item._isArrival ? ` → ${formatTime(item._doc.arrival_time)}` : ''}</span>}
+                                  {time && <span className="text-xs text-gray-400">{fmtTime(time)}{item._doc?.arrival_time && !item._isArrival ? ` → ${fmtTime(item._doc.arrival_time)}` : ''}</span>}
 
                                   {/* Description */}
                                   {item.description && (
@@ -16934,7 +16964,8 @@
                 </div>
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* Day picker for quick-add from pin detail */}
           {showDayPicker && days.length > 0 && (
