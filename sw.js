@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bo-wander-v85';
+const CACHE_NAME = 'bo-wander-v86';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
