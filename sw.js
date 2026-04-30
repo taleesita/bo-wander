@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bo-wander-v84';
+const CACHE_NAME = 'bo-wander-v85';
 const TILE_CACHE = 'bo-wander-tiles-v1';
 const MAX_TILE_CACHE = 2000;
 
@@ -70,7 +70,6 @@ self.addEventListener('install', event => {
 
       // 2. Cache critical CDN resources
       for (const url of CRITICAL_CDN) {
-        // First check if already cached in any existing cache
         const existing = await caches.match(url);
         if (existing) {
           await cache.put(new Request(url), existing.clone());
@@ -100,8 +99,6 @@ self.addEventListener('install', event => {
       );
 
       console.log('[SW] Install complete, app shell cached:', appShellCached);
-
-      // Only skip waiting after caching is done
       self.skipWaiting();
     })()
   );
@@ -110,13 +107,11 @@ self.addEventListener('install', event => {
 self.addEventListener('activate', event => {
   event.waitUntil(
     (async () => {
-      // First verify the new cache actually has the app shell
       const cache = await caches.open(CACHE_NAME);
       let hasAppShell = !!(await cache.match('/index.html'));
 
       if (!hasAppShell) {
         console.warn('[SW] New cache missing app shell at activation!');
-        // Try to fetch it
         try {
           const resp = await fetch('/index.html', { cache: 'no-cache' });
           if (resp.ok) {
@@ -125,7 +120,6 @@ self.addEventListener('activate', event => {
             hasAppShell = true;
           }
         } catch (e) {
-          // Try copying from old cache before deleting
           const names = await caches.keys();
           for (const name of names) {
             if (name.startsWith('bo-wander-v') && name !== CACHE_NAME) {
@@ -185,51 +179,66 @@ button{margin-top:16px;padding:10px 24px;border:none;border-radius:8px;backgroun
 <body><div class="c"><h1>🗺️</h1><h2>Bo Wander is offline</h2><p>Open the app while connected to the internet first, then it'll work offline on future visits.</p>
 <button onclick="location.reload()">Try Again</button></div></body></html>`;
 
+// Helper: find cached response across all bo-wander caches
+async function findInAnyCacheByPath(path) {
+  // Try current cache first
+  const cache = await caches.open(CACHE_NAME);
+  let result = await cache.match(path);
+  if (result) return result;
+
+  // Search all bo-wander caches
+  const names = await caches.keys();
+  for (const name of names) {
+    if (name.startsWith('bo-wander-v')) {
+      const c = await caches.open(name);
+      result = await c.match(path);
+      if (result) return result;
+    }
+  }
+  return null;
+}
+
+// Helper: find cached response across all caches (for CDN resources)
+async function findInAnyCache(request) {
+  return await caches.match(request) || null;
+}
+
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = event.request.url;
 
+  // Never intercept API calls
   if (isApiCall(url)) return;
 
-  // Navigation requests: cache-first with background update
+  // ─── NAVIGATION: Pure cache-first, fire-and-forget background update ───
   if (event.request.mode === 'navigate') {
     event.respondWith(
       (async () => {
-        // Try ALL caches, not just the current version — resilience against partial updates
-        let cached = null;
-        const cache = await caches.open(CACHE_NAME);
-        cached = await cache.match('/index.html')
-              || await cache.match('/');
-
-        // Fallback: search all caches for the app shell
-        if (!cached) {
-          const names = await caches.keys();
-          for (const name of names) {
-            if (name.startsWith('bo-wander-v')) {
-              const c = await caches.open(name);
-              cached = await c.match('/index.html') || await c.match('/');
-              if (cached) break;
-            }
-          }
-        }
+        // 1. Try cache IMMEDIATELY — no network wait
+        const cached = await findInAnyCacheByPath('/index.html')
+                    || await findInAnyCacheByPath('/');
 
         if (cached) {
-          // Serve cached, update in background
-          try {
-            const resp = await fetch(event.request);
-            if (resp.ok) {
-              cache.put('/', resp.clone());
-              cache.put('/index.html', resp.clone());
+          // Fire-and-forget background update — does NOT block response
+          fetch('/index.html', { cache: 'no-cache' }).then(resp => {
+            if (resp && resp.ok) {
+              caches.open(CACHE_NAME).then(cache => {
+                cache.put('/', resp.clone());
+                cache.put('/index.html', resp.clone());
+              });
             }
-          } catch (e) {}
+          }).catch(() => {}); // silently ignore — we're serving cached
+
           return cached;
         }
 
+        // 2. Nothing cached — must go to network
         try {
           const resp = await fetch(event.request);
           if (resp.ok) {
-            cache.put('/', resp.clone());
-            cache.put('/index.html', resp.clone());
+            const cache = await caches.open(CACHE_NAME);
+            await cache.put('/', resp.clone());
+            await cache.put('/index.html', resp.clone());
           }
           return resp;
         } catch (e) {
@@ -243,7 +252,7 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Map tiles: cache-first with LRU eviction
+  // ─── MAP TILES: cache-first with LRU eviction ───
   if (isTileRequest(url)) {
     event.respondWith(
       caches.open(TILE_CACHE).then(cache =>
@@ -266,17 +275,33 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // CDN + other resources: stale-while-revalidate, search all caches
+  // ─── CDN + OTHER: cache-first, fire-and-forget revalidate ───
   event.respondWith(
     (async () => {
-      let cached = await caches.match(event.request);
-      const fetchPromise = fetch(event.request).then(resp => {
+      const cached = await findInAnyCache(event.request);
+
+      if (cached) {
+        // Fire-and-forget background update
+        fetch(event.request).then(resp => {
+          if (resp && resp.ok) {
+            caches.open(CACHE_NAME).then(cache => cache.put(event.request, resp.clone()));
+          }
+        }).catch(() => {});
+
+        return cached;
+      }
+
+      // Not cached — go to network
+      try {
+        const resp = await fetch(event.request);
         if (resp.ok) {
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, resp.clone()));
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(event.request, resp.clone());
         }
         return resp;
-      }).catch(() => cached);
-      return cached || fetchPromise;
+      } catch (e) {
+        return new Response('', { status: 408 });
+      }
     })()
   );
 });
