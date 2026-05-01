@@ -14435,7 +14435,8 @@
               </button>
             </div>
             {item.options.map((opt, oi) => (
-              <div key={opt.pin_id || oi} className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-800/40">
+              <div key={opt.pin_id || oi} className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-800/40 cursor-pointer hover:bg-amber-50 dark:hover:bg-amber-900/20 transition"
+                onClick={() => { if (opt.lat && opt.lng && onFlyTo) onFlyTo(opt.lat, opt.lng); }}>
                 <span className="text-sm">{opt.emoji}</span>
                 <span className="text-sm truncate flex-1 min-w-0 dark:text-white">{opt.name}</span>
                 <button
@@ -16965,7 +16966,7 @@
 
                         {/* Timeline items */}
                         {timeline.length > 0 ? (
-                          <div className="relative ml-3 pl-8 border-l-2 border-gray-200 dark:border-slate-700 mt-6">
+                          <div className="relative mt-6">
                             {timeline.map((item, idx) => {
                               const time = item.scheduled_time || pAutoTimes[item.id];
                               const prevTime = idx > 0 ? (timeline[idx - 1].scheduled_time || pAutoTimes[timeline[idx - 1].id]) : null;
@@ -17061,21 +17062,38 @@
                               // Is this an options item?
                               const isOptions = item.options && item.options.length >= 2 && !item.confirmed_option;
 
-                              return (
-                                <div key={item.id} className={`relative pb-8 ${idx === timeline.length - 1 ? 'pb-2' : ''}`}>
-                                  {/* Timeline dot */}
-                                  <div className="absolute -left-[25px] w-3 h-3 rounded-full border-2 border-white dark:border-slate-950" style={{ background: item._isTransitDoc ? '#c4956a' : isOptions ? '#d97706' : '#94a3b8', top: showLabel ? '28px' : '4px' }}></div>
+                              const timeDisplay = time ? fmtTime(time) + (item._doc?.arrival_time && !item._isArrival ? ` → ${fmtTime(item._doc.arrival_time)}` : '') : '';
 
-                                  {/* Time-of-day label */}
+                              return (
+                                <div key={item.id} className={`pb-8 ${idx === timeline.length - 1 ? 'pb-2' : ''}`}>
+                                  {/* Time-of-day label — spans full width */}
                                   {showLabel && (
-                                    <p className="text-xs tracking-[0.15em] uppercase mb-2" style={{ color: '#c4956a' }}>{timeLabel}</p>
+                                    <div className="flex">
+                                      <div style={{ width: '68px' }} className="flex-shrink-0"></div>
+                                      <div className="flex-1 pl-5 pb-2">
+                                        <p className="text-xs tracking-[0.15em] uppercase" style={{ color: '#c4956a' }}>{timeLabel}</p>
+                                      </div>
+                                    </div>
                                   )}
 
-                                  {/* Item content */}
+                                  {/* Two-column row: time | line+dot | content */}
+                                  <div className="flex relative">
+                                    {/* Left: time */}
+                                    <div style={{ width: '68px' }} className="flex-shrink-0 text-right pr-4 pt-0.5">
+                                      {timeDisplay && <span className="text-xs font-medium" style={{ color: '#c4956a' }}>{timeDisplay}</span>}
+                                    </div>
+
+                                    {/* Center: timeline line + dot */}
+                                    <div className="relative flex-shrink-0" style={{ width: '2px', background: 'var(--tw-border-opacity, 1)' }}>
+                                      <div className="absolute w-3 h-3 rounded-full border-2 border-white dark:border-slate-950" style={{ background: item._isTransitDoc ? '#c4956a' : isOptions ? '#d97706' : '#94a3b8', left: '-5px', top: '4px' }}></div>
+                                      <div className="absolute inset-0 bg-gray-200 dark:bg-slate-700" style={{ width: '2px' }}></div>
+                                    </div>
+
+                                    {/* Right: content */}
+                                    <div className="flex-1 pl-5 min-w-0">
                                   <h3 className="text-base font-medium text-gray-800 dark:text-white" style={{ fontFamily: 'Georgia, serif' }}>
                                     {item._isTransitDoc && item._isArrival ? 'Arrives ' : ''}{item.emoji} {item.name || 'Untitled'}
                                   </h3>
-                                  {time && <span className="text-xs text-gray-400">{fmtTime(time)}{item._doc?.arrival_time && !item._isArrival ? ` → ${fmtTime(item._doc.arrival_time)}` : ''}</span>}
 
                                   {/* Options list — with per-option details for comparison */}
                                   {isOptions && (
@@ -17123,21 +17141,17 @@
                                     <p className="text-xs text-gray-400 mt-1">{pinSummary.info}</p>
                                   )}
 
-                                  {/* Booking info block — single clean callout combining all meta */}
+                                  {/* Booking info — inline, no callout */}
                                   {(() => {
                                     const conf = item._isTransitDoc ? item._doc?.confirmation : matchedDoc?.confirmation;
-                                    // For transit: carrier · duration · class
-                                    // For bookings: time · source (excluding confirmation since it's shown separately)
                                     const metaLine = item._isTransitDoc ? transitMeta :
                                       (matchedDoc ? [matchedDoc.departure_time ? fmtTime(matchedDoc.departure_time) : '', matchedDoc.carrier].filter(Boolean).join(' · ') : '');
-                                    if (!conf && !metaLine) return null;
-                                    return (
-                                      <div className="mt-2 pl-3 border-l-2 text-xs text-gray-400 space-y-0.5" style={{ borderColor: '#c4956a44' }}>
-                                        {metaLine && <p>{metaLine}</p>}
-                                        {conf && <p>Confirmation: #{conf}</p>}
-                                      </div>
-                                    );
+                                    const parts = [metaLine, conf ? `#${conf}` : ''].filter(Boolean);
+                                    if (!parts.length) return null;
+                                    return <p className="text-xs text-gray-400 mt-1">{parts.join('  ·  ')}</p>;
                                   })()}
+                                  </div>{/* end content column */}
+                                  </div>{/* end flex row */}
                                 </div>
                               );
                             })}
