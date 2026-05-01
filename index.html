@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v91';
+    const APP_VERSION = 'v92';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -17831,6 +17831,10 @@
         });
         setEditingPin(null);
         setSelectedPin(savedPin);
+        // Fly map to the pin so user sees where it landed
+        if (savedPin.lat && savedPin.lng) {
+          setMapPanTarget({ lat: savedPin.lat, lng: savedPin.lng, zoom: 16, _t: Date.now() });
+        }
         if (!isExisting) {
           // Auto-fetch ratings for new pins in the background
           setTimeout(() => fetchRatingsForPin(savedPin), 200);
@@ -18611,11 +18615,18 @@
                 });
                 setShowAddFromLink(false);
                 if (addedCount > 0 || mergedCount > 0) {
-                  setSelectedPin(null);
                   const parts = [];
                   if (addedCount > 0) parts.push(`Added ${addedCount} place${addedCount === 1 ? '' : 's'}`);
                   if (mergedCount > 0) parts.push(`merged ${mergedCount} duplicate${mergedCount === 1 ? '' : 's'}`);
                   showToast(parts.join(', '));
+                  // Fly to first added/updated pin so user sees it on the map
+                  const flyTarget = additions[0] || updates[0];
+                  if (flyTarget && flyTarget.lat && flyTarget.lng) {
+                    setSelectedPin(flyTarget);
+                    setMapPanTarget({ lat: flyTarget.lat, lng: flyTarget.lng, zoom: additions.length === 1 ? 16 : 14, _t: Date.now() });
+                  } else {
+                    setSelectedPin(null);
+                  }
                 }
               }}
               onClose={() => { setShowAddFromLink(false); setKmlBulkData(null); }}
@@ -18703,11 +18714,17 @@
                 });
                 setShowPasteText(false);
                 if (addedCount > 0 || mergedCount > 0) {
-                  setSelectedPin(null);
                   const parts = [];
                   if (addedCount > 0) parts.push(`Added ${addedCount} place${addedCount === 1 ? '' : 's'}`);
                   if (mergedCount > 0) parts.push(`merged ${mergedCount} duplicate${mergedCount === 1 ? '' : 's'}`);
                   showToast(parts.join(', '));
+                  const flyTarget = additions[0] || updates[0];
+                  if (flyTarget && flyTarget.lat && flyTarget.lng) {
+                    setSelectedPin(flyTarget);
+                    setMapPanTarget({ lat: flyTarget.lat, lng: flyTarget.lng, zoom: additions.length === 1 ? 16 : 14, _t: Date.now() });
+                  } else {
+                    setSelectedPin(null);
+                  }
                 }
               }}
               onClose={() => setShowPasteText(false)}
