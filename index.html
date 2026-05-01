@@ -2049,13 +2049,32 @@
       return bestCurrent || bestUpcoming || bestPast || group[0];
     };
 
-    const renderPinHtml = (pin, categoryData, colorClass, coLocatedPins) => {
+    const renderPinHtml = (pin, categoryData, colorClass, coLocatedPins, travelDocsRef) => {
       // Build date badges — combine from all co-located pins
       const pinsToCheck = coLocatedPins && coLocatedPins.length > 1 ? coLocatedPins : [pin];
       const dates = pinsToCheck
         .filter(p => p.reservation_details && (p.category === 'hotel' || p.category === 'activity' || p.category === 'restaurant'))
         .map(p => formatPinDate(p.reservation_details))
         .filter(Boolean);
+
+      // Fallback: check travel docs for hotel pins without reservation_details
+      if (dates.length === 0 && travelDocsRef) {
+        for (const p of pinsToCheck) {
+          if (p.category !== 'hotel' || p.reservation_details) continue;
+          const nameLC = (p.name || '').toLowerCase();
+          if (!nameLC) continue;
+          const doc = travelDocsRef.find(d => d.type === 'hotel' && d.title && d.title.toLowerCase().includes(nameLC.substring(0, 10)) && d.check_in);
+          if (doc) {
+            const parts = (doc.check_in || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+            if (parts) {
+              const month = parseInt(parts[2], 10) - 1;
+              const day = parseInt(parts[3], 10);
+              const d = new Date(parseInt(parts[1]), month, day);
+              dates.push(`${d.toLocaleDateString('en-US', { month: 'short' })} ${day}`);
+            }
+          }
+        }
+      }
 
       let dateBadge = '';
       if (dates.length === 1) {
@@ -11683,7 +11702,7 @@
           const categoryData = PIN_CATEGORIES[pin.category] || PIN_CATEGORIES.other;
           const colorClass = isSelected ? 'category-pin-selected' : '';
           const icon = L.divIcon({
-            html: renderPinHtml(pin, categoryData, colorClass, group),
+            html: renderPinHtml(pin, categoryData, colorClass, group, travelDocs),
             iconSize: [isSelected ? 44 : 36, isSelected ? 44 : 36],
             iconAnchor: [isSelected ? 22 : 18, isSelected ? 22 : 18],
             className: 'category-marker'
@@ -11818,7 +11837,7 @@
           const categoryData = PIN_CATEGORIES[pin.category] || PIN_CATEGORIES.other;
           const colorClass = isSelected ? 'category-pin-selected' : '';
           const icon = L.divIcon({
-            html: renderPinHtml(pin, categoryData, colorClass),
+            html: renderPinHtml(pin, categoryData, colorClass, null, travelDocs),
             iconSize: [isSelected ? 44 : 36, isSelected ? 44 : 36],
             iconAnchor: [isSelected ? 22 : 18, isSelected ? 22 : 18],
             className: 'category-marker'
@@ -17351,6 +17370,7 @@
 
       const [editingPin, setEditingPin] = useState(null);
       const [showAddMenu, setShowAddMenu] = useState(false);
+      const [travelDocs, setTravelDocs] = useState([]);
       const pendingDeletesRef = useRef(new Set()); // Guard against snapshot re-adding deleted pins
       const [navigationPin, setNavigationPin] = useState(null);
       const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
@@ -17510,6 +17530,13 @@
           if (unsubCollections) unsubCollections();
         };
       }, []);
+
+      // Load travel docs for date badges on hotel pins
+      useEffect(() => {
+        if (!activeCollection || activeCollection === 'all') { setTravelDocs([]); return; }
+        const unsub = MockFirebase.onTravelDocsSnapshot?.(activeCollection, docs => setTravelDocs(docs || []));
+        return () => { if (unsub) unsub(); };
+      }, [activeCollection]);
 
       // Auto-repair pins with missing coordinates (lat=0, lng=0)
       useEffect(() => {
