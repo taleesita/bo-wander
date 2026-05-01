@@ -16976,42 +16976,73 @@
                               // Look up pin for rich data
                               const pin = item.pin_id ? collectionPins.find(p => p.id === item.pin_id) : null;
 
-                              // Generate 2-sentence TLDR blurb for pretty view from pin data
-                              const genDesc = (() => {
-                                if (item._isTransitDoc) return '';
+                              // Generate smart summary blurb + structured info for pretty view
+                              const pinSummary = (() => {
+                                if (item._isTransitDoc) return { blurb: '', info: null };
                                 const cat = pin?.category || '';
-                                if (cat === 'hotel') return '';
-                                const notes = (pin?.notes || '').trim();
-                                const rawDesc = (item.description || pin?.description || '').trim();
+                                if (cat === 'hotel') return { blurb: '', info: null };
 
-                                // Try to extract a 2-sentence blurb from available text
-                                const extractBlurb = (src) => {
+                                // --- Summarize description into 2-3 clean sentences ---
+                                const summarize = (src) => {
                                   if (!src) return '';
-                                  // Skip booking/email data
-                                  if (src.match(/Subject:|From:|@.*\.(com|co\.jp)|Dear\s|Check-in:|Check-out:|Price:|Room:|Booked via:|PIN:|Confirmation #/i)) return '';
-                                  // Clean prefixes
-                                  let clean = src.replace(/^📸\s*From photo:\s*['']?/i, '').replace(/['']$/,'').trim();
-                                  // Remove source attribution lines (Source: [...](url) --- ...)
-                                  clean = clean.replace(/\s*Source:\s*\[.*?\]\(.*?\)\s*---\s*/g, ' ').trim();
-                                  // Remove "Details:" sections that are just hours/prices
-                                  clean = clean.replace(/\s*Details:.*$/s, '').trim();
-                                  if (!clean) return '';
-                                  // Split into sentences
-                                  const sentences = clean.split(/(?<=\.)\s+/).filter(s => s.length > 10 && !s.match(/^(See |Source:|From |Details:|Duration:|Contact:)/i));
-                                  if (sentences.length === 0) return '';
-                                  // Take first 2 sentences, max ~250 chars total
-                                  let blurb = sentences[0];
-                                  if (sentences.length > 1 && (blurb + ' ' + sentences[1]).length <= 250) {
-                                    blurb += ' ' + sentences[1];
+                                  // Skip booking/email/structured data
+                                  if (src.match(/Subject:|From:\s*\S+@|Dear\s|Check-in:|Check-out:|Booked via:|PIN:|Confirmation #|Thank you for choosing/i)) return '';
+                                  // Clean up
+                                  let clean = src
+                                    .replace(/^📸\s*From photo:\s*['']?/i, '').replace(/['']$/,'')
+                                    .replace(/Source:\s*\[.*?\]\(.*?\)/g, '').replace(/\s*---\s*/g, ' ')
+                                    .replace(/Details:.*$/s, '')
+                                    .replace(/See (my|our)\s+\w.*?\./gi, '')
+                                    .replace(/Duration:\s*\d+.*?\./gi, '')
+                                    .replace(/Contact:\s*[\d(+).\s-]+\.?/gi, '')
+                                    .replace(/\bhttps?:\/\/\S+/g, '')
+                                    .replace(/&nbsp;/g, ' ')
+                                    .replace(/\s{2,}/g, ' ')
+                                    .trim();
+                                  if (clean.length < 15) return '';
+                                  // Split into real sentences (skip short fragments, meta lines)
+                                  const sentences = clean.split(/(?<=\.)\s+/)
+                                    .map(s => s.trim())
+                                    .filter(s => s.length > 15 && !s.match(/^(Note |Make sure|Be sure|You (can|must|should)|I (highly )?recommend|Book|Entrance costs|Open from|Closed)/i));
+                                  if (!sentences.length) return '';
+                                  // Take up to 3 sentences, max ~300 chars
+                                  let result = sentences[0];
+                                  for (let i = 1; i < Math.min(sentences.length, 3); i++) {
+                                    if ((result + ' ' + sentences[i]).length > 300) break;
+                                    result += ' ' + sentences[i];
                                   }
-                                  // Ensure it ends with a period
-                                  if (!blurb.endsWith('.')) blurb += '.';
-                                  return blurb;
+                                  if (!result.endsWith('.')) result += '.';
+                                  return result;
                                 };
 
-                                // Prefer notes, then description
-                                return extractBlurb(notes) || extractBlurb(rawDesc);
+                                const notes = (pin?.notes || '').trim();
+                                const rawDesc = (item.description || pin?.description || '').trim();
+                                const blurb = summarize(notes) || summarize(rawDesc);
+
+                                // --- Structured info for restaurants/cafes ---
+                                let info = null;
+                                if (cat === 'restaurant' || cat === 'cafe') {
+                                  const rating = pin?.google_rating || pin?.tabelog_rating;
+                                  const ratingStr = rating ? `★ ${rating}` : '';
+                                  const tabelogStr = pin?.tabelog_rating && pin?.google_rating ? `Tabelog ${pin.tabelog_rating}` : '';
+                                  const rd = pin?.reservation_details;
+                                  const priceStr = rd?.price || '';
+                                  const timeStr = rd?.time || '';
+                                  const sourceStr = rd?.booking_source || '';
+                                  const tags = pin?.mealTags || [];
+                                  const tagsStr = tags.length ? tags.map(t => t.charAt(0).toUpperCase() + t.slice(1)).join(', ') : '';
+                                  // Opening hours summary
+                                  const hrs = pin?.opening_hours || {};
+                                  const hrsVals = Object.values(hrs).filter(Boolean);
+                                  const hrsStr = hrsVals.length > 0 ? (new Set(hrsVals).size === 1 ? hrsVals[0] : '') : '';
+
+                                  const parts = [ratingStr, tabelogStr, tagsStr, priceStr, hrsStr].filter(Boolean);
+                                  if (parts.length) info = parts.join('  ·  ');
+                                }
+
+                                return { blurb, info };
                               })();
+                              const genDesc = pinSummary.blurb;
 
                               // Match booking doc to this item (by pin_id or name)
                               let matchedDoc = item.pin_id ? bookingDocs.find(d => d.id === item.pin_id || d._pinId === item.pin_id) : null;
@@ -17046,22 +17077,50 @@
                                   </h3>
                                   {time && <span className="text-xs text-gray-400">{fmtTime(time)}{item._doc?.arrival_time && !item._isArrival ? ` → ${fmtTime(item._doc.arrival_time)}` : ''}</span>}
 
-                                  {/* Options list */}
+                                  {/* Options list — with per-option details for comparison */}
                                   {isOptions && (
-                                    <div className="mt-2 space-y-1">
-                                      {item.options.map((opt, oi) => (
-                                        <div key={oi} className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
-                                          <span className="text-xs text-amber-500">●</span>
-                                          <span>{opt.emoji} {opt.name}</span>
-                                        </div>
-                                      ))}
-                                      <p className="text-xs text-amber-500 italic mt-1">Deciding between options</p>
+                                    <div className="mt-2 space-y-3">
+                                      {item.options.map((opt, oi) => {
+                                        const optPin = opt.pin_id ? collectionPins.find(p => p.id === opt.pin_id) : null;
+                                        const optRating = optPin?.google_rating || optPin?.tabelog_rating;
+                                        const optRd = optPin?.reservation_details;
+                                        const optTags = optPin?.mealTags || [];
+                                        const optMeta = [optRating ? `★ ${optRating}` : '', optTags.length ? optTags.join(', ') : '', optRd?.price || ''].filter(Boolean).join('  ·  ');
+                                        // Generate blurb for each option
+                                        const optNotes = (optPin?.notes || '').trim();
+                                        const optDesc = (optPin?.description || '').trim();
+                                        const optSrc = optNotes || optDesc;
+                                        let optBlurb = '';
+                                        if (optSrc && !optSrc.match(/Subject:|From:\s*\S+@|Dear\s|Check-in:/i)) {
+                                          let cl = optSrc.replace(/^📸\s*From photo:\s*['']?/i, '').replace(/['']$/,'').replace(/Source:\s*\[.*?\]\(.*?\)/g, '').replace(/\s*---\s*/g, ' ').replace(/Details:.*$/s, '').replace(/See (my|our)\s+\w.*?\./gi, '').replace(/&nbsp;/g, ' ').replace(/\s{2,}/g, ' ').trim();
+                                          const sents = cl.split(/(?<=\.)\s+/).filter(s => s.length > 15 && !s.match(/^(Note |Make sure|Be sure|You (can|must)|I recommend|Book|Open from)/i));
+                                          if (sents.length) {
+                                            optBlurb = sents[0];
+                                            if (sents.length > 1 && (optBlurb + ' ' + sents[1]).length <= 250) optBlurb += ' ' + sents[1];
+                                            if (!optBlurb.endsWith('.')) optBlurb += '.';
+                                          }
+                                        }
+                                        return (
+                                          <div key={oi} className="pl-3 border-l-2 border-amber-300 dark:border-amber-600">
+                                            <div className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-200">
+                                              <span>{opt.emoji} {opt.name}</span>
+                                            </div>
+                                            {optMeta && <p className="text-xs text-gray-400 mt-0.5">{optMeta}</p>}
+                                            {optBlurb && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">{optBlurb}</p>}
+                                          </div>
+                                        );
+                                      })}
                                     </div>
                                   )}
 
                                   {/* Description blurb */}
                                   {genDesc && !isOptions && !item._isTransitDoc && (
                                     <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">{genDesc}</p>
+                                  )}
+
+                                  {/* Restaurant/cafe structured info line */}
+                                  {pinSummary.info && !isOptions && (
+                                    <p className="text-xs text-gray-400 mt-1">{pinSummary.info}</p>
                                   )}
 
                                   {/* Booking info block — single clean callout combining all meta */}
