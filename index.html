@@ -16979,18 +16979,12 @@
 
                               // Generate smart summary blurb + structured info for pretty view
                               const pinSummary = (() => {
-                                if (item._isTransitDoc) return { blurb: '', info: null };
-                                const cat = pin?.category || '';
-                                if (cat === 'hotel') return { blurb: '', info: null };
-
-                                // --- Summarize description into 2-3 clean sentences ---
+                                // Shared summarize function for reuse by option blurbs
                                 const summarize = (src) => {
                                   if (!src) return '';
-                                  // Skip booking/email/structured data
                                   if (src.match(/Subject:|From:\s*\S+@|Dear\s|Check-in:|Check-out:|Booked via:|PIN:|Confirmation #|Thank you for choosing/i)) return '';
-                                  // Clean up
                                   let clean = src
-                                    .replace(/^📸\s*From photo:\s*['']?/i, '').replace(/['']$/,'')
+                                    .replace(/^[\s📸🍽🏨]*From photo:?\s*[''']?/i, '').replace(/[''']$/,'')
                                     .replace(/Source:\s*\[.*?\]\(.*?\)/g, '').replace(/\s*---\s*/g, ' ')
                                     .replace(/Details:.*$/s, '')
                                     .replace(/See (my|our)\s+\w.*?\./gi, '')
@@ -17001,12 +16995,15 @@
                                     .replace(/\s{2,}/g, ' ')
                                     .trim();
                                   if (clean.length < 15) return '';
-                                  // Split into real sentences (skip short fragments, meta lines)
                                   const sentences = clean.split(/(?<=\.)\s+/)
                                     .map(s => s.trim())
-                                    .filter(s => s.length > 15 && !s.match(/^(Note |Make sure|Be sure|You (can|must|should)|I (highly )?recommend|Book|Entrance costs|Open from|Closed)/i));
+                                    .filter(s => s.length > 15
+                                      && !s.match(/^(Note |Make sure|Be sure|You (can|must|should)|I (highly )?recommend|Book|Entrance costs|Open from|Closed)/i)
+                                      && !s.match(/\d{1,2}[:.]\d{2}\s*(am|pm|AM|PM)?\s*[-–]\s*\d{1,2}[:.]\d{2}\s*(am|pm|AM|PM)?/i)
+                                      && !s.match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)/i)
+                                      && !s.match(/^\d+\s*(am|pm)\s*[-–]/i)
+                                    );
                                   if (!sentences.length) return '';
-                                  // Take up to 3 sentences, max ~300 chars
                                   let result = sentences[0];
                                   for (let i = 1; i < Math.min(sentences.length, 3); i++) {
                                     if ((result + ' ' + sentences[i]).length > 300) break;
@@ -17015,6 +17012,9 @@
                                   if (!result.endsWith('.')) result += '.';
                                   return result;
                                 };
+                                if (item._isTransitDoc) return { blurb: '', info: null, _summarize: summarize };
+                                const cat = pin?.category || '';
+                                if (cat === 'hotel') return { blurb: '', info: null, _summarize: summarize };
 
                                 const notes = (pin?.notes || '').trim();
                                 const rawDesc = (item.description || pin?.description || '').trim();
@@ -17041,7 +17041,7 @@
                                   if (parts.length) info = parts.join('  ·  ');
                                 }
 
-                                return { blurb, info };
+                                return { blurb, info, _summarize: summarize };
                               })();
                               const genDesc = pinSummary.blurb;
 
@@ -17104,20 +17104,8 @@
                                         const optRd = optPin?.reservation_details;
                                         const optTags = optPin?.mealTags || [];
                                         const optMeta = [optRating ? `★ ${optRating}` : '', optTags.length ? optTags.join(', ') : '', optRd?.price || ''].filter(Boolean).join('  ·  ');
-                                        // Generate blurb for each option
-                                        const optNotes = (optPin?.notes || '').trim();
-                                        const optDesc = (optPin?.description || '').trim();
-                                        const optSrc = optNotes || optDesc;
-                                        let optBlurb = '';
-                                        if (optSrc && !optSrc.match(/Subject:|From:\s*\S+@|Dear\s|Check-in:/i)) {
-                                          let cl = optSrc.replace(/^📸\s*From photo:\s*['']?/i, '').replace(/['']$/,'').replace(/Source:\s*\[.*?\]\(.*?\)/g, '').replace(/\s*---\s*/g, ' ').replace(/Details:.*$/s, '').replace(/See (my|our)\s+\w.*?\./gi, '').replace(/&nbsp;/g, ' ').replace(/\s{2,}/g, ' ').trim();
-                                          const sents = cl.split(/(?<=\.)\s+/).filter(s => s.length > 15 && !s.match(/^(Note |Make sure|Be sure|You (can|must)|I recommend|Book|Open from)/i));
-                                          if (sents.length) {
-                                            optBlurb = sents[0];
-                                            if (sents.length > 1 && (optBlurb + ' ' + sents[1]).length <= 250) optBlurb += ' ' + sents[1];
-                                            if (!optBlurb.endsWith('.')) optBlurb += '.';
-                                          }
-                                        }
+                                        // Generate blurb for each option (reuse summarize from pinSummary)
+                                        const optBlurb = pinSummary._summarize ? pinSummary._summarize((optPin?.notes || '').trim()) || pinSummary._summarize((optPin?.description || '').trim()) : '';
                                         return (
                                           <div key={oi} className="pl-3 border-l-2 border-amber-300 dark:border-amber-600">
                                             <div className="flex items-center gap-1.5 text-sm font-medium text-gray-700 dark:text-gray-200">
