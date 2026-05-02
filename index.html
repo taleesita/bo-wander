@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v93';
+    const APP_VERSION = 'v94';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -14789,10 +14789,21 @@
     const DayMiniMap = ({ points, isDarkMode, dayLabel, onClose }) => {
       const mapContainerRef = useRef(null);
       const mapRef = useRef(null);
+      const [ready, setReady] = useState(false);
+
+      // Wait for DOM to settle before initializing Leaflet
+      useEffect(() => {
+        const t = setTimeout(() => setReady(true), 100);
+        return () => clearTimeout(t);
+      }, []);
 
       useEffect(() => {
-        if (!mapContainerRef.current || !window.L || points.length === 0) return;
+        if (!ready || !mapContainerRef.current || !window.L || points.length === 0) return;
         if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+
+        // Filter out invalid points (0,0 or missing coords)
+        const validPts = points.filter(p => p.lat && p.lng && Math.abs(p.lat) > 0.1 && Math.abs(p.lng) > 0.1);
+        if (validPts.length === 0) return;
 
         const map = window.L.map(mapContainerRef.current, {
           zoomControl: true, attributionControl: false,
@@ -14807,8 +14818,10 @@
         window.L.tileLayer(tileUrl, { maxZoom: 18 }).addTo(map);
 
         const markers = [];
-        points.forEach((pt, i) => {
-          const num = pt.isHotel ? '' : (i + 1);
+        // Number only non-hotel points sequentially
+        let stopNum = 0;
+        validPts.forEach((pt) => {
+          const num = pt.isHotel ? '' : (++stopNum);
           const icon = window.L.divIcon({
             className: 'day-mini-marker',
             html: `<div style="position:relative;width:28px;height:28px">
@@ -14818,12 +14831,12 @@
             iconSize: [28, 28], iconAnchor: [14, 14],
           });
           const m = window.L.marker([pt.lat, pt.lng], { icon }).addTo(map);
-          m.bindTooltip(`${num ? num + '. ' : ''}${pt.name}`, { direction: 'top', offset: [0, -10] });
+          m.bindTooltip(`${num ? num + '. ' : '🏨 '}${pt.name}`, { direction: 'top', offset: [0, -10] });
           markers.push(m);
         });
 
         // Draw route line connecting non-hotel points in order
-        const routePts = points.filter(p => !p.isHotel);
+        const routePts = validPts.filter(p => !p.isHotel);
         if (routePts.length >= 2) {
           const latlngs = routePts.map(p => [p.lat, p.lng]);
           window.L.polyline(latlngs, {
@@ -14832,20 +14845,36 @@
           }).addTo(map);
         }
 
-        // Fit bounds
-        if (markers.length > 0) {
-          const group = window.L.featureGroup(markers);
-          map.fitBounds(group.getBounds().pad(0.12), { maxZoom: 15 });
+        // Fit bounds with invalidateSize to handle portal rendering
+        const group = window.L.featureGroup(markers);
+        const bounds = group.getBounds();
+        // If only 1 point, center + zoom; otherwise fit bounds zoomed in
+        if (validPts.length === 1) {
+          map.setView([validPts[0].lat, validPts[0].lng], 15);
+        } else {
+          map.fitBounds(bounds.pad(0.2), { maxZoom: 16, minZoom: 12 });
         }
 
+        // Re-fit after a moment to handle portal size detection
+        setTimeout(() => {
+          if (mapRef.current) {
+            mapRef.current.invalidateSize();
+            if (validPts.length === 1) {
+              mapRef.current.setView([validPts[0].lat, validPts[0].lng], 15);
+            } else {
+              mapRef.current.fitBounds(bounds.pad(0.2), { maxZoom: 16, minZoom: 12 });
+            }
+          }
+        }, 300);
+
         return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
-      }, [points, isDarkMode]);
+      }, [ready, points, isDarkMode]);
 
       return ReactDOM.createPortal(
         <div className={isDarkMode ? 'dark' : ''}>
           <div className="fixed inset-0 bg-black bg-opacity-60" style={{ zIndex: 99998 }} onClick={onClose} />
-          <div className="fixed inset-4 md:inset-8 rounded-2xl overflow-hidden shadow-2xl flex flex-col" style={{ zIndex: 99999 }}>
-            <div className={`flex items-center justify-between px-4 py-2.5 ${isDarkMode ? 'bg-slate-800' : 'bg-white'}`}>
+          <div className="fixed inset-3 md:inset-6 rounded-2xl overflow-hidden shadow-2xl flex flex-col" style={{ zIndex: 99999, background: isDarkMode ? '#1e293b' : '#f8fafc' }}>
+            <div className={`flex items-center justify-between px-4 py-2.5 border-b ${isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-gray-200'}`}>
               <span className={`font-semibold text-sm ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>🗺️ {dayLabel}</span>
               <div className="flex items-center gap-3">
                 <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{points.filter(p => !p.isHotel).length} stops</span>
@@ -14854,7 +14883,7 @@
                 </button>
               </div>
             </div>
-            <div className="flex-1" ref={mapContainerRef} />
+            <div ref={mapContainerRef} style={{ flex: 1, minHeight: 0, width: '100%' }} />
           </div>
         </div>,
         document.body
