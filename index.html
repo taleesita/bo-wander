@@ -14785,8 +14785,8 @@
       );
     };
 
-    // ---- DayMiniMap (small Leaflet map for a day's items) ----
-    const DayMiniMap = ({ points, isDarkMode }) => {
+    // ---- DayMiniMap (modal Leaflet map for a day's items) ----
+    const DayMiniMap = ({ points, isDarkMode, dayLabel, onClose }) => {
       const mapContainerRef = useRef(null);
       const mapRef = useRef(null);
 
@@ -14795,9 +14795,9 @@
         if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
 
         const map = window.L.map(mapContainerRef.current, {
-          zoomControl: false, attributionControl: false,
-          dragging: true, scrollWheelZoom: false,
-          doubleClickZoom: false, touchZoom: true,
+          zoomControl: true, attributionControl: false,
+          dragging: true, scrollWheelZoom: true,
+          doubleClickZoom: true, touchZoom: true,
         });
         mapRef.current = map;
 
@@ -14808,33 +14808,57 @@
 
         const markers = [];
         points.forEach((pt, i) => {
+          const num = pt.isHotel ? '' : (i + 1);
           const icon = window.L.divIcon({
             className: 'day-mini-marker',
-            html: `<div style="font-size:16px;text-align:center;line-height:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.3))">${pt.emoji || '📌'}</div>`,
-            iconSize: [24, 24], iconAnchor: [12, 12],
+            html: `<div style="position:relative;width:28px;height:28px">
+              <div style="font-size:18px;text-align:center;line-height:28px;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4))">${pt.emoji || '📌'}</div>
+              ${num ? `<div style="position:absolute;top:-6px;right:-6px;background:#3b82f6;color:white;border-radius:50%;width:16px;height:16px;font-size:9px;line-height:16px;text-align:center;font-weight:700;border:1.5px solid white">${num}</div>` : ''}
+            </div>`,
+            iconSize: [28, 28], iconAnchor: [14, 14],
           });
           const m = window.L.marker([pt.lat, pt.lng], { icon }).addTo(map);
-          m.bindTooltip(`${i + 1}. ${pt.name}`, { direction: 'top', offset: [0, -8] });
+          m.bindTooltip(`${num ? num + '. ' : ''}${pt.name}`, { direction: 'top', offset: [0, -10] });
           markers.push(m);
         });
 
-        // Draw route line connecting points in order
-        if (points.length >= 2) {
-          const latlngs = points.map(p => [p.lat, p.lng]);
+        // Draw route line connecting non-hotel points in order
+        const routePts = points.filter(p => !p.isHotel);
+        if (routePts.length >= 2) {
+          const latlngs = routePts.map(p => [p.lat, p.lng]);
           window.L.polyline(latlngs, {
             color: isDarkMode ? '#60a5fa' : '#3b82f6',
-            weight: 2, opacity: 0.6, dashArray: '6,4',
+            weight: 3, opacity: 0.7, dashArray: '8,6',
           }).addTo(map);
         }
 
         // Fit bounds
-        const group = window.L.featureGroup(markers);
-        map.fitBounds(group.getBounds().pad(0.15));
+        if (markers.length > 0) {
+          const group = window.L.featureGroup(markers);
+          map.fitBounds(group.getBounds().pad(0.12), { maxZoom: 15 });
+        }
 
         return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
       }, [points, isDarkMode]);
 
-      return <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />;
+      return ReactDOM.createPortal(
+        <div className={isDarkMode ? 'dark' : ''}>
+          <div className="fixed inset-0 bg-black bg-opacity-60" style={{ zIndex: 99998 }} onClick={onClose} />
+          <div className="fixed inset-4 md:inset-8 rounded-2xl overflow-hidden shadow-2xl flex flex-col" style={{ zIndex: 99999 }}>
+            <div className={`flex items-center justify-between px-4 py-2.5 ${isDarkMode ? 'bg-slate-800' : 'bg-white'}`}>
+              <span className={`font-semibold text-sm ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>🗺️ {dayLabel}</span>
+              <div className="flex items-center gap-3">
+                <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{points.filter(p => !p.isHotel).length} stops</span>
+                <button onClick={onClose} className={`p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-700 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  <CloseIcon />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1" ref={mapContainerRef} />
+          </div>
+        </div>,
+        document.body
+      );
     };
 
     // ---- DayView (single day card) ----
@@ -15369,19 +15393,33 @@
                 </div>
               )}
 
-              {/* Day mini-map */}
+              {/* Day mini-map modal */}
               {showMiniMap && (() => {
-                const mapItems = items.filter(i => i.lat && i.lng);
-                const hotelPts = (dayDocs || []).filter(d => d._isHotelStay).map(d => {
-                  const p = pins.find(pp => pp.category === 'hotel' && pp.name && d.title && pp.name.toLowerCase().includes(d.title.toLowerCase().substring(0, 10)));
-                  return p ? { lat: p.lat, lng: p.lng, name: d.title, emoji: '🏨' } : null;
+                // Build ordered route: items in display order (scheduled + auto-timed)
+                const orderedMapItems = allSorted
+                  .filter(i => !i._isMealSlot && !i._isTransitDoc && i.lat && i.lng)
+                  .map(i => ({ lat: i.lat, lng: i.lng, name: i.name, emoji: i.emoji || '📌', isHotel: false }));
+                // Add hotel as context point (not numbered, not part of route)
+                const hotelPts = (dayDocs || []).filter(d => d._isHotelStay && !d._isCheckOut).map(d => {
+                  // Match by pin ID first, then by exact name match
+                  let p = d._pinId ? pins.find(pp => pp.id === d._pinId) : null;
+                  if (!p && d.title) p = pins.find(pp => pp.category === 'hotel' && pp.name && pp.name.toLowerCase() === d.title.toLowerCase());
+                  return p && p.lat && p.lng ? { lat: p.lat, lng: p.lng, name: d.title || p.name, emoji: '🏨', isHotel: true } : null;
                 }).filter(Boolean);
-                const allPts = [...mapItems.map(i => ({ lat: i.lat, lng: i.lng, name: i.name, emoji: i.emoji })), ...hotelPts];
-                if (allPts.length === 0) return <div className="text-xs text-gray-400 text-center py-2">No pins with locations to map</div>;
+                // Dedupe hotel if it's already in ordered items
+                const itemCoords = new Set(orderedMapItems.map(i => `${i.lat.toFixed(4)},${i.lng.toFixed(4)}`));
+                const uniqueHotels = hotelPts.filter(h => !itemCoords.has(`${h.lat.toFixed(4)},${h.lng.toFixed(4)}`));
+                const allPts = [...orderedMapItems, ...uniqueHotels];
+                if (allPts.length === 0) return null;
+                const dayNum = allDays ? allDays.findIndex(d => d.id === day.id) + 1 : '';
+                const dateLabel = day.date ? new Date(day.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
                 return (
-                  <div className="mt-2 rounded-lg overflow-hidden border dark:border-slate-700" style={{ height: 200 }}>
-                    <DayMiniMap points={allPts} isDarkMode={isDarkMode} />
-                  </div>
+                  <DayMiniMap
+                    points={allPts}
+                    isDarkMode={isDarkMode}
+                    dayLabel={`Day ${dayNum} · ${dateLabel}${day.location ? ' · ' + day.location : ''}`}
+                    onClose={() => setShowMiniMap(false)}
+                  />
                 );
               })()}
 
