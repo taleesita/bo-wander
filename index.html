@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v94';
+    const APP_VERSION = 'v96';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -1861,6 +1861,11 @@
 
     // ==================== HELPERS ====================
     const getOpenStatus = (openingHours, customDate) => {
+      // No hours data at all → treat as always open (e.g. temples, parks, landmarks)
+      if (!openingHours || Object.keys(openingHours).length === 0) {
+        return { status: 'open', label: 'Open', hoursText: 'Hours not listed' };
+      }
+
       const now = customDate || new Date();
       const dayOfWeek = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][now.getDay()];
       const currentHours = openingHours[dayOfWeek];
@@ -11423,7 +11428,7 @@
       );
     };
 
-    const MapView = ({ pins, selectedPin, onSelectPin, isDarkMode, onNavigate, sidebarWidth = 0, collectionName, onMapCenterChange, panTo, previewPin, travelDocs = [] }) => {
+    const MapView = ({ pins, selectedPin, onSelectPin, isDarkMode, onNavigate, sidebarWidth = 0, collectionName, onMapCenterChange, panTo, previewPin, travelDocs = [], openNowFilter, onToggleOpenNow }) => {
       const mapRef = useRef(null);
       const mapInstanceRef = useRef(null);
       const tileLayerRef = useRef(null);
@@ -11895,6 +11900,24 @@
       return (
         <div style={{ width: '100%', height: '100%', position: 'relative' }}>
           <div ref={mapRef} style={{ width: '100%', height: '100%' }} />
+          {/* Open Now toggle — floating on map */}
+          {onToggleOpenNow && (
+            <button
+              onClick={onToggleOpenNow}
+              className={`absolute rounded-md shadow-lg flex items-center justify-center transition-all ${
+                openNowFilter
+                  ? 'bg-green-500 hover:bg-green-600'
+                  : 'bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700'
+              }`}
+              style={{ right: 10, bottom: 130, zIndex: 1000, width: 34, height: 34 }}
+              title={openNowFilter ? 'Showing open now — tap to show all' : 'Show only open now'}
+            >
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={openNowFilter ? 'white' : 'currentColor'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={openNowFilter ? '' : 'text-gray-700 dark:text-gray-200'}>
+                <circle cx="12" cy="12" r="10" />
+                <polyline points="12 6 12 12 16 14" />
+              </svg>
+            </button>
+          )}
           {/* Locate me button — above Leaflet zoom controls */}
           <button
             onClick={() => {
@@ -14813,8 +14836,8 @@
         mapRef.current = map;
 
         const tileUrl = isDarkMode
-          ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-          : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+          ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'
+          : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png';
         window.L.tileLayer(tileUrl, { maxZoom: 18 }).addTo(map);
 
         const markers = [];
@@ -15850,23 +15873,23 @@
             let url;
             if (start <= today && end >= today) {
               // Partially in future
-              url = `https://api.open-meteo.com/v1/forecast?latitude=${hotelWithCoords.lat}&longitude=${hotelWithCoords.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&start_date=${start}&end_date=${end}&timezone=auto`;
+              url = `https://api.open-meteo.com/v1/forecast?latitude=${hotelWithCoords.lat}&longitude=${hotelWithCoords.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&start_date=${start}&end_date=${end}&timezone=auto&temperature_unit=fahrenheit`;
             } else if (start > today) {
               // All future — use forecast (up to 16 days) or historical averages
               const forecastEnd = new Date(today);
               forecastEnd.setDate(forecastEnd.getDate() + 16);
               const fe = forecastEnd.toISOString().split('T')[0];
               if (start <= fe) {
-                url = `https://api.open-meteo.com/v1/forecast?latitude=${hotelWithCoords.lat}&longitude=${hotelWithCoords.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&start_date=${start}&end_date=${end > fe ? fe : end}&timezone=auto`;
+                url = `https://api.open-meteo.com/v1/forecast?latitude=${hotelWithCoords.lat}&longitude=${hotelWithCoords.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&start_date=${start}&end_date=${end > fe ? fe : end}&timezone=auto&temperature_unit=fahrenheit`;
               } else {
                 // Use last year's historical data as proxy
                 const lastYearStart = start.replace(/^\d{4}/, String(parseInt(start.substring(0,4)) - 1));
                 const lastYearEnd = end.replace(/^\d{4}/, String(parseInt(end.substring(0,4)) - 1));
-                url = `https://archive-api.open-meteo.com/v1/archive?latitude=${hotelWithCoords.lat}&longitude=${hotelWithCoords.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code&start_date=${lastYearStart}&end_date=${lastYearEnd}&timezone=auto`;
+                url = `https://archive-api.open-meteo.com/v1/archive?latitude=${hotelWithCoords.lat}&longitude=${hotelWithCoords.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code&start_date=${lastYearStart}&end_date=${lastYearEnd}&timezone=auto&temperature_unit=fahrenheit`;
               }
             } else {
               // All past
-              url = `https://archive-api.open-meteo.com/v1/archive?latitude=${hotelWithCoords.lat}&longitude=${hotelWithCoords.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code&start_date=${start}&end_date=${end}&timezone=auto`;
+              url = `https://archive-api.open-meteo.com/v1/archive?latitude=${hotelWithCoords.lat}&longitude=${hotelWithCoords.lng}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code&start_date=${start}&end_date=${end}&timezone=auto&temperature_unit=fahrenheit`;
             }
 
             const resp = await fetch(url);
@@ -16092,7 +16115,7 @@
               React.createElement('div', { className: `rounded-lg p-3 mb-4 text-sm ${isDarkMode ? 'bg-slate-800' : 'bg-blue-50'}` },
                 React.createElement('div', { className: 'flex items-center justify-between mb-1' },
                   React.createElement('span', null, `${weatherEmoji} Weather: ${weatherLabel}`),
-                  React.createElement('span', null, `${weatherSummary.avgHigh}°/${weatherSummary.avgLow}°C`)
+                  React.createElement('span', null, `${weatherSummary.avgHigh}°/${weatherSummary.avgLow}°F`)
                 ),
                 React.createElement('div', { className: 'flex items-center justify-between mb-1' },
                   React.createElement('span', null, `🌧️ Rainy days: ${weatherSummary.rainyDays}`),
@@ -18759,6 +18782,8 @@
                   panTo={mapPanTarget}
                   previewPin={previewPin}
                   travelDocs={travelDocs}
+                  openNowFilter={listFilters.openNow}
+                  onToggleOpenNow={() => setListFilters(f => ({ ...f, openNow: !f.openNow, openAt: f.openNow ? f.openAt : null }))}
                 />
               </div>
 
