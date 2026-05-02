@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v92';
+    const APP_VERSION = 'v93';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -14021,12 +14021,18 @@
     };
 
     // ---- ItineraryItemForm (add/edit modal) ----
-    const ItineraryItemForm = ({ item, pins, onSave, onClose, isDarkMode }) => {
+    const ItineraryItemForm = ({ item, pins, onSave, onClose, isDarkMode, onCreatePin }) => {
       const [type, setType] = useState(item?.type || 'pin');
       const [selectedPinId, setSelectedPinId] = useState(item?.pin_id || '');
       const [name, setName] = useState(item?.name || '');
       const [emoji, setEmoji] = useState(item?.emoji || '📌');
       const [scheduledTime, setScheduledTime] = useState(item?.scheduled_time || item?._autoTime || '');
+      const [webSearchResults, setWebSearchResults] = useState([]);
+      const [webSearching, setWebSearching] = useState(false);
+      const webSearchTimer = React.useRef(null);
+      // Store lat/lng directly so newly created pins (not yet in pins array) still save correctly
+      const [formLat, setFormLat] = useState(item?.lat || 0);
+      const [formLng, setFormLng] = useState(item?.lng || 0);
       // Allow empty duration for arrival markers / instant items. Default blank — user picks per-item.
       const [duration, setDuration] = useState(
         item?.estimated_duration_minutes != null && item.estimated_duration_minutes !== 0
@@ -14211,13 +14217,13 @@
           return;
         }
 
-        let lat = item?.lat || 0, lng = item?.lng || 0;
+        let lat = formLat || item?.lat || 0, lng = formLng || item?.lng || 0;
         let finalName = name;
         let finalEmoji = emoji;
         if (type === 'pin' && selectedPinId) {
           const pin = pins.find(p => p.id === selectedPinId);
           if (pin) {
-            lat = pin.lat; lng = pin.lng;
+            lat = pin.lat || lat; lng = pin.lng || lng;
             finalName = finalName || pin.name;
             finalEmoji = pin.emoji || finalEmoji;
           }
@@ -14265,8 +14271,42 @@
                     </p>
                   )}
                   <input
-                    type="text" value={pinSearch} onChange={e => setPinSearch(e.target.value)}
-                    placeholder={mealMode ? 'Search all pins…' : 'Search your pins...'}
+                    type="text" value={pinSearch} onChange={e => {
+                      setPinSearch(e.target.value);
+                      // Auto web-search after a delay when typing
+                      clearTimeout(webSearchTimer.current);
+                      const q = e.target.value.trim();
+                      if (q.length >= 3) {
+                        webSearchTimer.current = setTimeout(async () => {
+                          setWebSearching(true);
+                          try {
+                            const resp = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6`);
+                            if (resp.ok) {
+                              const data = await resp.json();
+                              const results = (data.features || []).map(f => ({
+                                name: [f.properties.name, f.properties.city, f.properties.country].filter(Boolean).join(', '),
+                                displayName: f.properties.name || q,
+                                address: [f.properties.street, f.properties.city, f.properties.state, f.properties.country].filter(Boolean).join(', '),
+                                lat: f.geometry.coordinates[1],
+                                lng: f.geometry.coordinates[0],
+                                type: f.properties.osm_value || f.properties.type || '',
+                              }));
+                              setWebSearchResults(results);
+                            } else {
+                              console.warn('[Search] Photon API error:', resp.status);
+                              setWebSearchResults([]);
+                            }
+                          } catch(e) {
+                            console.warn('[Search] Photon fetch failed:', e);
+                            setWebSearchResults([]);
+                          }
+                          setWebSearching(false);
+                        }, 400);
+                      } else {
+                        setWebSearchResults([]);
+                      }
+                    }}
+                    placeholder={mealMode ? 'Search pins or find new places…' : 'Search pins or find new places...'}
                     className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
                   />
                   {mealMode && <p className="text-[10px] text-gray-400 dark:text-gray-500">Tap to select · Hold to shortlist options</p>}
@@ -14294,6 +14334,7 @@
                           onClick={() => {
                             if (longPressTriggered.current) { longPressTriggered.current = false; return; }
                             setSelectedPinId(pin.id); setName(pin.name); setEmoji(pin.emoji || '📌');
+                            setFormLat(pin.lat || 0); setFormLng(pin.lng || 0);
                             // If already shortlisted, remove from shortlist on tap
                             if (isShortlisted) setShortlist(prev => prev.filter(x => x.pin_id !== pin.id));
                           }}
@@ -14333,6 +14374,50 @@
                       );
                     })}
                   </div>
+                  {/* Web search results — find new places not on the map */}
+                  {pinSearch.trim().length >= 3 && (
+                    <div className="mt-1">
+                      {webSearching && <p className="text-[10px] text-gray-400 text-center py-1">🔍 Searching places…</p>}
+                      {!webSearching && webSearchResults.length === 0 && <p className="text-[10px] text-gray-400 text-center py-1">No external results · try a different search</p>}
+                      {webSearchResults.length > 0 && (
+                        <>
+                          <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-1">Not on your map? Add from search:</p>
+                          <div className="max-h-40 overflow-y-auto space-y-1 border rounded-lg border-dashed border-green-300 dark:border-green-700 p-1 bg-green-50/30 dark:bg-green-900/10">
+                            {webSearchResults.map((place, i) => (
+                              <button key={i}
+                                onClick={() => {
+                                  const cat = typeof guessEmojiAndCategory === 'function' ? guessEmojiAndCategory(place.displayName, place.type) : { emoji: '📍', category: 'spot' };
+                                  // Create pin on the map and select it
+                                  const newPinId = Date.now().toString();
+                                  if (onCreatePin) {
+                                    onCreatePin({
+                                      id: newPinId, name: place.displayName, address: place.address,
+                                      emoji: cat.emoji, category: cat.category,
+                                      lat: place.lat, lng: place.lng, description: '', photos: [],
+                                    });
+                                  }
+                                  setSelectedPinId(newPinId);
+                                  setName(place.displayName);
+                                  setEmoji(cat.emoji);
+                                  setFormLat(place.lat);
+                                  setFormLng(place.lng);
+                                  setWebSearchResults([]);
+                                  setPinSearch('');
+                                }}
+                                className="w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 hover:bg-green-100 dark:hover:bg-green-900/30"
+                              >
+                                <span className="text-green-600 dark:text-green-400 text-xs flex-shrink-0">+</span>
+                                <div className="flex-1 min-w-0">
+                                  <span className="truncate dark:text-white block">{place.displayName}</span>
+                                  <span className="text-[10px] text-gray-400 truncate block">{place.address}</span>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -14347,17 +14432,19 @@
               </div>
 
               {/* Time + Duration */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="min-w-0">
+              <div className="grid grid-cols-2 gap-3" style={{ overflow: 'hidden' }}>
+                <div style={{ minWidth: 0, overflow: 'hidden' }}>
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Time</label>
                   <input type="time" value={scheduledTime} onChange={e => setScheduledTime(e.target.value)}
-                    className="w-full min-w-0 px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                    className="w-full px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
+                    style={{ minWidth: 0, maxWidth: '100%', boxSizing: 'border-box' }} />
                 </div>
-                <div className="min-w-0">
+                <div style={{ minWidth: 0, overflow: 'hidden' }}>
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Duration (min)</label>
                   <input type="number" value={duration} onChange={e => setDuration(e.target.value)} min="0" step="5"
                     placeholder="—"
-                    className="w-full min-w-0 px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                    className="w-full px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
+                    style={{ minWidth: 0, maxWidth: '100%', boxSizing: 'border-box' }} />
                   <p className="text-[10px] text-gray-400 mt-0.5">Leave blank for marker</p>
                 </div>
               </div>
@@ -14493,7 +14580,28 @@
                 <span className="text-sm">{opt.emoji}</span>
                 <span className="text-sm truncate flex-1 min-w-0 dark:text-white">{opt.name}</span>
                 <button
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    // Remove this option from the list
+                    const remaining = item.options.filter((_, i) => i !== oi);
+                    if (remaining.length <= 1) {
+                      // Auto-confirm the last remaining option (or delete if none)
+                      if (remaining.length === 1) {
+                        const last = remaining[0];
+                        onEdit({ ...item, pin_id: last.pin_id, name: last.name, emoji: last.emoji, lat: last.lat, lng: last.lng, options: null, confirmed_option: last.pin_id, _skipForm: true });
+                      } else {
+                        onDelete(item.id);
+                      }
+                    } else {
+                      onEdit({ ...item, options: remaining, _skipForm: true });
+                    }
+                  }}
+                  className="p-0.5 text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition"
+                  title="Remove option"
+                >✕</button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
                     // Pick this option — convert to regular item
                     onEdit({
                       ...item,
@@ -14677,14 +14785,70 @@
       );
     };
 
+    // ---- DayMiniMap (small Leaflet map for a day's items) ----
+    const DayMiniMap = ({ points, isDarkMode }) => {
+      const mapContainerRef = useRef(null);
+      const mapRef = useRef(null);
+
+      useEffect(() => {
+        if (!mapContainerRef.current || !window.L || points.length === 0) return;
+        if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+
+        const map = window.L.map(mapContainerRef.current, {
+          zoomControl: false, attributionControl: false,
+          dragging: true, scrollWheelZoom: false,
+          doubleClickZoom: false, touchZoom: true,
+        });
+        mapRef.current = map;
+
+        const tileUrl = isDarkMode
+          ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+          : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+        window.L.tileLayer(tileUrl, { maxZoom: 18 }).addTo(map);
+
+        const markers = [];
+        points.forEach((pt, i) => {
+          const icon = window.L.divIcon({
+            className: 'day-mini-marker',
+            html: `<div style="font-size:16px;text-align:center;line-height:1;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.3))">${pt.emoji || '📌'}</div>`,
+            iconSize: [24, 24], iconAnchor: [12, 12],
+          });
+          const m = window.L.marker([pt.lat, pt.lng], { icon }).addTo(map);
+          m.bindTooltip(`${i + 1}. ${pt.name}`, { direction: 'top', offset: [0, -8] });
+          markers.push(m);
+        });
+
+        // Draw route line connecting points in order
+        if (points.length >= 2) {
+          const latlngs = points.map(p => [p.lat, p.lng]);
+          window.L.polyline(latlngs, {
+            color: isDarkMode ? '#60a5fa' : '#3b82f6',
+            weight: 2, opacity: 0.6, dashArray: '6,4',
+          }).addTo(map);
+        }
+
+        // Fit bounds
+        const group = window.L.featureGroup(markers);
+        map.fitBounds(group.getBounds().pad(0.15));
+
+        return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
+      }, [points, isDarkMode]);
+
+      return <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />;
+    };
+
     // ---- DayView (single day card) ----
-    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, transitError, onRecalcTransit, weather, weatherCodeMap, weatherLocation, onWeatherLocationChange, allHotels, dayDocs }) => {
+    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, transitError, onRecalcTransit, weather, weatherCodeMap, weatherLocation, onWeatherLocationChange, allHotels, dayDocs, allDays, onSwapDays, onMoveAllToDay }) => {
       const [dragItemId, setDragItemId] = useState(null);
       const [dragOverIndex, setDragOverIndex] = useState(null);
       const [showStartPicker, setShowStartPicker] = useState(false);
       const [confirmDeleteDay, setConfirmDeleteDay] = useState(false);
       const [editingStartTime, setEditingStartTime] = useState(false);
       const [startTimeDraft, setStartTimeDraft] = useState(day.start_time || '');
+      const [showMiniMap, setShowMiniMap] = useState(false);
+      const [showSwapPicker, setShowSwapPicker] = useState(null); // null | 'swap' | 'move'
+      const miniMapRef = useRef(null);
+      const miniMapInstance = useRef(null);
 
       // Separate ordered items (have scheduled_time) and unordered.
       // If the day has a start_time and items are in order_in_day order without explicit times,
@@ -14946,15 +15110,19 @@
               const showRain = weather.rainChance != null && weather.rainChance > 0;
               const locName = weatherLocation?.name || '';
               return (
-                <div className={`flex items-center gap-2 mt-1 ml-6 ${weather.isHistorical ? 'opacity-70' : ''}`} title={`${w.label}${locName ? ' in ' + locName : ''}${showRain ? ` · ${weather.rainChance}% chance of rain` : ''}${weather.rainMm > 0 ? ` · ${weather.rainMm}mm` : ''}${weather.isHistorical ? ' (historical avg)' : ''}`}>
+                <div className={`flex items-center gap-2 mt-1 ml-6 flex-wrap ${weather.isHistorical ? 'opacity-70' : ''}`} title={`${w.label}${locName ? ' in ' + locName : ''}${showRain ? ` · ${weather.rainChance}% chance of rain` : ''}${weather.rainMm > 0 ? ` · ${weather.rainMm}mm` : ''}${weather.rainHours ? ` · ~${weather.rainHours}h of rain` : ''}${weather.isHistorical ? ' (historical avg)' : ''}`}>
                   <span className="text-sm">{w.emoji}</span>
                   <span className={`text-xs ${weather.isHistorical ? 'text-gray-400 dark:text-gray-500 italic' : 'text-gray-500 dark:text-gray-400'}`}>
                     {weather.high}°/{weather.low}°
                   </span>
                   {showRain && (
                     <span className={`text-xs ${weather.rainChance >= 50 ? 'text-blue-500 dark:text-blue-400 font-medium' : 'text-gray-400 dark:text-gray-500'}`}>
-                      💧{weather.rainChance}%
+                      💧{weather.rainChance}%{weather.rainHours > 0 ? ` · ~${weather.rainHours}h` : ''}{weather.rainPeakHour != null && weather.rainHours > 0 ? ` (peak ~${weather.rainPeakHour > 12 ? weather.rainPeakHour - 12 : weather.rainPeakHour}${weather.rainPeakHour >= 12 ? 'pm' : 'am'})` : ''}
                     </span>
+                  )}
+                  {weather._lat && weather._lng && day.date && !weather.isHistorical && (
+                    <a href={`https://meteoblue.com/en/weather/week/${weather._lat}N${weather._lng}E?day=${(() => { const d = new Date(day.date + 'T12:00:00'); const t = new Date(); t.setHours(0,0,0,0); return Math.max(0, Math.ceil((d - t) / 86400000)); })()}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+                      className="text-[10px] text-blue-400 hover:text-blue-500 hover:underline">hourly ↗</a>
                   )}
                   {weather.isHistorical && <span className="text-xs text-gray-400 dark:text-gray-500 italic">avg</span>}
                   {locName && (
@@ -15201,6 +15369,22 @@
                 </div>
               )}
 
+              {/* Day mini-map */}
+              {showMiniMap && (() => {
+                const mapItems = items.filter(i => i.lat && i.lng);
+                const hotelPts = (dayDocs || []).filter(d => d._isHotelStay).map(d => {
+                  const p = pins.find(pp => pp.category === 'hotel' && pp.name && d.title && pp.name.toLowerCase().includes(d.title.toLowerCase().substring(0, 10)));
+                  return p ? { lat: p.lat, lng: p.lng, name: d.title, emoji: '🏨' } : null;
+                }).filter(Boolean);
+                const allPts = [...mapItems.map(i => ({ lat: i.lat, lng: i.lng, name: i.name, emoji: i.emoji })), ...hotelPts];
+                if (allPts.length === 0) return <div className="text-xs text-gray-400 text-center py-2">No pins with locations to map</div>;
+                return (
+                  <div className="mt-2 rounded-lg overflow-hidden border dark:border-slate-700" style={{ height: 200 }}>
+                    <DayMiniMap points={allPts} isDarkMode={isDarkMode} />
+                  </div>
+                );
+              })()}
+
               {/* Day footer actions */}
               <div className="flex items-center justify-between mt-2 mx--2 px-3 py-1.5 bg-gray-50/80 dark:bg-slate-800/50 border-t border-gray-100 dark:border-slate-700/50 gap-2 flex-wrap -mb-2 rounded-b-xl">
                 <div className="flex items-center gap-2">
@@ -15215,6 +15399,62 @@
                       className="text-[10px] text-blue-500 hover:text-blue-600"
                       title="Recalculate walking / transit times via Google"
                     >🔄 Travel times</button>
+                  )}
+                  {items.filter(i => i.lat && i.lng).length >= 1 && (
+                    <button
+                      onClick={() => setShowMiniMap(!showMiniMap)}
+                      className={`text-[10px] ${showMiniMap ? 'text-green-600 dark:text-green-400' : 'text-blue-500 hover:text-blue-600'}`}
+                      title="Show day map"
+                    >🗺️ Map</button>
+                  )}
+                  {/* Swap / Move all items */}
+                  {allDays && allDays.length > 1 && items.length > 0 && (
+                    <div className="relative">
+                      <button
+                        onClick={() => setShowSwapPicker(showSwapPicker ? null : 'menu')}
+                        className="text-[10px] text-blue-500 hover:text-blue-600"
+                        title="Swap or move items to another day"
+                      >🔀 Swap day</button>
+                      {showSwapPicker && (
+                        <div className={`absolute left-0 bottom-full mb-1 ${isDarkMode ? 'bg-slate-800 border-slate-600' : 'bg-white border-gray-200'} border rounded-lg shadow-lg py-1 z-50 min-w-[180px] max-h-56 overflow-y-auto`}>
+                          {showSwapPicker === 'menu' && (
+                            <>
+                              <div className="px-3 py-1 text-[10px] text-gray-400 dark:text-gray-500 font-semibold uppercase">Swap plans with...</div>
+                              {allDays.filter(d => d.id !== day.id).map(d => {
+                                const dayNum = allDays.indexOf(d) + 1;
+                                const dateLabel = d.date ? new Date(d.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
+                                return (
+                                  <button key={d.id}
+                                    onClick={() => { onSwapDays(day.id, d.id); setShowSwapPicker(null); }}
+                                    className={`w-full text-left px-3 py-1.5 text-xs hover:bg-blue-50 dark:hover:bg-blue-900/20 ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`}
+                                  >
+                                    <span className="font-medium">Day {dayNum}</span>
+                                    {dateLabel && <span className="text-gray-400 ml-1">{dateLabel}</span>}
+                                    {d.location && <span className="text-gray-400 ml-1">· {d.location}</span>}
+                                  </button>
+                                );
+                              })}
+                              <div className="border-t dark:border-slate-700 mt-1 pt-1">
+                                <div className="px-3 py-1 text-[10px] text-gray-400 dark:text-gray-500 font-semibold uppercase">Move all to...</div>
+                                {allDays.filter(d => d.id !== day.id).map(d => {
+                                  const dayNum = allDays.indexOf(d) + 1;
+                                  const dateLabel = d.date ? new Date(d.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
+                                  return (
+                                    <button key={`mv-${d.id}`}
+                                      onClick={() => { onMoveAllToDay(day.id, d.id); setShowSwapPicker(null); }}
+                                      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-purple-50 dark:hover:bg-purple-900/20 ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`}
+                                    >
+                                      <span className="font-medium">→ Day {dayNum}</span>
+                                      {dateLabel && <span className="text-gray-400 ml-1">{dateLabel}</span>}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
                 {!confirmDeleteDay ? (
@@ -15477,7 +15717,8 @@
           if (!str) return '';
           if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.substring(0, 10);
           const d = new Date(str);
-          return !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : '';
+          if (isNaN(d.getTime())) return '';
+          return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
         };
         const hotels = pins.filter(p => p.category === 'hotel' && p.reservation_details);
         if (hotels.length === 0) return { days: 7, hasLaundry: false, weather: { avgHigh: 20, avgLow: 12, rainyDays: 2, totalDays: 7 } };
@@ -15511,7 +15752,8 @@
           if (!str) return '';
           if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.substring(0, 10);
           const d = new Date(str);
-          return !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : '';
+          if (isNaN(d.getTime())) return '';
+          return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
         };
 
         const hotels = pins.filter(p => p.category === 'hotel' && p.reservation_details);
@@ -16114,20 +16356,41 @@
           if (forecastDates.length > 0) {
             try {
               const resp = await fetch(
-                `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,precipitation_sum&start_date=${forecastDates[0]}&end_date=${forecastDates[forecastDates.length - 1]}&timezone=auto`
+                `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,precipitation_sum&hourly=precipitation_probability,precipitation&start_date=${forecastDates[0]}&end_date=${forecastDates[forecastDates.length - 1]}&timezone=auto`
               );
               if (resp.ok) {
                 const data = await resp.json();
                 if (data.daily) {
                   data.daily.time.forEach((date, i) => {
                     if (sorted.includes(date)) {
+                      // Extract hourly rain data for this date (hours 7-22 = daytime)
+                      let rainHours = null;
+                      let rainPeakHour = null;
+                      let rainPeakProb = 0;
+                      if (data.hourly?.time) {
+                        const dayHourly = [];
+                        data.hourly.time.forEach((ht, hi) => {
+                          if (ht.startsWith(date) ) {
+                            const hour = parseInt(ht.split('T')[1].split(':')[0]);
+                            if (hour >= 7 && hour <= 22) {
+                              const prob = data.hourly.precipitation_probability?.[hi] ?? 0;
+                              const mm = data.hourly.precipitation?.[hi] ?? 0;
+                              dayHourly.push({ hour, prob, mm });
+                              if (prob > rainPeakProb) { rainPeakProb = prob; rainPeakHour = hour; }
+                            }
+                          }
+                        });
+                        rainHours = dayHourly.filter(h => h.prob >= 30).length;
+                      }
                       results[date] = {
                         high: Math.round(data.daily.temperature_2m_max[i]),
                         low: Math.round(data.daily.temperature_2m_min[i]),
                         code: data.daily.weather_code[i],
                         rainChance: data.daily.precipitation_probability_max?.[i] ?? null,
                         rainMm: data.daily.precipitation_sum?.[i] ?? null,
+                        rainHours, rainPeakHour,
                         isHistorical: false,
+                        _lat: lat, _lng: lng,
                       };
                     }
                   });
@@ -16159,6 +16422,7 @@
                       rainMm: data.daily.precipitation_sum?.[0] ?? null,
                       rainChance: null, // not available for historical
                       isHistorical: true,
+                      _lat: lat, _lng: lng,
                     };
                   }
                 }
@@ -16214,7 +16478,8 @@
           if (!str) return '';
           if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.substring(0, 10);
           const d = new Date(str);
-          return !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : '';
+          if (isNaN(d.getTime())) return '';
+          return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
         };
 
         // 1. Standalone travel docs
@@ -16408,6 +16673,32 @@
       const handleDeleteItem = async (itemId) => {
         setItems(prev => prev.filter(i => i.id !== itemId));
         await MockFirebase.deleteItem(itemId);
+      };
+
+      // Swap all non-booked items between two days
+      const handleSwapDays = (dayIdA, dayIdB) => {
+        setItems(prev => {
+          const itemsA = prev.filter(i => i.day_id === dayIdA);
+          const itemsB = prev.filter(i => i.day_id === dayIdB);
+          const movedA = itemsA.map((it, i) => ({ ...it, day_id: dayIdB, order_in_day: i, scheduled_time: '' }));
+          const movedB = itemsB.map((it, i) => ({ ...it, day_id: dayIdA, order_in_day: i, scheduled_time: '' }));
+          const allMoved = [...movedA, ...movedB];
+          MockFirebase.saveItems(allMoved);
+          const movedIds = new Set(allMoved.map(i => i.id));
+          return [...prev.filter(i => !movedIds.has(i.id)), ...allMoved];
+        });
+      };
+
+      // Move all non-booked items from one day to another (append)
+      const handleMoveAllToDay = (fromDayId, toDayId) => {
+        setItems(prev => {
+          const fromItems = prev.filter(i => i.day_id === fromDayId);
+          const toCount = prev.filter(i => i.day_id === toDayId).length;
+          const moved = fromItems.map((it, i) => ({ ...it, day_id: toDayId, order_in_day: toCount + i, scheduled_time: '' }));
+          MockFirebase.saveItems(moved);
+          const movedIds = new Set(moved.map(i => i.id));
+          return [...prev.filter(i => !movedIds.has(i.id)), ...moved];
+        });
       };
 
       // Save edited item
@@ -16904,6 +17195,9 @@
                   allHotels={collectionPins.filter(p => p.category === 'hotel' && p.lat && p.lng)}
                   weatherCodeMap={weatherCodeMap}
                   dayDocs={getDocsForDate(day.date)}
+                  allDays={days}
+                  onSwapDays={handleSwapDays}
+                  onMoveAllToDay={handleMoveAllToDay}
                 />
               ))}
 
@@ -16925,6 +17219,13 @@
               onSave={handleSaveItem}
               onClose={() => { setEditingItem(null); setAddingToDay(null); }}
               isDarkMode={isDarkMode}
+              onCreatePin={(pinData) => {
+                const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
+                const newPin = { ...pinData, collection_id: defaultCollection, created_at: new Date().toISOString() };
+                MockFirebase.savePin(newPin);
+                setPins(prev => [...prev, newPin]);
+                setTimeout(() => fetchRatingsForPin(newPin), 200);
+              }}
             />
           )}
 
