@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v101';
+    const APP_VERSION = 'v102';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -11997,7 +11997,7 @@
                   ? 'bg-green-500 hover:bg-green-600'
                   : 'bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700'
               }`}
-              style={{ right: 10, bottom: 175, zIndex: 1000, width: 34, height: 34 }}
+              style={{ right: 10, bottom: 230, zIndex: 1000, width: 34, height: 34 }}
               title={openNowFilter ? 'Showing open now — tap to show all' : 'Show only open now'}
             >
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={openNowFilter ? 'white' : 'currentColor'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={openNowFilter ? '' : 'text-gray-700 dark:text-gray-200'}>
@@ -12023,7 +12023,7 @@
               }
             }}
             className="absolute bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-md shadow-lg flex items-center justify-center"
-            style={{ right: 10, bottom: 133, zIndex: 1000, width: 34, height: 34 }}
+            style={{ right: 10, bottom: 185, zIndex: 1000, width: 34, height: 34 }}
             id="locate-me-btn"
             title="Go to my location"
           >
@@ -15319,7 +15319,7 @@
                 <div className={`flex items-center gap-2 mt-1 ml-6 flex-wrap ${weather.isHistorical ? 'opacity-70' : ''}`} title={`${w.label}${locName ? ' in ' + locName : ''}${showRain ? ` · ${weather.rainChance}% chance of rain` : ''}${weather.rainMm > 0 ? ` · ${weather.rainMm}mm` : ''}${weather.rainHours ? ` · ~${weather.rainHours}h of rain` : ''}${weather.isHistorical ? ' (historical avg)' : ''}`}>
                   <span className="text-sm">{w.emoji}</span>
                   <span className={`text-xs ${weather.isHistorical ? 'text-gray-400 dark:text-gray-500 italic' : 'text-gray-500 dark:text-gray-400'}`}>
-                    {weather.high}°/{weather.low}°
+                    {weather.high}°/{weather.low}°F
                   </span>
                   {showRain && (
                     <span className={`text-xs ${weather.rainChance >= 50 ? 'text-blue-500 dark:text-blue-400 font-medium' : 'text-gray-400 dark:text-gray-500'}`}>
@@ -15466,7 +15466,7 @@
                   isFirst={idx === 0}
                   isLast={idx === allSorted.length - 1}
                   matchedDoc={docByPinId[item.id] || null}
-                  onViewDoc={(doc) => openDataFile(doc.file_data, doc.file_name, doc.id)}
+                  onViewDoc={(doc) => openDataFile(doc.file_data, doc.file_name, doc._pinId || doc.id)}
                   onMoveUp={() => { if (idx > 0) handleDrop(idx - 1, item.id, idx); }}
                   onMoveDown={() => { if (idx < allSorted.length - 1) handleDrop(idx + 1, item.id, idx); }}
                   onAddMeal={item._isMealSlot ? (meal) => {
@@ -16269,7 +16269,7 @@
             React.createElement('div', { className: 'pb-20' },
               // Trip summary bar
               React.createElement('div', { className: `px-4 py-2 text-xs flex items-center gap-3 border-b ${isDarkMode ? 'border-slate-700 bg-slate-800/50 text-slate-400' : 'border-gray-100 bg-gray-50 text-gray-500'}` },
-                React.createElement('span', null, `${weatherEmoji} ${weatherSummary.avgHigh}°/${weatherSummary.avgLow}°`),
+                React.createElement('span', null, `${weatherEmoji} ${weatherSummary.avgHigh}°/${weatherSummary.avgLow}°F`),
                 React.createElement('span', null, `📅 ${tripInfo.days}d`),
                 tripInfo.hasLaundry && React.createElement('span', null, '🧺 Laundry'),
                 React.createElement('span', { className: 'ml-auto' },
@@ -16576,7 +16576,7 @@
           if (forecastDates.length > 0) {
             try {
               const resp = await fetch(
-                `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,precipitation_sum&hourly=precipitation_probability,precipitation&start_date=${forecastDates[0]}&end_date=${forecastDates[forecastDates.length - 1]}&timezone=auto`
+                `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,precipitation_sum&hourly=precipitation_probability,precipitation&start_date=${forecastDates[0]}&end_date=${forecastDates[forecastDates.length - 1]}&timezone=auto&temperature_unit=fahrenheit`
               );
               if (resp.ok) {
                 const data = await resp.json();
@@ -16630,7 +16630,7 @@
               const lyStr = lastYear.toISOString().split('T')[0];
               try {
                 const resp = await fetch(
-                  `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lng}&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_sum&start_date=${lyStr}&end_date=${lyStr}&timezone=auto`
+                  `https://archive-api.open-meteo.com/v1/archive?latitude=${lat}&longitude=${lng}&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_sum&start_date=${lyStr}&end_date=${lyStr}&timezone=auto&temperature_unit=fahrenheit`
                 );
                 if (resp.ok) {
                   const data = await resp.json();
@@ -16739,7 +16739,7 @@
                 id: pin.id, _source: 'pin', type: 'hotel', title: pin.name,
                 check_in: rd.check_in, check_out: rd.check_out,
                 confirmation: rd.confirmation_number, cost: rd.price,
-                carrier: rd.booking_source, file_data: pin.attachment, file_name: pin.attachment_name,
+                carrier: rd.booking_source, file_data: pin.attachment?.data || null, file_name: pin.attachment?.name || '', _pinId: pin.id,
                 _isHotelStay: true, _isCheckIn: dayDate === ci, _isCheckOut: dayDate === co,
                 _pinId: pin.id,
               });
@@ -16776,9 +16776,9 @@
         Promise.all([
           MockFirebase.loadDays(activeItinerary.id),
           MockFirebase.loadItems(activeItinerary.id),
-        ]).then(([loadedDays, loadedItems]) => {
+        ]).then(([loadedDays, _loadedItems]) => {
+          let loadedItems = _loadedItems;
           setDays(loadedDays);
-          setItems(loadedItems);
 
           // Feature 1: Auto-add activity/restaurant pins with dates to itinerary
           const toISO = (str) => {
@@ -16836,10 +16836,37 @@
           }
 
           if (autoAddedItems.length > 0) {
-            const newItems = [...loadedItems, ...autoAddedItems];
-            setItems(newItems);
+            loadedItems = [...loadedItems, ...autoAddedItems];
             MockFirebase.saveItems(autoAddedItems);
           }
+
+          // Dedup: remove duplicate items for same pin on same day (keep first)
+          const seen = new Set();
+          const dupeIds = [];
+          for (const item of loadedItems) {
+            if (!item.pin_id) continue;
+            const key = `${item.day_id}::${item.pin_id}`;
+            if (seen.has(key)) {
+              dupeIds.push(item.id);
+            } else {
+              // Also check by name for same day
+              const nameKey = `${item.day_id}::${(item.name || '').toLowerCase().trim()}`;
+              if (item.name && item.name.length >= 4 && seen.has(nameKey)) {
+                dupeIds.push(item.id);
+              } else {
+                seen.add(key);
+                if (item.name && item.name.length >= 4) seen.add(nameKey);
+              }
+            }
+          }
+          if (dupeIds.length > 0) {
+            const dupeSet = new Set(dupeIds);
+            loadedItems = loadedItems.filter(i => !dupeSet.has(i.id));
+            dupeIds.forEach(id => MockFirebase.deleteItem(id));
+            console.log('[Itinerary] Removed', dupeIds.length, 'duplicate items');
+          }
+
+          setItems(loadedItems);
 
           // Auto-expand today's day (or nearest upcoming day, or first day as fallback)
           if (loadedDays.length > 0) {
@@ -17651,7 +17678,7 @@
                           <div>
                             <p className="text-xs tracking-[0.2em] uppercase" style={{ color: '#c4956a' }}>{(() => { const d = new Date(day.date + 'T12:00:00'); return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }).toUpperCase(); })()}</p>
                             <h2 className="text-xl font-light text-gray-800 dark:text-white mt-0.5" style={{ fontFamily: 'Georgia, serif' }}>{dayTitle}</h2>
-                            {w && wInfo && <p className="text-xs text-gray-400 mt-1">{wInfo.emoji} {w.high}°/{w.low}°{w.rainChance > 0 ? ` · ${w.rainChance}% rain` : ''}</p>}
+                            {w && wInfo && <p className="text-xs text-gray-400 mt-1">{wInfo.emoji} {w.high}°/{w.low}°F{w.rainChance > 0 ? ` · ${w.rainChance}% rain` : ''}</p>}
                             {checkOut && checkOut.title !== (stayHotel || checkIn || {}).title && (
                               <p className="text-xs text-gray-400 mt-0.5">Check out {checkOut.title}</p>
                             )}
@@ -17899,7 +17926,7 @@
                               const w = weatherCodeMap[weatherData[day.date].code] || weatherCodeMap[0];
                               return (
                                 <span className="text-sm" title={w.label}>
-                                  {w.emoji} <span className="text-xs text-gray-400">{weatherData[day.date].high}°/{weatherData[day.date].low}°</span>
+                                  {w.emoji} <span className="text-xs text-gray-400">{weatherData[day.date].high}°/{weatherData[day.date].low}°F</span>
                                 </span>
                               );
                             })()}
@@ -18569,54 +18596,52 @@
               i.onerror = reject;
               i.src = imgSrc;
             });
-            const canvas = document.createElement('canvas');
-            // Upscale aggressively for better OCR
+            // Try TWO OCR approaches and pick the one with more useful text
             const longSide = Math.max(img.width, img.height) || 1;
-            const scale = longSide < 3200 ? 3200 / longSide : 1;
-            canvas.width = Math.round(img.width * scale);
-            canvas.height = Math.round(img.height * scale);
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            // Grayscale + high contrast + binarization for cleaner OCR
+            const ocrResults = [];
+            // Approach A: gentle grayscale + moderate contrast (better for colorful guidebooks)
+            const canvasA = document.createElement('canvas');
+            const scaleA = longSide < 2800 ? 2800 / longSide : 1;
+            canvasA.width = Math.round(img.width * scaleA);
+            canvasA.height = Math.round(img.height * scaleA);
+            const ctxA = canvasA.getContext('2d');
+            ctxA.fillStyle = '#ffffff';
+            ctxA.fillRect(0, 0, canvasA.width, canvasA.height);
+            ctxA.drawImage(img, 0, 0, canvasA.width, canvasA.height);
             try {
-              const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const imgData = ctxA.getImageData(0, 0, canvasA.width, canvasA.height);
               const d = imgData.data;
-              // Pass 1: compute adaptive threshold (Otsu-like)
-              const histogram = new Array(256).fill(0);
-              for (let i = 0; i < d.length; i += 4) {
-                const gray = Math.round(0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2]);
-                histogram[gray]++;
-              }
-              const totalPixels = d.length / 4;
-              let sum = 0, sumB = 0, wB = 0, maxVar = 0, threshold = 128;
-              for (let t = 0; t < 256; t++) sum += t * histogram[t];
-              for (let t = 0; t < 256; t++) {
-                wB += histogram[t];
-                if (wB === 0) continue;
-                const wF = totalPixels - wB;
-                if (wF === 0) break;
-                sumB += t * histogram[t];
-                const mB = sumB / wB;
-                const mF = (sum - sumB) / wF;
-                const variance = wB * wF * (mB - mF) * (mB - mF);
-                if (variance > maxVar) { maxVar = variance; threshold = t; }
-              }
-              // Pass 2: binarize with adaptive threshold
               for (let i = 0; i < d.length; i += 4) {
                 let gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
-                gray = gray < threshold ? 0 : 255;
-                d[i] = d[i+1] = d[i+2] = gray;
+                gray = ((gray / 255 - 0.5) * 1.5 + 0.5) * 255;
+                d[i] = d[i+1] = d[i+2] = Math.max(0, Math.min(255, gray));
               }
-              ctx.putImageData(imgData, 0, 0);
+              ctxA.putImageData(imgData, 0, 0);
             } catch {}
-            // OCR
             try {
-              const result = await Tesseract.recognize(canvas, 'eng+jpn', { logger: () => {} });
-              const text = (result.data?.text || '').trim();
-              if (text) allOcrText += '\n' + text;
-            } catch (err) { console.warn('OCR failed for', files[fi].name, err); }
+              const rA = await Tesseract.recognize(canvasA, 'eng+jpn', { logger: () => {} });
+              ocrResults.push({ text: (rA.data?.text || '').trim(), conf: rA.data?.confidence || 0 });
+            } catch { ocrResults.push({ text: '', conf: 0 }); }
+            // Approach B: sharper upscale, no color manipulation (preserves text structure)
+            const canvasB = document.createElement('canvas');
+            const scaleB = longSide < 3600 ? 3600 / longSide : 1;
+            canvasB.width = Math.round(img.width * scaleB);
+            canvasB.height = Math.round(img.height * scaleB);
+            const ctxB = canvasB.getContext('2d');
+            ctxB.fillStyle = '#ffffff';
+            ctxB.fillRect(0, 0, canvasB.width, canvasB.height);
+            ctxB.drawImage(img, 0, 0, canvasB.width, canvasB.height);
+            try {
+              const rB = await Tesseract.recognize(canvasB, 'eng+jpn', { logger: () => {} });
+              ocrResults.push({ text: (rB.data?.text || '').trim(), conf: rB.data?.confidence || 0 });
+            } catch { ocrResults.push({ text: '', conf: 0 }); }
+            // Pick the result with more numbered lines or higher confidence
+            const countNums = t => (t.match(/^\d{1,3}[\s.):\-]/gm) || []).length;
+            const bestOcr = ocrResults.sort((a, b) => {
+              const na = countNums(a.text), nb = countNums(b.text);
+              return na !== nb ? nb - na : b.conf - a.conf;
+            })[0];
+            if (bestOcr.text) allOcrText += '\n' + bestOcr.text;
           }
           allOcrText = allOcrText.trim();
           if (!allOcrText) {
@@ -18625,29 +18650,51 @@
             return;
           }
           // Parse all combined text into numbered entries
-          const joined = allOcrText.split('\n').map(l => l.trim());
+          const joined = allOcrText.split('\n').map(l => l.trim()).filter(l => l);
           const entries = [];
-          // Match: number (with optional dot/paren), then space(s), then name (letter or Japanese)
-          const numRe = /^(\d{1,3})[.):\s]*\s+([A-Za-z぀-鿿㐀-䶵\u{20000}-\u{2A6DF}][\w\s\-&'''()぀-鿿㐀-䶵]{2,80})/u;
+          const seenNames = new Set();
+          // Match: number (with optional dot/paren/dash), then space(s), then name
+          const numRe = /^(\d{1,3})[.):\-\s]*\s+([A-Za-z぀-鿿㐀-䶵\u{20000}-\u{2A6DF}][\w\s\-&'''()぀-鿿㐀-䶵\u{20000}-\u{2A6DF}]{2,80})/u;
+          // Also match lines like "Fucha Vegetarian Cuisine BON" — capitalized multi-word names
+          const nameOnlyRe = /^([A-Z][a-zA-Z]+(?:\s+[A-Za-z\-&']+){1,8})\s*$/;
+          // Common junk patterns to skip
+          const junkRe = /^(tokyo|guide|muslim|check|around|prices?|available|page|chapter|section|copyright|address|access|hours?|closed|open|lunch|dinner|https?|www\.|map|tel|fax)\b/i;
           const resRe = /reservat\w*\s*(required|recommended|suggest|necessary|essential|advised)|book\s*(ahead|in advance)/i;
-          for (let i = 0; i < joined.length; i++) {
-            const m = joined[i].match(numRe);
-            if (!m) continue;
-            const num = parseInt(m[1]);
-            if (num > 200) continue;
-            let name = m[2].trim().replace(/[.,;:!?]+$/, '');
-            if (/^(tokyo|guide|muslim|check|around|prices?|available|page|chapter|section|copyright)\b/i.test(name)) continue;
-            if (name.length < 2) continue;
+          const addEntry = (name, startIdx) => {
+            name = name.trim().replace(/[.,;:!?|]+$/, '').replace(/^\W+/, '');
+            // Clean OCR artifacts: remove stray single chars at start/end
+            name = name.replace(/^[^A-Za-z぀-鿿]+/, '').replace(/\s+[^A-Za-z぀-鿿]{1,2}$/, '');
+            if (name.length < 3 || junkRe.test(name)) return;
+            const key = name.toLowerCase().replace(/\s+/g, '');
+            if (seenNames.has(key)) return;
+            seenNames.add(key);
             let desc = '';
             let hasRes = false;
-            for (let j = i + 1; j < joined.length && j < i + 20; j++) {
-              if (numRe.test(joined[j])) break;
+            for (let j = startIdx; j < joined.length && j < startIdx + 15; j++) {
+              if (j > startIdx && numRe.test(joined[j])) break;
               const line = joined[j].trim();
               if (!line) continue;
               if (resRe.test(line)) hasRes = true;
               if (desc.length < 300) desc += (desc ? ' ' : '') + line;
             }
             entries.push({ name, description: desc.substring(0, 300), checked: true, loading: false, placeData: null, reservation_recommended: hasRes });
+          };
+          // Pass 1: numbered entries
+          for (let i = 0; i < joined.length; i++) {
+            const m = joined[i].match(numRe);
+            if (!m) continue;
+            const num = parseInt(m[1]);
+            if (num > 200) continue;
+            addEntry(m[2], i + 1);
+          }
+          // Pass 2: if few numbered entries found, look for standalone capitalized names
+          if (entries.length < 3) {
+            for (let i = 0; i < joined.length; i++) {
+              const m = joined[i].match(nameOnlyRe);
+              if (m && m[1].length >= 5 && !junkRe.test(m[1])) {
+                addEntry(m[1], i + 1);
+              }
+            }
           }
           if (entries.length >= 2) {
             setKmlBulkData({ places: entries, source: { source_name: `Photo scan (${files.length} pages)`, source_url: '' } });
