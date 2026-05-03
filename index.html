@@ -17615,12 +17615,12 @@
                   onSelectPin={(pinId) => {
                     const pin = collectionPins.find(p => p.id === pinId);
                     if (pin) {
-                      skipPanelAutoClose.current = true;
-                      setShowItinerary(false);
-                      setTimeout(() => {
+                      // Close itinerary first, then select pin after effects settle
+                      onClose();
+                      requestAnimationFrame(() => {
                         setSelectedPin(pin);
                         if (pin.lat && pin.lng) setMapPanTarget({ lat: pin.lat, lng: pin.lng, zoom: 16, _t: Date.now() });
-                      }, 0);
+                      });
                     }
                   }}
                   transitError={transitErrors[day.id]}
@@ -18211,14 +18211,8 @@
       // Auto-replace side panels: only one right-side panel visible at a time.
       // When a pin is selected, close itinerary + doc center. When itinerary
       // opens, close selected pin + doc center, etc.
-      // Use a ref to skip the mutual-exclusion effect when navigating from itinerary to pin
-      const skipPanelAutoClose = useRef(false);
       useEffect(() => {
         if (selectedPin) {
-          if (skipPanelAutoClose.current) {
-            skipPanelAutoClose.current = false;
-            return;
-          }
           if (showItinerary) setShowItinerary(false);
           if (showTravelDocs) setShowTravelDocs(false);
           if (showPackingList) setShowPackingList(false);
