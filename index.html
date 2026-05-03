@@ -2954,7 +2954,7 @@
       );
     };
 
-    const PinDetailSheet = ({ pin, onClose, onEdit, onInlineUpdate, isDarkMode, isDesktop, onDelete, onNavigate, collections, allPins, fetchingRatings, onRetryRatings, ratingFetchStatus, customIcons, onUploadIcon, onDeleteIcon, onAddToItinerary, coLocatedPins = [], onSwitchPin }) => {
+    const PinDetailSheet = ({ pin, onClose, onEdit, onInlineUpdate, isDarkMode, isDesktop, onDelete, onNavigate, collections, allPins, fetchingRatings, onRetryRatings, ratingFetchStatus, customIcons, onUploadIcon, onDeleteIcon, onAddToItinerary, coLocatedPins = [], onSwitchPin, onBackToItinerary }) => {
       const [translated, setTranslated] = useState(null);
       const [translating, setTranslating] = useState(false);
       const [editing, setEditing] = useState(false);
@@ -3101,6 +3101,15 @@
           {!isDesktop && <div className="bottom-sheet-handle" />}
 
           <div className="p-4 space-y-2.5">
+            {/* Back to Itinerary — only when navigated from itinerary */}
+            {onBackToItinerary && (
+              <button
+                onClick={onBackToItinerary}
+                className="flex items-center gap-1 text-sm text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 -mt-1 mb-1"
+              >
+                <span>&#8592;</span> Back to Itinerary
+              </button>
+            )}
             {/* Header: Emoji + Name */}
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -18239,6 +18248,7 @@
       }, [showPackingList]);
       const [pendingItineraryPin, setPendingItineraryPin] = useState(null);
       const [coLocatedPins, setCoLocatedPins] = useState([]);
+      const [cameFromItinerary, setCameFromItinerary] = useState(false);
       // Helper: select a pin and auto-detect its same-place group
       const selectPinWithGroup = (pin, group) => {
         if (group && group.length > 1) {
@@ -18749,13 +18759,19 @@
           // Also match lines like "Fucha Vegetarian Cuisine BON" — capitalized multi-word names
           const nameOnlyRe = /^([A-Z][a-zA-Z]+(?:\s+[A-Za-z\-&']+){1,8})\s*$/;
           // Common junk patterns to skip
-          const junkRe = /^(tokyo|guide|muslim|check|around|prices?|available|page|chapter|section|copyright|address|access|hours?|closed|open|lunch|dinner|https?|www\.|map|tel|fax)\b/i;
+          const junkRe = /^(tokyo|kyoto|osaka|guide|muslim|check|around|prices?|available|page|chapter|section|copyright|address|access|hours?|closed|open|lunch|dinner|https?|www\.|map|tel|fax|website|click|menu|home|search|login|sign|view|download|subscribe|share|follow|contact|navigation|footer|header|sidebar|banner|cookie|privacy|terms|about|more|next|prev|back|continue|submit|cancel|close|image|photo|picture|logo|icon|button|link)\b/i;
+          // Also reject names that are ALL CAPS and look like UI/navigation text
+          const allCapsJunkRe = /^[A-Z\s\-&']{4,}$/.test.bind(/^[A-Z\s\-&']{4,}$/);
           const resRe = /reservat\w*\s*(required|recommended|suggest|necessary|essential|advised)|book\s*(ahead|in advance)/i;
           const addEntry = (name, startIdx) => {
             name = name.trim().replace(/[.,;:!?|]+$/, '').replace(/^\W+/, '');
             // Clean OCR artifacts: remove stray single chars at start/end
             name = name.replace(/^[^A-Za-z぀-鿿]+/, '').replace(/\s+[^A-Za-z぀-鿿]{1,2}$/, '');
             if (name.length < 3 || junkRe.test(name)) return;
+            // Reject names where every word is a common English/UI word (not a place name)
+            const uiWords = /^(the|a|an|and|or|of|in|on|at|to|for|is|are|was|by|with|from|this|that|it|all|no|not|be|do|has|have|get|set|new|old|my|your|our|see|also|more|less|out|up|bs|website|access|map|click|here|top|best|list|find|read|go|try)\b/i;
+            const words = name.split(/\s+/);
+            if (words.length >= 2 && words.every(w => uiWords.test(w))) return;
             const key = name.toLowerCase().replace(/\s+/g, '');
             if (seenNames.has(key)) return;
             seenNames.add(key);
@@ -18795,9 +18811,106 @@
             setKmlBulkData({ places: entries, source: { source_name: 'Photo scan', source_url: '' } });
             setShowAddFromLink(true);
           } else {
-            // Fallback: if no numbered entries found, treat the whole text as a paste
-            setKmlBulkData({ places: [{ name: allOcrText.split('\n')[0]?.substring(0, 50) || 'Photo scan', description: allOcrText.substring(0, 300), checked: true, loading: false, placeData: null }], source: { source_name: 'Photo scan', source_url: '' } });
-            setShowAddFromLink(true);
+            // Smart fallback: extract candidate text fragments and validate against Google Places
+            const apiKey = getGoogleApiKey();
+            const candidates = [];
+            const candidateSeen = new Set();
+            // Gather candidate fragments: clean each line, also try sliding windows of 2-3 consecutive words
+            for (const line of joined) {
+              const clean = line.replace(/[^A-Za-z\s\-&'()぀-鿿㐀-䶵\u{20000}-\u{2A6DF}]/gu, '').trim();
+              if (clean.length >= 3 && clean.length <= 80 && !junkRe.test(clean)) {
+                const k = clean.toLowerCase();
+                if (!candidateSeen.has(k)) { candidateSeen.add(k); candidates.push(clean); }
+              }
+              // Also try word windows from this line for multi-word place names embedded in longer text
+              const words = clean.split(/\s+/).filter(w => w.length >= 2);
+              for (let w = 0; w < words.length; w++) {
+                for (let span = 2; span <= Math.min(4, words.length - w); span++) {
+                  const frag = words.slice(w, w + span).join(' ');
+                  if (frag.length >= 5 && frag.length <= 60 && !junkRe.test(frag)) {
+                    const k = frag.toLowerCase();
+                    if (!candidateSeen.has(k)) { candidateSeen.add(k); candidates.push(frag); }
+                  }
+                }
+              }
+            }
+            // Also look for Japanese text fragments (katakana/kanji sequences are often place names)
+            const jpFrags = allOcrText.match(/[぀-鿿㐀-䶵\u{20000}-\u{2A6DF}ー]{3,30}/gu) || [];
+            for (const jp of jpFrags) {
+              const k = jp;
+              if (!candidateSeen.has(k)) { candidateSeen.add(k); candidates.push(jp); }
+            }
+
+            if (apiKey && candidates.length > 0) {
+              // Validate candidates against Google Places (batch up to 10 at a time)
+              const toCheck = candidates.slice(0, 15);
+              const validPlaces = [];
+              const batchSize = 3; // concurrent requests
+              for (let b = 0; b < toCheck.length; b += batchSize) {
+                const batch = toCheck.slice(b, b + batchSize);
+                const results = await Promise.allSettled(batch.map(async (q) => {
+                  try {
+                    const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'X-Goog-Api-Key': apiKey,
+                        'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
+                      },
+                      body: JSON.stringify({ textQuery: q, maxResultCount: 1 })
+                    });
+                    const data = await resp.json();
+                    const gp = data.places?.[0];
+                    if (gp && gp.displayName?.text) {
+                      const hours = {};
+                      if (gp.regularOpeningHours?.weekdayDescriptions) {
+                        const dayAbbrev = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun' };
+                        gp.regularOpeningHours.weekdayDescriptions.forEach(desc => {
+                          const m = desc.match(/^(\w+):\s*(.+)/);
+                          if (m) hours[dayAbbrev[m[1].toLowerCase()] || m[1].toLowerCase().substring(0, 3)] = m[2].trim();
+                        });
+                      }
+                      return {
+                        name: gp.displayName.text,
+                        description: gp.formattedAddress || '',
+                        checked: true, loading: false,
+                        placeData: {
+                          lat: gp.location?.latitude || 0,
+                          lng: gp.location?.longitude || 0,
+                          address: gp.formattedAddress || '',
+                          rating: gp.rating || null,
+                          types: gp.types || [],
+                          displayName: gp.displayName.text,
+                          opening_hours: hours,
+                        }
+                      };
+                    }
+                    return null;
+                  } catch { return null; }
+                }));
+                for (const r of results) {
+                  if (r.status === 'fulfilled' && r.value) {
+                    // Dedupe by place name
+                    const dupeName = validPlaces.some(vp => vp.name.toLowerCase() === r.value.name.toLowerCase());
+                    if (!dupeName) validPlaces.push(r.value);
+                  }
+                }
+                // Stop early if we found enough
+                if (validPlaces.length >= 5) break;
+              }
+              if (validPlaces.length > 0) {
+                setKmlBulkData({ places: validPlaces, source: { source_name: 'Photo scan', source_url: '' } });
+                setShowAddFromLink(true);
+              } else {
+                alert('Could not find recognizable place names in this image. Try a clearer photo of a list or guidebook page.');
+                setPhotoToPinProcessing(false);
+                return;
+              }
+            } else {
+              alert('Could not find place names in this image. Try a clearer photo, or paste the text directly.');
+              setPhotoToPinProcessing(false);
+              return;
+            }
           }
         } catch (err) {
           console.error('Bulk photo scan failed:', err);
@@ -19373,7 +19486,7 @@
               pin={selectedPin}
               coLocatedPins={coLocatedPins}
               onSwitchPin={(pin) => { setSelectedPin(pin); }}
-              onClose={() => { setSelectedPin(null); setCoLocatedPins([]); }}
+              onClose={() => { setSelectedPin(null); setCoLocatedPins([]); setCameFromItinerary(false); }}
               onEdit={(pin) => setEditingPin(pin)}
               onInlineUpdate={handleInlineUpdate}
               isDarkMode={darkMode}
@@ -19389,6 +19502,7 @@
               onUploadIcon={handleUploadIcon}
               onDeleteIcon={handleDeleteIcon}
               onAddToItinerary={handleAddToItinerary}
+              onBackToItinerary={cameFromItinerary ? () => { setSelectedPin(null); setCoLocatedPins([]); setCameFromItinerary(false); setShowItinerary(true); } : null}
             />
           )}
 
@@ -19397,7 +19511,7 @@
               pin={selectedPin}
               coLocatedPins={coLocatedPins}
               onSwitchPin={(pin) => { setSelectedPin(pin); }}
-              onClose={() => { setSelectedPin(null); setCoLocatedPins([]); }}
+              onClose={() => { setSelectedPin(null); setCoLocatedPins([]); setCameFromItinerary(false); }}
               onEdit={(pin) => setEditingPin(pin)}
               onInlineUpdate={handleInlineUpdate}
               isDarkMode={darkMode}
@@ -19413,6 +19527,7 @@
               onUploadIcon={handleUploadIcon}
               onDeleteIcon={handleDeleteIcon}
               onAddToItinerary={handleAddToItinerary}
+              onBackToItinerary={cameFromItinerary ? () => { setSelectedPin(null); setCoLocatedPins([]); setCameFromItinerary(false); setShowItinerary(true); } : null}
             />
           )}
 
@@ -19795,6 +19910,7 @@
               onClearPendingAdd={() => setPendingItineraryPin(null)}
               onSelectPinFromItinerary={(pin) => {
                 setShowItinerary(false);
+                setCameFromItinerary(true);
                 setTimeout(() => {
                   selectPinWithGroup(pin);
                   if (pin.lat && pin.lng) setMapPanTarget({ lat: pin.lat, lng: pin.lng, zoom: 16, _t: Date.now() });
