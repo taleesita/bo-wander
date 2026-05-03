@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v99';
+    const APP_VERSION = 'v101';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -2933,11 +2933,58 @@
       const [showHours, setShowHours] = useState(false);
       const [tabelogEditing, setTabelogEditing] = useState(false);
       const [tabelogInput, setTabelogInput] = useState('');
+      const [refreshingHours, setRefreshingHours] = useState(false);
 
       const hasGroup = coLocatedPins.length > 1;
 
       // Reset editing state when pin changes
-      useEffect(() => { setEditing(false); setConfirmingDelete(false); setTabelogEditing(false); }, [pin?.id]);
+      useEffect(() => { setEditing(false); setConfirmingDelete(false); setTabelogEditing(false); setRefreshingHours(false); }, [pin?.id]);
+
+      // Refresh hours from Google Places API
+      const refreshHours = async () => {
+        setRefreshingHours(true);
+        try {
+          const apiKey = getGoogleApiKey();
+          // Search by name + location for best match
+          const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Goog-Api-Key': apiKey,
+              'X-Goog-FieldMask': 'places.regularOpeningHours,places.displayName,places.location'
+            },
+            body: JSON.stringify({
+              textQuery: pin.name + (pin.address ? ' ' + pin.address : ''),
+              locationBias: pin.lat && pin.lng ? {
+                circle: { center: { latitude: pin.lat, longitude: pin.lng }, radius: 500 }
+              } : undefined,
+              maxResultCount: 1
+            })
+          });
+          const data = await resp.json();
+          const gp = data.places?.[0];
+          if (gp?.regularOpeningHours?.weekdayDescriptions) {
+            const hours = {};
+            const dayAbbrev = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun' };
+            gp.regularOpeningHours.weekdayDescriptions.forEach(desc => {
+              const m = desc.match(/^(\w+):\s*(.+)/);
+              if (m) hours[dayAbbrev[m[1].toLowerCase()] || m[1].toLowerCase().substring(0, 3)] = m[2].trim();
+            });
+            if (Object.keys(hours).length > 0) {
+              const updated = { ...pin, opening_hours: hours };
+              if (onInlineUpdate) onInlineUpdate(updated);
+            } else {
+              alert('No hours found for this place on Google.');
+            }
+          } else {
+            alert('Could not find hours for this place on Google.');
+          }
+        } catch (e) {
+          console.error('Failed to refresh hours:', e);
+          alert('Error fetching hours: ' + (e.message || e));
+        }
+        setRefreshingHours(false);
+      };
 
       const startEditing = () => {
         // Extract legacy "Source: [label](url)" markdown from description into sources[]
@@ -3181,15 +3228,21 @@
                   <p className="text-xs text-gray-500 dark:text-gray-400">{pin.address}</p>
 
                   {/* Opening Hours — compact, right under the address */}
-                  {Object.keys(pin.opening_hours || {}).length > 0 && (
+                  {Object.keys(pin.opening_hours || {}).length > 0 ? (
                     <div>
-                      <button onClick={() => setShowHours(!showHours)} className="flex items-center gap-2 w-full text-left">
-                        <span className={`inline-block w-2 h-2 rounded-full ${openStatus.status === 'open' ? 'bg-green-500' : openStatus.status === 'closed' ? 'bg-red-500' : 'bg-gray-400'}`} />
-                        <span className={`text-xs font-semibold ${openStatus.status === 'open' ? 'text-green-600' : openStatus.status === 'closed' ? 'text-red-600' : 'text-gray-500'}`}>
-                          {openStatus.label}
-                        </span>
-                        <span className="text-xs text-gray-400">{showHours ? '▲' : '▼'}</span>
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => setShowHours(!showHours)} className="flex items-center gap-2 flex-1 text-left">
+                          <span className={`inline-block w-2 h-2 rounded-full ${openStatus.status === 'open' ? 'bg-green-500' : openStatus.status === 'closed' ? 'bg-red-500' : 'bg-gray-400'}`} />
+                          <span className={`text-xs font-semibold ${openStatus.status === 'open' ? 'text-green-600' : openStatus.status === 'closed' ? 'text-red-600' : 'text-gray-500'}`}>
+                            {openStatus.label}
+                          </span>
+                          {(() => { const h = pin.opening_hours || {}; const allClosed = Object.values(h).every(v => !v || v === 'Closed'); return allClosed ? <span className="text-[10px] text-amber-500" title="All days show closed — try refreshing">⚠</span> : null; })()}
+                          <span className="text-xs text-gray-400">{showHours ? '▲' : '▼'}</span>
+                        </button>
+                        <button onClick={refreshHours} disabled={refreshingHours} className="text-[10px] text-blue-500 hover:text-blue-600 px-1" title="Refresh hours from Google">
+                          {refreshingHours ? '...' : '↻'}
+                        </button>
+                      </div>
                       {showHours && (
                         <div className="space-y-0.5 mt-1.5 ml-4">
                           {['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(day => {
@@ -3205,6 +3258,10 @@
                         </div>
                       )}
                     </div>
+                  ) : (
+                    <button onClick={refreshHours} disabled={refreshingHours} className="text-xs text-blue-500 hover:text-blue-600">
+                      {refreshingHours ? 'Fetching hours...' : '+ Fetch opening hours'}
+                    </button>
                   )}
 
                   <div className="flex gap-1.5">
@@ -11940,7 +11997,7 @@
                   ? 'bg-green-500 hover:bg-green-600'
                   : 'bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700'
               }`}
-              style={{ right: 10, bottom: 130, zIndex: 1000, width: 34, height: 34 }}
+              style={{ right: 10, bottom: 175, zIndex: 1000, width: 34, height: 34 }}
               title={openNowFilter ? 'Showing open now — tap to show all' : 'Show only open now'}
             >
               <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={openNowFilter ? 'white' : 'currentColor'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={openNowFilter ? '' : 'text-gray-700 dark:text-gray-200'}>
@@ -11966,7 +12023,7 @@
               }
             }}
             className="absolute bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-md shadow-lg flex items-center justify-center"
-            style={{ right: 10, bottom: 90, zIndex: 1000, width: 34, height: 34 }}
+            style={{ right: 10, bottom: 133, zIndex: 1000, width: 34, height: 34 }}
             id="locate-me-btn"
             title="Go to my location"
           >
@@ -14780,7 +14837,7 @@
             onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; onDragOver(index); }}
             onDrop={(e) => { e.preventDefault(); onDrop(index); }}
             className={`group flex items-center gap-2 px-2 py-2 rounded-lg cursor-grab active:cursor-grabbing transition ${
-              isDragTarget ? 'bg-blue-50 dark:bg-blue-900/20 ring-1 ring-blue-400 ring-dashed' : 'hover:bg-gray-50 dark:hover:bg-slate-700/50'
+              isDragTarget ? 'bg-blue-50 dark:bg-blue-900/20 ring-1 ring-blue-400 ring-dashed' : matchedDoc ? 'bg-purple-50/40 dark:bg-purple-900/10 border border-purple-200/40 dark:border-purple-800/30 hover:bg-purple-50/60 dark:hover:bg-purple-900/15' : 'hover:bg-gray-50 dark:hover:bg-slate-700/50'
             }`}
           >
             {/* Drag handle — desktop: visual grab, mobile: touch drag + up/down buttons */}
@@ -14831,7 +14888,7 @@
               )}
             </div>
 
-            {/* View booking doc */}
+            {/* View booking doc (only if there's an actual file to view) */}
             {matchedDoc?.file_data && onViewDoc && (
               <button onClick={(e) => { e.stopPropagation(); onViewDoc(matchedDoc); }} className="text-[10px] text-blue-500 hover:text-blue-600 shrink-0 px-1">View</button>
             )}
@@ -15153,6 +15210,30 @@
           if (!doc) doc = bookingDocs.find(d => !matchedDocIds.has(d.id) && d.title && (d.title.toLowerCase().includes(itemName) || itemName.includes(d.title.toLowerCase())) && Math.min(d.title.length, item.name.length) >= 4);
         }
         if (doc) { docByPinId[item.id] = doc; matchedDocIds.add(doc.id); }
+      }
+
+      // Also create virtual docs from pin reservation_details if no doc matched
+      for (const item of allReal) {
+        if (docByPinId[item.id]) continue; // already matched
+        if (!item.pin_id) continue;
+        const pin = pins.find(p => p.id === item.pin_id);
+        if (!pin?.reservation_details) continue;
+        const rd = pin.reservation_details;
+        // Only for activity/restaurant pins, not hotels
+        if (pin.category === 'hotel') continue;
+        const virtualDoc = {
+          id: `pin-rd-${pin.id}`,
+          _pinId: pin.id,
+          title: pin.name,
+          type: rd.type || pin.category || 'activity',
+          confirmation: rd.confirmation_number || rd.booking_reference || '',
+          date: rd.date || rd.activity_date || '',
+          departure_time: rd.activity_time || rd.time || '',
+          carrier: rd.booking_source || '',
+          // No file_data — so "View" won't try to open a file
+          _isVirtualDoc: true,
+        };
+        docByPinId[item.id] = virtualDoc;
       }
 
       const totalActivityMin = items.reduce((sum, i) => sum + (i.estimated_duration_minutes || 0), 0);
@@ -16720,9 +16801,17 @@
             if (!matchingDay) continue;
 
             // Check if pin is already in itinerary for this day
-            const alreadyExists = loadedItems.some(
-              i => i.pin_id === pin.id && i.day_id === matchingDay.id
-            );
+            const pinNameLower = pin.name.toLowerCase().trim();
+            const alreadyExists = loadedItems.some(i => {
+              if (i.day_id !== matchingDay.id) return false;
+              if (i.pin_id === pin.id) return true;
+              // Also check by name to avoid duplicates from merged pins
+              if (i.name && pinNameLower.length >= 4) {
+                const itemName = i.name.toLowerCase().trim();
+                if (itemName === pinNameLower || itemName.includes(pinNameLower) || pinNameLower.includes(itemName)) return true;
+              }
+              return false;
+            });
             if (alreadyExists) continue;
 
             // Create new item
@@ -18481,23 +18570,43 @@
               i.src = imgSrc;
             });
             const canvas = document.createElement('canvas');
-            // Upscale for better OCR
+            // Upscale aggressively for better OCR
             const longSide = Math.max(img.width, img.height) || 1;
-            const scale = longSide < 2400 ? 2400 / longSide : 1;
+            const scale = longSide < 3200 ? 3200 / longSide : 1;
             canvas.width = Math.round(img.width * scale);
             canvas.height = Math.round(img.height * scale);
             const ctx = canvas.getContext('2d');
             ctx.fillStyle = '#ffffff';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            // Grayscale + contrast
+            // Grayscale + high contrast + binarization for cleaner OCR
             try {
               const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
               const d = imgData.data;
+              // Pass 1: compute adaptive threshold (Otsu-like)
+              const histogram = new Array(256).fill(0);
+              for (let i = 0; i < d.length; i += 4) {
+                const gray = Math.round(0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2]);
+                histogram[gray]++;
+              }
+              const totalPixels = d.length / 4;
+              let sum = 0, sumB = 0, wB = 0, maxVar = 0, threshold = 128;
+              for (let t = 0; t < 256; t++) sum += t * histogram[t];
+              for (let t = 0; t < 256; t++) {
+                wB += histogram[t];
+                if (wB === 0) continue;
+                const wF = totalPixels - wB;
+                if (wF === 0) break;
+                sumB += t * histogram[t];
+                const mB = sumB / wB;
+                const mF = (sum - sumB) / wF;
+                const variance = wB * wF * (mB - mF) * (mB - mF);
+                if (variance > maxVar) { maxVar = variance; threshold = t; }
+              }
+              // Pass 2: binarize with adaptive threshold
               for (let i = 0; i < d.length; i += 4) {
                 let gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
-                gray = ((gray / 255 - 0.5) * 1.4 + 0.5) * 255;
-                gray = Math.max(0, Math.min(255, gray));
+                gray = gray < threshold ? 0 : 255;
                 d[i] = d[i+1] = d[i+2] = gray;
               }
               ctx.putImageData(imgData, 0, 0);
@@ -18518,7 +18627,8 @@
           // Parse all combined text into numbered entries
           const joined = allOcrText.split('\n').map(l => l.trim());
           const entries = [];
-          const numRe = /^(\d{1,3})\s+([A-Z぀-鿿][\w\s\-&''぀-鿿]{2,60})/;
+          // Match: number (with optional dot/paren), then space(s), then name (letter or Japanese)
+          const numRe = /^(\d{1,3})[.):\s]*\s+([A-Za-z぀-鿿㐀-䶵\u{20000}-\u{2A6DF}][\w\s\-&'''()぀-鿿㐀-䶵]{2,80})/u;
           const resRe = /reservat\w*\s*(required|recommended|suggest|necessary|essential|advised)|book\s*(ahead|in advance)/i;
           for (let i = 0; i < joined.length; i++) {
             const m = joined[i].match(numRe);
@@ -18526,8 +18636,8 @@
             const num = parseInt(m[1]);
             if (num > 200) continue;
             let name = m[2].trim().replace(/[.,;:!?]+$/, '');
-            if (/^(tokyo|guide|muslim|check|around|prices?|available)\b/i.test(name)) continue;
-            if (name.length < 3) continue;
+            if (/^(tokyo|guide|muslim|check|around|prices?|available|page|chapter|section|copyright)\b/i.test(name)) continue;
+            if (name.length < 2) continue;
             let desc = '';
             let hasRes = false;
             for (let j = i + 1; j < joined.length && j < i + 20; j++) {
@@ -19705,11 +19815,11 @@
             style={{ display: 'none' }}
             onChange={handlePhotoToPinCapture}
           />
-          {/* Hidden file input for Bulk Photo Scan (multiple) */}
+          {/* Hidden file input for Bulk Photo Scan (multiple) — no capture attr so iOS shows photo library */}
           <input
             ref={bulkPhotoInputRef}
             type="file"
-            accept="image/*"
+            accept="image/jpeg,image/png,image/heic,image/heif,image/webp"
             multiple
             style={{ display: 'none' }}
             onChange={handleBulkPhotoScan}
