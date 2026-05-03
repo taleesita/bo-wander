@@ -16753,7 +16753,7 @@
                 title: pin.name, date: rd.date,
                 departure_time: rd.time, confirmation: rd.confirmation_number,
                 cost: rd.price, carrier: rd.booking_source,
-                file_data: pin.attachment, file_name: pin.attachment_name,
+                file_data: pin.attachment?.data || null, file_name: pin.attachment?.name || '', _pinId: pin.id,
               });
             }
           }
