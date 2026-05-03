@@ -18815,41 +18815,61 @@
             const apiKey = getGoogleApiKey();
             const candidates = [];
             const candidateSeen = new Set();
-            // Gather candidate fragments: clean each line, also try sliding windows of 2-3 consecutive words
+
+            // Compute location bias from collection pins
+            const colPins = pins.filter(p => p.collection_id === activeCollection && p.lat && p.lng);
+            let locationBias = null;
+            if (colPins.length > 0) {
+              const avgLat = colPins.reduce((s, p) => s + p.lat, 0) / colPins.length;
+              const avgLng = colPins.reduce((s, p) => s + p.lng, 0) / colPins.length;
+              locationBias = { circle: { center: { latitude: avgLat, longitude: avgLng }, radius: 50000.0 } };
+            }
+
+            // Gather candidate fragments from OCR text
             for (const line of joined) {
-              const clean = line.replace(/[^A-Za-z\s\-&'()぀-鿿㐀-䶵\u{20000}-\u{2A6DF}]/gu, '').trim();
+              // Clean line: keep letters, spaces, common punctuation, Japanese chars
+              const clean = line.replace(/[^A-Za-z\s\-&'''()぀-鿿㐀-䶵\u{20000}-\u{2A6DF}]/gu, ' ').replace(/\s+/g, ' ').trim();
               if (clean.length >= 3 && clean.length <= 80 && !junkRe.test(clean)) {
                 const k = clean.toLowerCase();
                 if (!candidateSeen.has(k)) { candidateSeen.add(k); candidates.push(clean); }
               }
-              // Also try word windows from this line for multi-word place names embedded in longer text
+              // Try sliding windows of 2-4 consecutive words for multi-word place names
               const words = clean.split(/\s+/).filter(w => w.length >= 2);
               for (let w = 0; w < words.length; w++) {
-                for (let span = 2; span <= Math.min(4, words.length - w); span++) {
+                for (let span = 2; span <= Math.min(5, words.length - w); span++) {
                   const frag = words.slice(w, w + span).join(' ');
-                  if (frag.length >= 5 && frag.length <= 60 && !junkRe.test(frag)) {
+                  if (frag.length >= 4 && frag.length <= 60 && !junkRe.test(frag)) {
                     const k = frag.toLowerCase();
                     if (!candidateSeen.has(k)) { candidateSeen.add(k); candidates.push(frag); }
                   }
                 }
               }
             }
-            // Also look for Japanese text fragments (katakana/kanji sequences are often place names)
+            // Japanese text fragments (katakana/kanji sequences are often place names)
             const jpFrags = allOcrText.match(/[぀-鿿㐀-䶵\u{20000}-\u{2A6DF}ー]{3,30}/gu) || [];
             for (const jp of jpFrags) {
-              const k = jp;
-              if (!candidateSeen.has(k)) { candidateSeen.add(k); candidates.push(jp); }
+              if (!candidateSeen.has(jp)) { candidateSeen.add(jp); candidates.push(jp); }
+            }
+            // Also try the full text of each line as-is (preserving original OCR including numbers/punctuation)
+            for (const line of joined) {
+              const trimmed = line.trim();
+              if (trimmed.length >= 4 && trimmed.length <= 60 && !junkRe.test(trimmed)) {
+                const k = trimmed.toLowerCase();
+                if (!candidateSeen.has(k)) { candidateSeen.add(k); candidates.push(trimmed); }
+              }
             }
 
             if (apiKey && candidates.length > 0) {
-              // Validate candidates against Google Places (batch up to 10 at a time)
-              const toCheck = candidates.slice(0, 15);
+              // Validate candidates against Google Places with location bias
+              const toCheck = candidates.slice(0, 20);
               const validPlaces = [];
-              const batchSize = 3; // concurrent requests
+              const batchSize = 3;
               for (let b = 0; b < toCheck.length; b += batchSize) {
                 const batch = toCheck.slice(b, b + batchSize);
                 const results = await Promise.allSettled(batch.map(async (q) => {
                   try {
+                    const body = { textQuery: q, maxResultCount: 1 };
+                    if (locationBias) body.locationBias = locationBias;
                     const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
                       method: 'POST',
                       headers: {
@@ -18857,11 +18877,17 @@
                         'X-Goog-Api-Key': apiKey,
                         'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.types,places.rating,places.regularOpeningHours'
                       },
-                      body: JSON.stringify({ textQuery: q, maxResultCount: 1 })
+                      body: JSON.stringify(body)
                     });
                     const data = await resp.json();
                     const gp = data.places?.[0];
                     if (gp && gp.displayName?.text) {
+                      // Verify the result is reasonably near our location bias (within ~200km)
+                      if (locationBias && gp.location) {
+                        const dlat = Math.abs(gp.location.latitude - locationBias.circle.center.latitude);
+                        const dlng = Math.abs(gp.location.longitude - locationBias.circle.center.longitude);
+                        if (dlat > 2 || dlng > 2) return null; // Too far from collection
+                      }
                       const hours = {};
                       if (gp.regularOpeningHours?.weekdayDescriptions) {
                         const dayAbbrev = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun' };
