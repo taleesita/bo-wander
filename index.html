@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v102';
+    const APP_VERSION = 'v103';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -500,6 +500,19 @@
       window.addEventListener('beforeunload', () => { try { if (Object.keys(pendingUsageFlush).length) flushUsageToFirestore(); } catch {} });
       document.addEventListener('visibilitychange', () => { if (document.hidden && Object.keys(pendingUsageFlush).length) flushUsageToFirestore(); });
       window.__bwUsageFlushHooked = true;
+      // Fix white screen when returning from external app (Google Maps, etc.)
+      // Safari's BFCache can freeze the page; pageshow event re-triggers rendering
+      window.addEventListener('pageshow', (e) => {
+        if (e.persisted) {
+          // Force re-render of Leaflet tiles and React
+          setTimeout(() => {
+            window.dispatchEvent(new Event('resize'));
+            document.body.style.display = 'none';
+            document.body.offsetHeight; // force reflow
+            document.body.style.display = '';
+          }, 100);
+        }
+      });
     }
     // Wrapped fetch that auto-detects the endpoint and increments the counter.
     // Uses window.__bwFetch if already patched (idempotent).
@@ -14157,6 +14170,7 @@
       const [emoji, setEmoji] = useState(item?.emoji || '📌');
       const [scheduledTime, setScheduledTime] = useState(item?.scheduled_time || item?._autoTime || '');
       const [webSearchResults, setWebSearchResults] = useState([]);
+      const [addedSearchPlaces, setAddedSearchPlaces] = useState(new Set());
       const [webSearching, setWebSearching] = useState(false);
       const webSearchTimer = React.useRef(null);
       // Store lat/lng directly so newly created pins (not yet in pins array) still save correctly
@@ -14318,7 +14332,7 @@
             name: name || `${mealName} Options`,
             emoji: item?.emoji || '🍽️',
             scheduled_time: scheduledTime,
-            estimated_duration_minutes: duration === '' ? 60 : (parseInt(duration) || 60),
+            estimated_duration_minutes: duration === '' ? null : (parseInt(duration) || null),
             description,
             options: shortlist,
             confirmed_option: null,
@@ -14338,7 +14352,7 @@
             type: 'pin', pin_id: pick.pin_id,
             name: name || pick.name, emoji: pick.emoji || emoji,
             scheduled_time: scheduledTime,
-            estimated_duration_minutes: duration === '' ? 60 : (parseInt(duration) || 60),
+            estimated_duration_minutes: duration === '' ? null : (parseInt(duration) || null),
             description, lat: pick.lat || 0, lng: pick.lng || 0,
             options: null, confirmed_option: null,
           });
@@ -14512,9 +14526,14 @@
                         <>
                           <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-1">Not on your map? Add from search:</p>
                           <div className="max-h-40 overflow-y-auto space-y-1 border rounded-lg border-dashed border-green-300 dark:border-green-700 p-1 bg-green-50/30 dark:bg-green-900/10">
-                            {webSearchResults.map((place, i) => (
+                            {webSearchResults.map((place, i) => {
+                              const placeKey = `${place.displayName}::${place.lat}::${place.lng}`;
+                              const alreadyAdded = addedSearchPlaces.has(placeKey);
+                              return (
                               <button key={i}
+                                disabled={alreadyAdded}
                                 onClick={() => {
+                                  if (alreadyAdded) return;
                                   const cat = typeof guessEmojiAndCategory === 'function' ? guessEmojiAndCategory(place.displayName, place.type) : { emoji: '📍', category: 'spot' };
                                   // Create pin on the map and select it
                                   const newPinId = Date.now().toString();
@@ -14530,18 +14549,20 @@
                                   setEmoji(cat.emoji);
                                   setFormLat(place.lat);
                                   setFormLng(place.lng);
-                                  setWebSearchResults([]);
+                                  setAddedSearchPlaces(prev => new Set(prev).add(placeKey));
                                   setPinSearch('');
                                 }}
-                                className="w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 hover:bg-green-100 dark:hover:bg-green-900/30"
+                                className={`w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 ${alreadyAdded ? 'opacity-40 cursor-not-allowed' : 'hover:bg-green-100 dark:hover:bg-green-900/30'}`}
                               >
                                 <span className="text-green-600 dark:text-green-400 text-xs flex-shrink-0">+</span>
                                 <div className="flex-1 min-w-0">
                                   <span className="truncate dark:text-white block">{place.displayName}</span>
                                   <span className="text-[10px] text-gray-400 truncate block">{place.address}</span>
                                 </div>
+                                {alreadyAdded && <span className="text-[10px] text-green-500 flex-shrink-0">Added</span>}
                               </button>
-                            ))}
+                              );
+                            })}
                           </div>
                         </>
                       )}
@@ -14561,19 +14582,19 @@
               </div>
 
               {/* Time + Duration */}
-              <div className="grid grid-cols-2 gap-3" style={{ overflow: 'hidden' }}>
-                <div style={{ minWidth: 0, overflow: 'hidden' }}>
+              <div className="grid grid-cols-2 gap-3">
+                <div style={{ minWidth: 0 }}>
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Time</label>
                   <input type="time" value={scheduledTime} onChange={e => setScheduledTime(e.target.value)}
                     className="w-full px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
-                    style={{ minWidth: 0, maxWidth: '100%', boxSizing: 'border-box' }} />
+                    style={{ WebkitAppearance: 'none', boxSizing: 'border-box' }} />
                 </div>
-                <div style={{ minWidth: 0, overflow: 'hidden' }}>
+                <div style={{ minWidth: 0 }}>
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Duration (min)</label>
                   <input type="number" value={duration} onChange={e => setDuration(e.target.value)} min="0" step="5"
                     placeholder="—"
                     className="w-full px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
-                    style={{ minWidth: 0, maxWidth: '100%', boxSizing: 'border-box' }} />
+                    style={{ boxSizing: 'border-box' }} />
                   <p className="text-[10px] text-gray-400 mt-0.5">Leave blank for marker</p>
                 </div>
               </div>
@@ -14596,7 +14617,7 @@
     };
 
     // ---- Single Itinerary Item Row ----
-    const ItineraryItemRow = ({ item, index, isDarkMode, onEdit, onDelete, onDragStart, onDragOver, onDrop, isDragTarget, transitInfo, onFlyTo, autoTime, onMoveUp, onMoveDown, isFirst, isLast, onAddMeal, matchedDoc, onViewDoc }) => {
+    const ItineraryItemRow = ({ item, index, isDarkMode, onEdit, onDelete, onDragStart, onDragOver, onDrop, isDragTarget, transitInfo, onFlyTo, autoTime, onMoveUp, onMoveDown, isFirst, isLast, onAddMeal, matchedDoc, onViewDoc, onSelectPin, closedWarning }) => {
       const [confirmDelete, setConfirmDelete] = useState(false);
       const touchDragRef = useRef(null);
       const touchStartY = useRef(0);
@@ -14870,13 +14891,14 @@
             </div>
 
             {/* Emoji */}
-            <span className="text-lg flex-shrink-0 cursor-pointer hover:scale-110 transition-transform" onClick={() => item.lat && onFlyTo?.(item.lat, item.lng)}>{item.emoji || '📌'}</span>
+            <span className="text-lg flex-shrink-0 cursor-pointer hover:scale-110 transition-transform" onClick={() => { if (item.pin_id && onSelectPin) { onSelectPin(item.pin_id); } else if (item.lat) { onFlyTo?.(item.lat, item.lng); } }}>{item.emoji || '📌'}</span>
 
             {/* Content */}
-            <div className="flex-1 min-w-0 cursor-pointer" onClick={() => item.lat && onFlyTo?.(item.lat, item.lng)}>
+            <div className="flex-1 min-w-0 cursor-pointer" onClick={() => { if (item.pin_id && onSelectPin) { onSelectPin(item.pin_id); } else if (item.lat) { onFlyTo?.(item.lat, item.lng); } }}>
               <div className="flex items-center gap-2">
                 {timeStr && <span className={`text-xs font-mono flex-shrink-0 ${isAutoTime ? 'text-gray-400 dark:text-gray-500 italic' : 'text-blue-600 dark:text-blue-400'}`} title={isAutoTime ? 'Auto-scheduled from day start' : 'Scheduled time'}>{formatTime(timeStr)}</span>}
                 <span className="text-sm font-medium truncate dark:text-white">{item.name || 'Untitled'}</span>
+                {closedWarning && <span className="text-[10px] text-red-500 dark:text-red-400 font-medium bg-red-50 dark:bg-red-900/20 px-1.5 rounded flex-shrink-0">Closed</span>}
               </div>
               {item.estimated_duration_minutes > 0 && (
                 <span className="text-xs text-gray-400">{item.estimated_duration_minutes} min</span>
@@ -15020,7 +15042,7 @@
     };
 
     // ---- DayView (single day card) ----
-    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, transitError, onRecalcTransit, weather, weatherCodeMap, weatherLocation, onWeatherLocationChange, allHotels, dayDocs, allDays, onSwapDays, onMoveAllToDay }) => {
+    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, onSelectPin, transitError, onRecalcTransit, weather, weatherCodeMap, weatherLocation, onWeatherLocationChange, allHotels, dayDocs, allDays, onSwapDays, onMoveAllToDay }) => {
       const [dragItemId, setDragItemId] = useState(null);
       const [dragOverIndex, setDragOverIndex] = useState(null);
       const [showStartPicker, setShowStartPicker] = useState(false);
@@ -15462,7 +15484,19 @@
                   isDragTarget={dragOverIndex === idx && dragItemId !== item.id}
                   transitInfo={suppressTransit.has(item.id) ? null : (item.transit_info || null)}
                   onFlyTo={onFlyTo}
+                  onSelectPin={onSelectPin}
                   autoTime={autoTimes[item.id]}
+                  closedWarning={(() => {
+                    if (!item.pin_id) return null;
+                    const pin = pins.find(p => p.id === item.pin_id);
+                    if (!pin?.opening_hours || Object.keys(pin.opening_hours).length === 0) return null;
+                    const t = item.scheduled_time || autoTimes[item.id] || '12:00';
+                    const [h, m] = t.split(':').map(Number);
+                    const d = new Date(day.date + 'T12:00:00');
+                    d.setHours(h || 12, m || 0, 0, 0);
+                    const status = getOpenStatus(pin.opening_hours, d);
+                    return status.status === 'closed' ? 'Closed' : null;
+                  })()}
                   isFirst={idx === 0}
                   isLast={idx === allSorted.length - 1}
                   matchedDoc={docByPinId[item.id] || null}
@@ -16825,7 +16859,7 @@
               name: pin.name,
               emoji: pin.emoji || '📍',
               scheduled_time: rd.activity_time || rd.time || '',
-              estimated_duration_minutes: 60,
+              estimated_duration_minutes: null,
               description: '',
               order_in_day: existingItemsForDay.length,
               lat: pin.lat || 0,
@@ -17364,7 +17398,7 @@
           lat: pin.lat,
           lng: pin.lng,
           scheduled_time: '',
-          estimated_duration_minutes: 60,
+          estimated_duration_minutes: null,
           description: '',
           order_in_day: items.filter(i => i.day_id === dayId).length,
         };
@@ -17547,6 +17581,14 @@
                   isExpanded={!!expandedDays[day.id]}
                   onToggle={() => toggleDay(day.id)}
                   onFlyTo={onFlyTo}
+                  onSelectPin={(pinId) => {
+                    const pin = collectionPins.find(p => p.id === pinId);
+                    if (pin) {
+                      setSelectedPin(pin);
+                      setShowItinerary(false);
+                      if (pin.lat && pin.lng) setMapPanTarget({ lat: pin.lat, lng: pin.lng, zoom: 16, _t: Date.now() });
+                    }
+                  }}
                   transitError={transitErrors[day.id]}
                   onRecalcTransit={(dayId) => { transitCacheRef.current = {}; calculateTransitForDay(dayId); }}
                   weather={weatherData[day.date]}
@@ -17910,18 +17952,34 @@
                   <p className="text-sm text-gray-500 dark:text-gray-400">
                     Adding <span className="font-medium dark:text-white">{showDayPicker.emoji} {showDayPicker.name}</span> — pick a day:
                   </p>
+                  {/* Quick "Add to Today" button */}
+                  {(() => {
+                    const todayStr = new Date().toLocaleDateString('en-CA');
+                    const todayDay = days.find(d => d.date === todayStr);
+                    if (!todayDay) return null;
+                    return (
+                      <button
+                        onClick={() => handleQuickAddToDay(todayDay.id, showDayPicker)}
+                        className="w-full mb-2 px-3 py-2.5 rounded-lg text-sm font-medium bg-blue-500 text-white hover:bg-blue-600 transition flex items-center justify-center gap-2"
+                      >
+                        + Add to Today (D{todayDay.day_number})
+                      </button>
+                    );
+                  })()}
                   <div className="max-h-60 overflow-y-auto space-y-1">
                     {days.map(day => {
+                      const todayStr = new Date().toLocaleDateString('en-CA');
+                      const isToday = day.date === todayStr;
                       const dayItems = items.filter(i => i.day_id === day.id);
                       return (
                         <button
                           key={day.id}
                           onClick={() => handleQuickAddToDay(day.id, showDayPicker)}
-                          className="w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center justify-between hover:bg-gray-100 dark:hover:bg-slate-700 transition"
+                          className={`w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center justify-between transition ${isToday ? 'bg-blue-50 dark:bg-blue-900/20 ring-1 ring-blue-300 dark:ring-blue-700 hover:bg-blue-100 dark:hover:bg-blue-900/30' : 'hover:bg-gray-100 dark:hover:bg-slate-700'}`}
                         >
                           <div className="flex items-center gap-2">
-                            <span className="text-xs font-bold text-gray-400 w-6">D{day.day_number}</span>
-                            <span className="dark:text-white">{formatDayDate(day.date)}</span>
+                            <span className={`text-xs font-bold w-6 ${isToday ? 'text-blue-500' : 'text-gray-400'}`}>D{day.day_number}</span>
+                            <span className="dark:text-white">{formatDayDate(day.date)}{isToday ? ' ✦' : ''}</span>
                             {weatherData[day.date] && (() => {
                               const w = weatherCodeMap[weatherData[day.date].code] || weatherCodeMap[0];
                               return (
