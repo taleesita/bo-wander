@@ -10774,7 +10774,7 @@
                       {/* Description */}
                       <div>
                         <label className={labelClass}>Description</label>
-                        <textarea value={rd.description || ''} onChange={e => updateRD('description', e.target.value)} placeholder="What's included, notes, etc." className={inputClass + " h-20 resize-none"} autoComplete="off" data-1p-ignore />
+                        <textarea value={formData.description || ''} onChange={e => handleChange('description', e.target.value)} placeholder="What's included, notes, etc." className={inputClass + " h-20 resize-none"} autoComplete="off" data-1p-ignore />
                       </div>
                     </>}
 
@@ -16058,7 +16058,8 @@
         const hotelWithCoords = hotels.find(h => h.lat && h.lng);
         if (!hotelWithCoords) return;
 
-        const today = new Date().toISOString().split('T')[0];
+        const _now = new Date();
+        const today = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, '0')}-${String(_now.getDate()).padStart(2, '0')}`;
         const start = earliest;
         const end = latest;
 
@@ -16140,7 +16141,8 @@
           const ci = h.reservation_details.check_in;
           return ci < min ? ci : min;
         }, hotels[0].reservation_details.check_in);
-        return new Date().toISOString().split('T')[0] >= earliest;
+        const _n = new Date();
+        return `${_n.getFullYear()}-${String(_n.getMonth() + 1).padStart(2, '0')}-${String(_n.getDate()).padStart(2, '0')}` >= earliest;
       }, [pins]);
 
       useEffect(() => {
@@ -16935,7 +16937,8 @@
 
           // Auto-expand today's day (or nearest upcoming day, or first day as fallback)
           if (loadedDays.length > 0) {
-            const today = new Date().toISOString().split('T')[0];
+            const now = new Date();
+            const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
             const todayDay = loadedDays.find(d => d.date === today);
             const futureDay = !todayDay && loadedDays.filter(d => d.date > today).sort((a, b) => a.date.localeCompare(b.date))[0];
             const expandDay = todayDay || futureDay || loadedDays[0];
