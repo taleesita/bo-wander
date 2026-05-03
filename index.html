@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v98';
+    const APP_VERSION = 'v99';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -16698,6 +16698,60 @@
         ]).then(([loadedDays, loadedItems]) => {
           setDays(loadedDays);
           setItems(loadedItems);
+
+          // Feature 1: Auto-add activity/restaurant pins with dates to itinerary
+          const toISO = (str) => {
+            if (!str) return '';
+            if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.substring(0, 10);
+            const d = new Date(str);
+            return !isNaN(d.getTime()) ? d.toISOString().split('T')[0] : str;
+          };
+
+          const autoAddedItems = [];
+          for (const pin of collectionPins) {
+            const rd = pin.reservation_details;
+            if (!rd || (!rd.date && !rd.activity_date)) continue;
+
+            const pinDate = toISO(rd.date || rd.activity_date);
+            if (!pinDate) continue;
+
+            // Find matching day
+            const matchingDay = loadedDays.find(d => d.date === pinDate);
+            if (!matchingDay) continue;
+
+            // Check if pin is already in itinerary for this day
+            const alreadyExists = loadedItems.some(
+              i => i.pin_id === pin.id && i.day_id === matchingDay.id
+            );
+            if (alreadyExists) continue;
+
+            // Create new item
+            const existingItemsForDay = loadedItems.filter(i => i.day_id === matchingDay.id);
+            const newItem = {
+              id: generateId(),
+              itinerary_id: activeItinerary.id,
+              day_id: matchingDay.id,
+              type: 'pin',
+              pin_id: pin.id,
+              name: pin.name,
+              emoji: pin.emoji || '📍',
+              scheduled_time: rd.activity_time || rd.time || '',
+              estimated_duration_minutes: 60,
+              description: '',
+              order_in_day: existingItemsForDay.length,
+              lat: pin.lat || 0,
+              lng: pin.lng || 0,
+              _autoAdded: true,
+            };
+            autoAddedItems.push(newItem);
+          }
+
+          if (autoAddedItems.length > 0) {
+            const newItems = [...loadedItems, ...autoAddedItems];
+            setItems(newItems);
+            MockFirebase.saveItems(autoAddedItems);
+          }
+
           // Auto-expand today's day (or nearest upcoming day, or first day as fallback)
           if (loadedDays.length > 0) {
             const today = new Date().toISOString().split('T')[0];
@@ -16846,7 +16900,62 @@
           // New item
           handleAddItem(addingToDay, savedItem);
         } else {
-          // Edit existing
+          // Edit existing — check for time cascade
+          const oldItem = items.find(i => i.id === savedItem.id);
+          const oldTime = oldItem?.scheduled_time;
+          const newTime = savedItem.scheduled_time;
+
+          if (oldTime && newTime && oldTime !== newTime) {
+            // Feature 2: Cascade time shifts for non-reservation items
+            // Calculate delta in minutes
+            const [oh, om] = oldTime.split(':').map(Number);
+            const [nh, nm] = newTime.split(':').map(Number);
+            const deltaMin = (nh * 60 + nm) - (oh * 60 + om);
+
+            if (deltaMin !== 0) {
+              // Get all items in this day, sorted by time
+              const dayItems = items
+                .filter(i => i.day_id === oldItem.day_id && i.id !== savedItem.id && i.scheduled_time)
+                .sort((a, b) => a.scheduled_time.localeCompare(b.scheduled_time));
+
+              // Find items AFTER the old time
+              const cascadeItems = dayItems.filter(i => i.scheduled_time > oldTime);
+
+              // Determine which are reservation-locked and shift the rest
+              const shifted = [];
+              for (const ci of cascadeItems) {
+                // Check if this item's pin has a reservation with a fixed time
+                const pin = ci.pin_id ? collectionPins.find(p => p.id === ci.pin_id) : null;
+                const rd = pin?.reservation_details;
+                const hasFixedTime = rd && (rd.activity_time || rd.time);
+
+                if (!hasFixedTime) {
+                  const [ch, cm] = ci.scheduled_time.split(':').map(Number);
+                  const newMin = ch * 60 + cm + deltaMin;
+                  if (newMin >= 0 && newMin < 24 * 60) {
+                    const hh = String(Math.floor(newMin / 60)).padStart(2, '0');
+                    const mm = String(newMin % 60).padStart(2, '0');
+                    shifted.push({ ...ci, scheduled_time: `${hh}:${mm}` });
+                  }
+                }
+              }
+
+              if (shifted.length > 0) {
+                const shiftedIds = new Set(shifted.map(s => s.id));
+                setItems(prev => prev.map(i => {
+                  if (i.id === savedItem.id) return { ...i, ...savedItem };
+                  if (shiftedIds.has(i.id)) return shifted.find(s => s.id === i.id);
+                  return i;
+                }));
+                MockFirebase.saveItems([savedItem, ...shifted]);
+                setEditingItem(null);
+                setAddingToDay(null);
+                return; // early return — we already handled saving
+              }
+            }
+          }
+
+          // Default: just update the single item
           setItems(prev => prev.map(i => i.id === savedItem.id ? { ...i, ...savedItem } : i));
           MockFirebase.saveItems([savedItem]);
         }
