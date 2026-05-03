@@ -418,7 +418,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v96';
+    const APP_VERSION = 'v98';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -2975,6 +2975,7 @@
           personal_notes: pin.personal_notes || '',
           emoji: pin.emoji || '📍',
           is_vegetarian: !!pin.is_vegetarian,
+          reservation_recommended: !!pin.reservation_recommended,
         });
         setEditing(true);
       };
@@ -3280,6 +3281,17 @@
                   className="w-4 h-4 accent-green-600"
                 />
                 <span className="text-sm dark:text-gray-200">🌱 Vegetarian-friendly</span>
+              </label>
+            )}
+            {editData.category && ['restaurant', 'cafe', 'bar', 'spot', 'activity'].includes(editData.category) && (
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={!!editData.reservation_recommended}
+                  onChange={e => setEditData(d => ({ ...d, reservation_recommended: e.target.checked }))}
+                  className="w-4 h-4 accent-amber-600"
+                />
+                <span className="text-sm dark:text-gray-200">📋 Reservation recommended</span>
               </label>
             )}
 
@@ -3908,7 +3920,7 @@
     };
 
     // Unified search bar — searches existing pins + Photon (Komoot) for places/businesses
-    const UnifiedSearchBar = ({ pins, onSelectPin, onAddPlace, onUploadConfirmation, onAddFromLink, onPasteText, onFromPhoto, onShareMap, onFetchTabelog, isDarkMode, isMobile, activeCollection, collections, mapCenter }) => {
+    const UnifiedSearchBar = ({ pins, onSelectPin, onAddPlace, onUploadConfirmation, onAddFromLink, onPasteText, onFromPhoto, onBulkPhotoScan, onShareMap, onFetchTabelog, isDarkMode, isMobile, activeCollection, collections, mapCenter }) => {
       const [query, setQuery] = useState('');
       const [placeResults, setPlaceResults] = useState([]);
       const [searching, setSearching] = useState(false);
@@ -4307,6 +4319,15 @@
                         >
                           <span className="text-base">📸</span>
                           <span>From photo</span>
+                        </button>
+                      )}
+                      {onBulkPhotoScan && (
+                        <button
+                          className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-slate-700 transition border-t dark:border-slate-700"
+                          onClick={() => { onBulkPhotoScan(); setShowMoreMenu(false); setIsFocused(false); setQuery(''); }}
+                        >
+                          <span className="text-base">📚</span>
+                          <span>Scan pages</span>
                         </button>
                       )}
                       {onShareMap && (
@@ -6185,6 +6206,7 @@
                             rating: p.placeData?.rating || null,
                             opening_hours: p.placeData?.opening_hours || {},
                             is_vegetarian: !!p.is_vegetarian,
+                            reservation_recommended: !!p.reservation_recommended,
                           };
                         });
                         if (selected.length === 0) return;
@@ -10845,6 +10867,15 @@
                     />
                     <span className="text-sm dark:text-gray-200">🌱 Vegetarian-friendly</span>
                   </label>
+                  <label className="flex items-center gap-2 cursor-pointer select-none py-1">
+                    <input
+                      type="checkbox"
+                      checked={!!formData.reservation_recommended}
+                      onChange={e => handleChange('reservation_recommended', e.target.checked)}
+                      className="w-4 h-4 accent-amber-600"
+                    />
+                    <span className="text-sm dark:text-gray-200">📋 Reservation recommended</span>
+                  </label>
 
                   {/* Hotel Details — collapsible, only for hotel category */}
                   {formData.category === 'hotel' && (() => {
@@ -11960,6 +11991,7 @@
         myRating: null,
         googleRating: null,
         vegetarian: false,
+        reservationRecommended: false,
       });
       const filters = filtersProp || localFilters;
       const setFilters = setFiltersProp || setLocalFilters;
@@ -12007,6 +12039,9 @@
         }
         if (filters.vegetarian) {
           result = result.filter(p => !!p.is_vegetarian);
+        }
+        if (filters.reservationRecommended) {
+          result = result.filter(p => !!p.reservation_recommended);
         }
         if (filters.source) {
           result = result.filter(p => p.source_name === filters.source);
@@ -12135,6 +12170,17 @@
                 >
                   🌱 Veg
                 </button>
+                <button
+                  onClick={() => setFilters(f => ({ ...f, reservationRecommended: !f.reservationRecommended }))}
+                  className={`px-3 py-1 rounded-full text-xs font-medium transition ${
+                    filters.reservationRecommended
+                      ? 'bg-amber-600 text-white'
+                      : 'bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-300'
+                  }`}
+                  title="Only show places where reservation is recommended"
+                >
+                  📋 Res Rec'd
+                </button>
                 {sources.length > 0 && (
                   <select
                     value={filters.source || ''}
@@ -12226,9 +12272,9 @@
                 >
                   {filters.openAt ? `Open ${filters.openAt.day.toUpperCase()}${filters.openAt.time ? ' ' + filters.openAt.time : ''}` : 'Open at...'}
                 </button>
-                {(filters.openNow || filters.openAt || filters.category || filters.source || filters.myRating || filters.googleRating || filters.vegetarian) && (
+                {(filters.openNow || filters.openAt || filters.category || filters.source || filters.myRating || filters.googleRating || filters.vegetarian || filters.reservationRecommended) && (
                   <button
-                    onClick={() => { setFilters({ openNow: false, openAt: null, category: null, source: null, myRating: null, googleRating: null, vegetarian: false }); setShowOpenAtPicker(false); }}
+                    onClick={() => { setFilters({ openNow: false, openAt: null, category: null, source: null, myRating: null, googleRating: null, vegetarian: false, reservationRecommended: false }); setShowOpenAtPicker(false); }}
                     className="px-3 py-1 rounded-full text-xs font-medium bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 transition hover:bg-red-200"
                   >
                     Clear all
@@ -12339,6 +12385,9 @@
                             <div className="flex items-center gap-1.5 flex-shrink-0">
                               {pin.is_vegetarian && (
                                 <span className="text-[10px]" title="Vegetarian-friendly">🌱</span>
+                              )}
+                              {pin.reservation_recommended && (
+                                <span className="text-[10px]" title="Reservation recommended">📋</span>
                               )}
                               {coGroup && hasActivity && (
                                 <span className="text-xs text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-slate-700 px-1.5 py-0.5 rounded-full">
@@ -17790,6 +17839,7 @@
         myRating: null,
         googleRating: null,
         vegetarian: false,
+        reservationRecommended: false,
       });
       // Default Open Now for all maps except NYC
       useEffect(() => {
@@ -17839,6 +17889,7 @@
       const [photoToPinCrop, setPhotoToPinCrop] = useState(null); // { imageSrc } — shown in crop modal
       const [photoToPinProcessing, setPhotoToPinProcessing] = useState(false);
       const photoToPinInputRef = useRef(null);
+      const bulkPhotoInputRef = useRef(null);
 
       // Auto-replace side panels: only one right-side panel visible at a time.
       // When a pin is selected, close itinerary + doc center. When itinerary
@@ -18089,6 +18140,7 @@
         }
         if (listFilters.category) result = result.filter(p => p.category === listFilters.category);
         if (listFilters.vegetarian) result = result.filter(p => !!p.is_vegetarian);
+        if (listFilters.reservationRecommended) result = result.filter(p => !!p.reservation_recommended);
         if (listFilters.source) result = result.filter(p => p.source_name === listFilters.source);
         if (listFilters.myRating) result = result.filter(p => (p.personal_rating || 0) >= listFilters.myRating);
         if (listFilters.googleRating) result = result.filter(p => (p.google_rating || 0) >= listFilters.googleRating);
@@ -18288,6 +18340,115 @@
         reader.readAsDataURL(file);
       };
 
+      // ---- Bulk Photo Scan: select multiple photos → OCR all → combine → bulk parse ----
+      const handleBulkPhotoScan = async (e) => {
+        const files = Array.from(e.target.files || []);
+        if (e.target) e.target.value = '';
+        if (files.length === 0) return;
+        setPhotoToPinProcessing(true);
+        try {
+          let allOcrText = '';
+          for (let fi = 0; fi < files.length; fi++) {
+            // Read file as data URL
+            const dataUrl = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(files[fi]);
+            });
+            // Convert HEIC if needed
+            let imgSrc = dataUrl;
+            if (files[fi].name.match(/\.heic$/i) || files[fi].type === 'image/heic') {
+              try {
+                const blob = await heic2any({ blob: files[fi], toType: 'image/jpeg', quality: 0.85 });
+                imgSrc = await new Promise(r => { const rd = new FileReader(); rd.onload = () => r(rd.result); rd.readAsDataURL(blob); });
+              } catch (err) { console.warn('HEIC conversion failed:', err); }
+            }
+            // Load image to canvas
+            const img = await new Promise((resolve, reject) => {
+              const i = new Image();
+              i.onload = () => resolve(i);
+              i.onerror = reject;
+              i.src = imgSrc;
+            });
+            const canvas = document.createElement('canvas');
+            // Upscale for better OCR
+            const longSide = Math.max(img.width, img.height) || 1;
+            const scale = longSide < 2400 ? 2400 / longSide : 1;
+            canvas.width = Math.round(img.width * scale);
+            canvas.height = Math.round(img.height * scale);
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            // Grayscale + contrast
+            try {
+              const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const d = imgData.data;
+              for (let i = 0; i < d.length; i += 4) {
+                let gray = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
+                gray = ((gray / 255 - 0.5) * 1.4 + 0.5) * 255;
+                gray = Math.max(0, Math.min(255, gray));
+                d[i] = d[i+1] = d[i+2] = gray;
+              }
+              ctx.putImageData(imgData, 0, 0);
+            } catch {}
+            // OCR
+            try {
+              const result = await Tesseract.recognize(canvas, 'eng+jpn', { logger: () => {} });
+              const text = (result.data?.text || '').trim();
+              if (text) allOcrText += '\n' + text;
+            } catch (err) { console.warn('OCR failed for', files[fi].name, err); }
+          }
+          allOcrText = allOcrText.trim();
+          if (!allOcrText) {
+            alert('Could not read text from the photos. Try clearer shots.');
+            setPhotoToPinProcessing(false);
+            return;
+          }
+          // Parse all combined text into numbered entries
+          const joined = allOcrText.split('\n').map(l => l.trim());
+          const entries = [];
+          const numRe = /^(\d{1,3})\s+([A-Z぀-鿿][\w\s\-&''぀-鿿]{2,60})/;
+          const resRe = /reservat\w*\s*(required|recommended|suggest|necessary|essential|advised)|book\s*(ahead|in advance)/i;
+          for (let i = 0; i < joined.length; i++) {
+            const m = joined[i].match(numRe);
+            if (!m) continue;
+            const num = parseInt(m[1]);
+            if (num > 200) continue;
+            let name = m[2].trim().replace(/[.,;:!?]+$/, '');
+            if (/^(tokyo|guide|muslim|check|around|prices?|available)\b/i.test(name)) continue;
+            if (name.length < 3) continue;
+            let desc = '';
+            let hasRes = false;
+            for (let j = i + 1; j < joined.length && j < i + 20; j++) {
+              if (numRe.test(joined[j])) break;
+              const line = joined[j].trim();
+              if (!line) continue;
+              if (resRe.test(line)) hasRes = true;
+              if (desc.length < 300) desc += (desc ? ' ' : '') + line;
+            }
+            entries.push({ name, description: desc.substring(0, 300), checked: true, loading: false, placeData: null, reservation_recommended: hasRes });
+          }
+          if (entries.length >= 2) {
+            setKmlBulkData({ places: entries, source: { source_name: `Photo scan (${files.length} pages)`, source_url: '' } });
+            setShowAddFromLink(true);
+          } else if (entries.length === 1) {
+            // Single entry — still route to bulk-add for consistency
+            setKmlBulkData({ places: entries, source: { source_name: 'Photo scan', source_url: '' } });
+            setShowAddFromLink(true);
+          } else {
+            // Fallback: if no numbered entries found, treat the whole text as a paste
+            setKmlBulkData({ places: [{ name: allOcrText.split('\n')[0]?.substring(0, 50) || 'Photo scan', description: allOcrText.substring(0, 300), checked: true, loading: false, placeData: null }], source: { source_name: 'Photo scan', source_url: '' } });
+            setShowAddFromLink(true);
+          }
+        } catch (err) {
+          console.error('Bulk photo scan failed:', err);
+          alert('Something went wrong scanning the photos. Please try again.');
+        }
+        setPhotoToPinProcessing(false);
+      };
+
       const handlePhotoToPinCropped = async (croppedCanvas) => {
         setPhotoToPinCrop(null);
         setPhotoToPinProcessing(true);
@@ -18396,6 +18557,49 @@
 
           if (!placeName && !fullOcrText) {
             alert('Could not read text from the photo. Try a clearer shot.');
+            setPhotoToPinProcessing(false);
+            return;
+          }
+
+          // 3b. Try bulk parse — if OCR text contains multiple numbered/titled places, route to bulk-add
+          const bulkFromOcr = (() => {
+            const lines = fullOcrText.split(/\n/).map(l => l.trim()).filter(Boolean);
+            // Join lines that are clearly continuation (short lines followed by metadata)
+            const joined = rawOcr.split('\n').map(l => l.trim());
+            // Find numbered entries like "14 Fucha Vegetarian Cuisine BON" or "15 Injoy"
+            const entries = [];
+            const numRe = /^(\d{1,3})\s+([A-Z぀-鿿][\w\s\-&''぀-鿿]{2,60})/;
+            for (let i = 0; i < joined.length; i++) {
+              const m = joined[i].match(numRe);
+              if (!m) continue;
+              const num = parseInt(m[1]);
+              // Sanity: numbers should be sequential-ish and < 200
+              if (num > 200) continue;
+              let name = m[2].trim().replace(/[.,;:!?]+$/, '');
+              // Skip obvious non-names (ads, guide titles, generic words)
+              if (/^(tokyo|guide|muslim|check|around|prices?|available)\b/i.test(name)) continue;
+              if (name.length < 3) continue;
+              // Gather description: next lines until next numbered entry
+              let desc = '';
+              const resRe = /reservat\w*\s*(required|recommended|suggest|necessary|essential|advised)|book\s*(ahead|in advance)/i;
+              let hasRes = false;
+              for (let j = i + 1; j < joined.length && j < i + 20; j++) {
+                if (numRe.test(joined[j])) break;
+                const line = joined[j].trim();
+                if (!line) continue;
+                if (resRe.test(line)) hasRes = true;
+                if (desc.length < 300) desc += (desc ? ' ' : '') + line;
+              }
+              entries.push({ name, description: desc.substring(0, 300), checked: true, loading: false, placeData: null, reservation_recommended: hasRes });
+            }
+            return entries;
+          })();
+          if (bulkFromOcr.length >= 2) {
+            setKmlBulkData({
+              places: bulkFromOcr,
+              source: { source_name: 'Photo scan', source_url: '' },
+            });
+            setShowAddFromLink(true);
             setPhotoToPinProcessing(false);
             return;
           }
@@ -18635,6 +18839,7 @@
               onPasteText={() => setShowPasteText(true)}
               onUploadConfirmation={() => setShowUploadConfirmation(true)}
               onFromPhoto={() => { if (photoToPinInputRef.current) photoToPinInputRef.current.click(); }}
+              onBulkPhotoScan={() => { if (bulkPhotoInputRef.current) bulkPhotoInputRef.current.click(); }}
               onShareMap={async () => {
                 const col = collections.find(c => c.id === activeCollection);
                 if (!col) { showToast('Select a map first', 'error'); return; }
@@ -19317,6 +19522,16 @@
               <div
                 className="fam-item"
                 onClick={() => {
+                  setShowAddMenu(false);
+                  if (bulkPhotoInputRef.current) bulkPhotoInputRef.current.click();
+                }}
+              >
+                <span>📚</span>
+                <span>Scan Pages</span>
+              </div>
+              <div
+                className="fam-item"
+                onClick={() => {
                   setShowUploadConfirmation(true);
                   setShowAddMenu(false);
                 }}
@@ -19380,6 +19595,15 @@
             capture="environment"
             style={{ display: 'none' }}
             onChange={handlePhotoToPinCapture}
+          />
+          {/* Hidden file input for Bulk Photo Scan (multiple) */}
+          <input
+            ref={bulkPhotoInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            style={{ display: 'none' }}
+            onChange={handleBulkPhotoScan}
           />
 
           {/* Photo-to-Pin crop modal */}
