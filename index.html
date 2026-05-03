@@ -426,7 +426,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v104';
+    const APP_VERSION = 'v105';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -16493,7 +16493,7 @@
     };
 
 
-        const ItineraryPlanner = ({ pins, collections, activeCollection, isDarkMode, isMobile, onFlyTo, onClose, pendingAddPin, onClearPendingAdd }) => {
+        const ItineraryPlanner = ({ pins, collections, activeCollection, isDarkMode, isMobile, onFlyTo, onClose, pendingAddPin, onClearPendingAdd, onSelectPinFromItinerary }) => {
       const [itineraries, setItineraries] = useState([]);
       const [activeItinerary, setActiveItinerary] = useState(null);
       const [days, setDays] = useState([]);
@@ -17614,13 +17614,8 @@
                   onFlyTo={onFlyTo}
                   onSelectPin={(pinId) => {
                     const pin = collectionPins.find(p => p.id === pinId);
-                    if (pin) {
-                      // Close itinerary first, then select pin after effects settle
-                      onClose();
-                      requestAnimationFrame(() => {
-                        setSelectedPin(pin);
-                        if (pin.lat && pin.lng) setMapPanTarget({ lat: pin.lat, lng: pin.lng, zoom: 16, _t: Date.now() });
-                      });
+                    if (pin && onSelectPinFromItinerary) {
+                      onSelectPinFromItinerary(pin);
                     }
                   }}
                   transitError={transitErrors[day.id]}
@@ -19795,6 +19790,13 @@
               onClose={() => setShowItinerary(false)}
               pendingAddPin={pendingItineraryPin}
               onClearPendingAdd={() => setPendingItineraryPin(null)}
+              onSelectPinFromItinerary={(pin) => {
+                setShowItinerary(false);
+                setTimeout(() => {
+                  selectPinWithGroup(pin);
+                  if (pin.lat && pin.lng) setMapPanTarget({ lat: pin.lat, lng: pin.lng, zoom: 16, _t: Date.now() });
+                }, 150);
+              }}
             />
           )}
 
