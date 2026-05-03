@@ -103,12 +103,20 @@
       cursor: pointer;
     }
 
+    @keyframes selected-pin-pulse {
+      0% { box-shadow: 0 0 0 4px rgba(59,130,246,0.7), 0 3px 10px rgba(0,0,0,0.4); }
+      50% { box-shadow: 0 0 0 12px rgba(59,130,246,0.2), 0 3px 10px rgba(0,0,0,0.4); }
+      100% { box-shadow: 0 0 0 4px rgba(59,130,246,0.7), 0 3px 10px rgba(0,0,0,0.4); }
+    }
+
     .category-pin-selected {
       width: 44px;
       height: 44px;
       font-size: 22px;
       border: 3px solid white;
-      box-shadow: 0 3px 10px rgba(0,0,0,0.4);
+      box-shadow: 0 0 0 4px rgba(59,130,246,0.7), 0 3px 10px rgba(0,0,0,0.4);
+      animation: selected-pin-pulse 1.5s ease-in-out infinite;
+      z-index: 9999 !important;
     }
 
     select {
@@ -418,7 +426,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v103';
+    const APP_VERSION = 'v104';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -2026,15 +2034,25 @@
         // Neither has reservation — only merge if one is a booking category and the other isn't
         if (aIsBookingCat === bIsBookingCat) return false;
       }
-      // Compare normalized names
+      // Compare normalized names — require substantial match, not just substring for short names
       const na = normalizePinName(a.name);
       const nb = normalizePinName(b.name);
-      if (na && nb && (na.includes(nb) || nb.includes(na))) return true;
-      // Compare addresses if both have one
-      if (a.address && b.address) {
-        const aa = a.address.toLowerCase().replace(/[^a-z0-9]/g, '');
-        const ab = b.address.toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (aa && ab && aa.length > 5 && (aa === ab || aa.includes(ab) || ab.includes(aa))) return true;
+      if (na && nb) {
+        const shorter = na.length <= nb.length ? na : nb;
+        const longer = na.length <= nb.length ? nb : na;
+        // Short names (< 5 chars) must be exact match to avoid "Zen" matching "Citizen" etc.
+        if (shorter.length < 5) {
+          if (na === nb) return true;
+        } else if (longer.includes(shorter)) {
+          // For longer names, substring is OK but the shorter must be >60% of the longer
+          if (shorter.length / longer.length > 0.6) return true;
+        }
+      }
+      // Compare lat/lng proximity — pins must be within ~100m to merge by address
+      if (a.lat && a.lng && b.lat && b.lng) {
+        const dlat = Math.abs(a.lat - b.lat);
+        const dlng = Math.abs(a.lng - b.lng);
+        if (dlat < 0.001 && dlng < 0.001) return true; // ~100m
       }
       return false;
     };
@@ -3195,7 +3213,9 @@
                   const dateTag = sameCatWithRes > 1 && hasRes ? formatPinDate(p.reservation_details) : null;
                   let label;
                   if (!hasRes) {
-                    label = `${catData.icon || '📍'} Place`;
+                    // Use category label to differentiate when multiple non-reservation pins are merged
+                    const catLabel = catData.label || 'Place';
+                    label = `${catData.icon || '📍'} ${catLabel}`;
                   } else if (dateTag) {
                     label = `${p.category === 'activity' ? '🎫' : p.category === 'restaurant' ? '🍽️' : '🏨'} ${dateTag}`;
                   } else {
@@ -4105,15 +4125,17 @@
       // Filter and sort existing pins — current collection first, then others
       const matchingPins = useMemo(() => {
         if (!query || query.length < 2) return [];
-        const q = query.toLowerCase();
+        // Normalize curly quotes/apostrophes to straight ones for matching
+        const normalizeQuotes = (s) => s.toLowerCase().replace(/[‘’“”′″]/g, "'");
+        const q = normalizeQuotes(query);
         // Only show saved places from the active collection
         const collectionPins = activeCollection && activeCollection !== 'all'
           ? pins.filter(p => p.collection_id === activeCollection)
           : pins;
         const matches = collectionPins.filter(p =>
-          p.name.toLowerCase().includes(q) ||
-          p.address?.toLowerCase().includes(q) ||
-          p.source_name?.toLowerCase().includes(q)
+          normalizeQuotes(p.name).includes(q) ||
+          normalizeQuotes(p.address || '').includes(q) ||
+          normalizeQuotes(p.source_name || '').includes(q)
         );
         matches.sort((a, b) => {
           const aNameMatch = a.name.toLowerCase().includes(q) ? 0 : 1;
@@ -11765,7 +11787,9 @@
           if (matched.has(validPins[i].id)) continue;
           for (let j = i + 1; j < validPins.length; j++) {
             if (matched.has(validPins[j].id)) continue;
-            if (isSamePlacePin(validPins[i], validPins[j])) {
+            const isExactDupe = !validPins[i].reservation_details && !validPins[j].reservation_details
+              && validPins[i].name.toLowerCase().trim() === validPins[j].name.toLowerCase().trim();
+            if (isExactDupe || isSamePlacePin(validPins[i], validPins[j])) {
               const group = [validPins[i], validPins[j]];
               // Sort: spot (no reservation_details) first, then bookings by date
               group.sort((a, b) => {
@@ -11814,7 +11838,7 @@
             className: 'category-marker'
           });
           try {
-            const marker = L.marker([pin.lat, pin.lng], { icon })
+            const marker = L.marker([pin.lat, pin.lng], { icon, zIndexOffset: isSelected ? 10000 : 0 })
               .on('click', () => {
                 // Pass the group along with the pin for same-place handling
                 if (isGrouped) {
@@ -12036,7 +12060,7 @@
               }
             }}
             className="absolute bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-md shadow-lg flex items-center justify-center"
-            style={{ right: 10, bottom: 185, zIndex: 1000, width: 34, height: 34 }}
+            style={{ right: 10, bottom: onToggleOpenNow ? 235 : 195, zIndex: 1000, width: 34, height: 34 }}
             id="locate-me-btn"
             title="Go to my location"
           >
@@ -12142,13 +12166,16 @@
         }
 
         // Merge same-place pins (spot + activity at same location) into groups
+        // Also treat exact-name duplicates (same name, same category, no reservation) as same-place
         const samePlaceMap = {};
         const matchedIds = new Set();
         for (let i = 0; i < result.length; i++) {
           if (matchedIds.has(result[i].id)) continue;
           for (let j = i + 1; j < result.length; j++) {
             if (matchedIds.has(result[j].id)) continue;
-            if (isSamePlacePin(result[i], result[j])) {
+            const isExactDupe = !result[i].reservation_details && !result[j].reservation_details
+              && result[i].name.toLowerCase().trim() === result[j].name.toLowerCase().trim();
+            if (isExactDupe || isSamePlacePin(result[i], result[j])) {
               const group = [result[i], result[j]];
               group.sort((a, b) => {
                 const aBook = a.reservation_details ? 1 : 0;
@@ -14293,7 +14320,9 @@
           let representative = filteredPins[i];
           for (let j = i + 1; j < filteredPins.length; j++) {
             if (matched.has(filteredPins[j].id)) continue;
-            if (isSamePlacePin(filteredPins[i], filteredPins[j])) {
+            const isExactDupe = !filteredPins[i].reservation_details && !filteredPins[j].reservation_details
+              && filteredPins[i].name.toLowerCase().trim() === filteredPins[j].name.toLowerCase().trim();
+            if (isExactDupe || isSamePlacePin(filteredPins[i], filteredPins[j])) {
               matched.add(filteredPins[j].id);
               // Prefer the spot pin (no reservation_details) as representative
               if (filteredPins[j].reservation_details && !filteredPins[i].reservation_details) {
@@ -14371,11 +14400,13 @@
             finalEmoji = pin.emoji || finalEmoji;
           }
         }
+        // Don't save with empty name
+        if (!finalName || !finalName.trim()) return;
         onSave({
           ...base,
           id: item?.id || generateId(),
           type, pin_id: type === 'pin' ? selectedPinId : null,
-          name: finalName, emoji: finalEmoji,
+          name: finalName.trim(), emoji: finalEmoji,
           scheduled_time: scheduledTime,
           estimated_duration_minutes: duration === '' ? 0 : (parseInt(duration) || 0),
           description, lat, lng,
@@ -14550,16 +14581,16 @@
                                   setFormLat(place.lat);
                                   setFormLng(place.lng);
                                   setAddedSearchPlaces(prev => new Set(prev).add(placeKey));
-                                  setPinSearch('');
+                                  // Don't clear search — keep results visible with "Added" badge
                                 }}
                                 className={`w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 ${alreadyAdded ? 'opacity-40 cursor-not-allowed' : 'hover:bg-green-100 dark:hover:bg-green-900/30'}`}
                               >
-                                <span className="text-green-600 dark:text-green-400 text-xs flex-shrink-0">+</span>
+                                <span className={`text-xs flex-shrink-0 ${alreadyAdded ? 'text-green-500' : 'text-green-600 dark:text-green-400'}`}>{alreadyAdded ? '✓' : '+'}</span>
                                 <div className="flex-1 min-w-0">
-                                  <span className="truncate dark:text-white block">{place.displayName}</span>
+                                  <span className={`truncate block ${alreadyAdded ? 'text-gray-400 dark:text-gray-500' : 'dark:text-white'}`}>{place.displayName}</span>
                                   <span className="text-[10px] text-gray-400 truncate block">{place.address}</span>
                                 </div>
-                                {alreadyAdded && <span className="text-[10px] text-green-500 flex-shrink-0">Added</span>}
+                                {alreadyAdded && <span className="text-[10px] text-green-500 flex-shrink-0">Added to map</span>}
                               </button>
                               );
                             })}
@@ -15663,7 +15694,7 @@
                   )}
                   {/* Swap / Move all items */}
                   {allDays && allDays.length > 1 && items.length > 0 && (
-                    <div className="relative">
+                    <div className="relative inline-flex items-center">
                       <button
                         onClick={() => setShowSwapPicker(showSwapPicker ? null : 'menu')}
                         className="text-[10px] text-blue-500 hover:text-blue-600"
@@ -17584,9 +17615,12 @@
                   onSelectPin={(pinId) => {
                     const pin = collectionPins.find(p => p.id === pinId);
                     if (pin) {
-                      setSelectedPin(pin);
+                      skipPanelAutoClose.current = true;
                       setShowItinerary(false);
-                      if (pin.lat && pin.lng) setMapPanTarget({ lat: pin.lat, lng: pin.lng, zoom: 16, _t: Date.now() });
+                      setTimeout(() => {
+                        setSelectedPin(pin);
+                        if (pin.lat && pin.lng) setMapPanTarget({ lat: pin.lat, lng: pin.lng, zoom: 16, _t: Date.now() });
+                      }, 0);
                     }
                   }}
                   transitError={transitErrors[day.id]}
@@ -18177,8 +18211,14 @@
       // Auto-replace side panels: only one right-side panel visible at a time.
       // When a pin is selected, close itinerary + doc center. When itinerary
       // opens, close selected pin + doc center, etc.
+      // Use a ref to skip the mutual-exclusion effect when navigating from itinerary to pin
+      const skipPanelAutoClose = useRef(false);
       useEffect(() => {
         if (selectedPin) {
+          if (skipPanelAutoClose.current) {
+            skipPanelAutoClose.current = false;
+            return;
+          }
           if (showItinerary) setShowItinerary(false);
           if (showTravelDocs) setShowTravelDocs(false);
           if (showPackingList) setShowPackingList(false);
@@ -18384,11 +18424,12 @@
           : pins.filter(p => p.collection_id === activeCollection);
 
         if (searchQuery) {
-          const q = searchQuery.toLowerCase();
+          const normalizeQ = (s) => s.toLowerCase().replace(/[''""′″]/g, "'");
+          const q = normalizeQ(searchQuery);
           result = result.filter(p =>
-            p.name.toLowerCase().includes(q) ||
-            p.address.toLowerCase().includes(q) ||
-            p.source_name?.toLowerCase().includes(q)
+            normalizeQ(p.name).includes(q) ||
+            normalizeQ(p.address || '').includes(q) ||
+            normalizeQ(p.source_name || '').includes(q)
           );
         }
 
