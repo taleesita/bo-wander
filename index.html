@@ -426,7 +426,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v108';
+    const APP_VERSION = 'v109';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -9765,6 +9765,7 @@
     };
 
     // Custom categories stored in localStorage, merged into PIN_CATEGORIES
+    const BUILTIN_CATEGORIES = new Set(Object.keys(PIN_CATEGORIES));
     const loadCustomCategories = () => {
       try { return JSON.parse(localStorage.getItem('bo_custom_categories') || '{}'); } catch { return {}; }
     };
@@ -9773,6 +9774,12 @@
       customs[id] = data;
       localStorage.setItem('bo_custom_categories', JSON.stringify(customs));
       PIN_CATEGORIES[id] = data;
+    };
+    const deleteCustomCategory = (id) => {
+      const customs = loadCustomCategories();
+      delete customs[id];
+      localStorage.setItem('bo_custom_categories', JSON.stringify(customs));
+      delete PIN_CATEGORIES[id];
     };
     // Load custom categories on startup
     Object.assign(PIN_CATEGORIES, loadCustomCategories());
@@ -9803,18 +9810,26 @@
             <div>
               <div className="flex flex-wrap gap-1.5">
                 {Object.entries(PIN_CATEGORIES).sort(([a], [b]) => a === 'other' ? 1 : b === 'other' ? -1 : 0).map(([id, cat]) => (
-                  <button
-                    key={id}
-                    onClick={() => onChange(id)}
-                    className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium transition ${
-                      value === id
-                        ? 'ring-2 ring-offset-1 ring-blue-500 text-white'
-                        : 'bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-slate-600'
-                    }`}
-                    style={value === id ? { backgroundColor: cat.color } : {}}
-                  >
-                    <span className="text-sm">{cat.icon}</span> {cat.label}
-                  </button>
+                  <div key={id} className="relative inline-flex">
+                    <button
+                      onClick={() => onChange(id)}
+                      className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium transition ${
+                        value === id
+                          ? 'ring-2 ring-offset-1 ring-blue-500 text-white'
+                          : 'bg-gray-100 dark:bg-slate-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-slate-600'
+                      }`}
+                      style={value === id ? { backgroundColor: cat.color } : {}}
+                    >
+                      <span className="text-sm">{cat.icon}</span> {cat.label}
+                    </button>
+                    {!BUILTIN_CATEGORIES.has(id) && value !== id && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${cat.label}" category?`)) { deleteCustomCategory(id); onChange(value); } }}
+                        className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white rounded-full text-[8px] leading-none flex items-center justify-center hover:bg-red-600 shadow-sm"
+                        title={`Delete ${cat.label}`}
+                      >✕</button>
+                    )}
+                  </div>
                 ))}
                 <button
                   onClick={() => setShowCustom(true)}
