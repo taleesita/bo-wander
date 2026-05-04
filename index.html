@@ -14970,14 +14970,26 @@
               </div>
             </div>
             {editingOptionsGroup === item.id && (
-              <div className="mt-1 mb-1">
+              <div className="mt-1 mb-1 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">Time</label>
+                  <input
+                    type="time"
+                    value={item.scheduled_time || ''}
+                    onChange={(e) => onEdit({ ...item, scheduled_time: e.target.value || null, _skipForm: true })}
+                    className="px-2 py-1 text-sm rounded border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-1 focus:ring-amber-400"
+                    style={{ minHeight: 34 }}
+                  />
+                  {item.scheduled_time && (
+                    <button onClick={() => onEdit({ ...item, scheduled_time: null, _skipForm: true })} className="text-xs text-gray-400 hover:text-red-500">✕</button>
+                  )}
+                </div>
                 <input
                   type="text"
                   placeholder="Search pins to add..."
                   value={optionsGroupSearch}
                   onChange={(e) => setOptionsGroupSearch(e.target.value)}
                   className="w-full px-2 py-1.5 text-sm rounded border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-1 focus:ring-amber-400"
-                  autoFocus
                 />
                 {optionsGroupSearch.trim().length >= 2 && (() => {
                   const q = optionsGroupSearch.trim().toLowerCase();
@@ -15246,17 +15258,22 @@
         window.L.tileLayer(tileUrl, { maxZoom: 18 }).addTo(map);
 
         const markers = [];
-        // Number only non-hotel, non-extra-option points sequentially
+        // Number non-hotel points sequentially; extra options get same number as their group
         let stopNum = 0;
+        const groupNumMap = {}; // optionGroupId -> stop number
         validPts.forEach((pt) => {
           const isExtra = pt.isExtraOption;
-          const num = (pt.isHotel || isExtra) ? '' : (++stopNum);
+          let num;
+          if (pt.isHotel) { num = ''; }
+          else if (isExtra && pt.optionGroupId && groupNumMap[pt.optionGroupId]) { num = groupNumMap[pt.optionGroupId]; }
+          else { num = ++stopNum; }
+          if (pt.optionGroupId && !isExtra) groupNumMap[pt.optionGroupId] = num;
           const optColor = pt.optionColor || '#f59e0b';
           const optionsBorder = pt.isOptions ? `border:2px dashed ${optColor};border-radius:50%;` : '';
           const badgeColor = pt.isOptions ? optColor : '#3b82f6';
-          const markerSize = isExtra ? 24 : 28;
-          const fontSize = isExtra ? 15 : 18;
-          const opacity = isExtra ? 'opacity:0.8;' : '';
+          const markerSize = 28;
+          const fontSize = 18;
+          const opacity = '';
           const icon = window.L.divIcon({
             className: 'day-mini-marker',
             html: `<div style="position:relative;width:${markerSize}px;height:${markerSize}px;${optionsBorder}${opacity}">
@@ -15669,12 +15686,11 @@
         const lines = items.map(item => {
           const pin = item.pin_id ? pins.find(p => p.id === item.pin_id) : null;
           let line = `- ${item.emoji} ${item.name}`;
-          if (pin && (pin.personal_rating || pin.notes)) {
-            const ratingStr = pin.personal_rating ? '⭐'.repeat(pin.personal_rating) : '';
-            const notesStr = pin.notes ? ` – ${pin.notes}` : '';
-            if (ratingStr || notesStr) {
-              line += ` (${ratingStr}${notesStr})`;
-            }
+          const notes = pin?.notes || item.description || '';
+          const rating = pin?.personal_rating ? '⭐'.repeat(pin.personal_rating) : '';
+          if (rating || notes) {
+            const inner = [rating, notes].filter(Boolean).join(' – ');
+            line += ` (${inner})`;
           }
           return line;
         });
@@ -16112,13 +16128,14 @@
                       const groupColor = _optGroupColors[_optGroupIdx % _optGroupColors.length];
                       _optGroupIdx++;
                       const first = i.options[0];
-                      // Add remaining options as non-routed markers
+                      const groupId = i.id; // unique per options group
+                      // Add remaining options as non-routed markers with their own names
                       i.options.slice(1).forEach(opt => {
                         if (opt.lat && opt.lng) {
-                          extraOptionsPts.push({ lat: opt.lat, lng: opt.lng, name: opt.name, emoji: opt.emoji || '📋', isHotel: false, isOptions: true, isExtraOption: true, optionColor: groupColor });
+                          extraOptionsPts.push({ lat: opt.lat, lng: opt.lng, name: opt.name, emoji: opt.emoji || '🍽️', isHotel: false, isOptions: true, isExtraOption: true, optionColor: groupColor, optionGroupId: groupId });
                         }
                       });
-                      return first.lat && first.lng ? { lat: first.lat, lng: first.lng, name: `${i.name}`, emoji: '📋', isHotel: false, transit_info: i.transit_info, isOptions: true, optionColor: groupColor } : null;
+                      return first.lat && first.lng ? { lat: first.lat, lng: first.lng, name: first.name, emoji: first.emoji || '🍽️', isHotel: false, transit_info: i.transit_info, isOptions: true, optionColor: groupColor, optionGroupId: groupId } : null;
                     }
                     return i.lat && i.lng ? { lat: i.lat, lng: i.lng, name: i.name, emoji: i.emoji || '📌', isHotel: false, transit_info: i.transit_info } : null;
                   })
