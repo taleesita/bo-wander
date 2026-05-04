@@ -15003,7 +15003,7 @@
             )}
             {item.options.map((opt, oi) => (
               <div key={opt.pin_id || oi} className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-800/40 cursor-pointer hover:bg-amber-50 dark:hover:bg-amber-900/20 transition"
-                onClick={() => { if (opt.lat && opt.lng && onFlyTo) onFlyTo(opt.lat, opt.lng); }}>
+                onClick={() => { if (opt.pin_id && onSelectPin) onSelectPin(opt.pin_id); else if (opt.lat && opt.lng && onFlyTo) onFlyTo(opt.lat, opt.lng); }}>
                 <span className="text-sm">{opt.emoji}</span>
                 <span className="text-sm truncate flex-1 min-w-0 dark:text-white">{opt.name}</span>
                 <button
@@ -15246,36 +15246,42 @@
         window.L.tileLayer(tileUrl, { maxZoom: 18 }).addTo(map);
 
         const markers = [];
-        // Number only non-hotel points sequentially
+        // Number only non-hotel, non-extra-option points sequentially
         let stopNum = 0;
         validPts.forEach((pt) => {
-          const num = pt.isHotel ? '' : (++stopNum);
-          const optionsBorder = pt.isOptions ? 'border:2px dashed #f59e0b;border-radius:50%;' : '';
+          const isExtra = pt.isExtraOption;
+          const num = (pt.isHotel || isExtra) ? '' : (++stopNum);
+          const optColor = pt.optionColor || '#f59e0b';
+          const optionsBorder = pt.isOptions ? `border:2px dashed ${optColor};border-radius:50%;` : '';
+          const badgeColor = pt.isOptions ? optColor : '#3b82f6';
+          const markerSize = isExtra ? 24 : 28;
+          const fontSize = isExtra ? 15 : 18;
+          const opacity = isExtra ? 'opacity:0.8;' : '';
           const icon = window.L.divIcon({
             className: 'day-mini-marker',
-            html: `<div style="position:relative;width:28px;height:28px;${optionsBorder}">
-              <div style="font-size:18px;text-align:center;line-height:${pt.isOptions ? '24' : '28'}px;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4))">${pt.emoji || '📌'}</div>
-              ${num ? `<div style="position:absolute;top:-6px;right:-6px;background:${pt.isOptions ? '#f59e0b' : '#3b82f6'};color:white;border-radius:50%;width:16px;height:16px;font-size:9px;line-height:16px;text-align:center;font-weight:700;border:1.5px solid white">${num}</div>` : ''}
+            html: `<div style="position:relative;width:${markerSize}px;height:${markerSize}px;${optionsBorder}${opacity}">
+              <div style="font-size:${fontSize}px;text-align:center;line-height:${pt.isOptions ? markerSize - 4 : markerSize}px;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4))">${pt.emoji || '📌'}</div>
+              ${num ? `<div style="position:absolute;top:-6px;right:-6px;background:${badgeColor};color:white;border-radius:50%;width:16px;height:16px;font-size:9px;line-height:16px;text-align:center;font-weight:700;border:1.5px solid white">${num}</div>` : ''}
             </div>`,
-            iconSize: [28, 28], iconAnchor: [14, 14],
+            iconSize: [markerSize, markerSize], iconAnchor: [markerSize/2, markerSize/2],
           });
           const m = window.L.marker([pt.lat, pt.lng], { icon }).addTo(map);
-          m.bindTooltip(`${num ? num + '. ' : '🏨 '}${pt.name}`, { direction: 'top', offset: [0, -10] });
+          const prefix = num ? num + '. ' : isExtra ? '↳ ' : '🏨 ';
+          m.bindTooltip(`${prefix}${pt.name}`, { direction: 'top', offset: [0, -10] });
           markers.push(m);
         });
 
-        // Draw route lines connecting non-hotel points
-        const routePts = validPts.filter(p => !p.isHotel);
+        // Draw route lines connecting non-hotel, non-extra-option points
+        const routePts = validPts.filter(p => !p.isHotel && !p.isExtraOption);
         if (routePts.length >= 2) {
           const lineColor = isDarkMode ? '#60a5fa' : '#3b82f6';
-          const optionsLineColor = isDarkMode ? '#fbbf24' : '#f59e0b';
 
           // First pass: draw cached polylines or dashed fallbacks
           const segmentLayers = [];
           for (let i = 1; i < routePts.length; i++) {
             const pt = routePts[i];
             const prevPt = routePts[i - 1];
-            const segColor = (pt.isOptions || prevPt.isOptions) ? optionsLineColor : lineColor;
+            const segColor = (pt.isOptions || prevPt.isOptions) ? (pt.optionColor || prevPt.optionColor || lineColor) : lineColor;
             const bestMode = pt.transit_info?.mode;
             const modeData = bestMode && pt.transit_info?.all_modes?.[bestMode];
             const encoded = modeData?.polyline;
@@ -15301,7 +15307,7 @@
               const modeData = bestMode && pt.transit_info?.all_modes?.[bestMode];
               if (modeData?.polyline) continue; // Already have it
               const prevPt = routePts[i - 1];
-              const segColor = (pt.isOptions || prevPt.isOptions) ? optionsLineColor : lineColor;
+              const segColor = (pt.isOptions || prevPt.isOptions) ? (pt.optionColor || prevPt.optionColor || lineColor) : lineColor;
               const segIdx = i - 1;
               (async (idx, from, to, col) => {
                 try {
@@ -15813,6 +15819,7 @@
                 <span className={`text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}>▾</span>
               </div>
             </div>
+            {!weather && <div className="h-5 mt-1 ml-6" />}
             {weather && (() => {
               const w = weatherCodeMap[weather.code] || weatherCodeMap[0];
               const showRain = weather.rainChance != null && weather.rainChance > 0;
@@ -16094,13 +16101,24 @@
               {/* Day mini-map modal */}
               {showMiniMap && (() => {
                 // Build ordered route: items in display order (scheduled + auto-timed)
+                const _optGroupColors = ['#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#06b6d4'];
+                let _optGroupIdx = 0;
+                const extraOptionsPts = []; // Non-routed alternative option markers
                 const orderedMapItems = allSorted
                   .filter(i => !i._isMealSlot && !i._isTransitDoc)
                   .map(i => {
-                    // For unconfirmed options groups, use the first option as representative
+                    // For unconfirmed options groups, use first option on route, show rest as extras
                     if (i.options && i.options.length >= 2 && !i.confirmed_option) {
+                      const groupColor = _optGroupColors[_optGroupIdx % _optGroupColors.length];
+                      _optGroupIdx++;
                       const first = i.options[0];
-                      return first.lat && first.lng ? { lat: first.lat, lng: first.lng, name: `${i.name} (${i.options.length} options)`, emoji: '📋', isHotel: false, transit_info: i.transit_info, isOptions: true } : null;
+                      // Add remaining options as non-routed markers
+                      i.options.slice(1).forEach(opt => {
+                        if (opt.lat && opt.lng) {
+                          extraOptionsPts.push({ lat: opt.lat, lng: opt.lng, name: opt.name, emoji: opt.emoji || '📋', isHotel: false, isOptions: true, isExtraOption: true, optionColor: groupColor });
+                        }
+                      });
+                      return first.lat && first.lng ? { lat: first.lat, lng: first.lng, name: `${i.name}`, emoji: '📋', isHotel: false, transit_info: i.transit_info, isOptions: true, optionColor: groupColor } : null;
                     }
                     return i.lat && i.lng ? { lat: i.lat, lng: i.lng, name: i.name, emoji: i.emoji || '📌', isHotel: false, transit_info: i.transit_info } : null;
                   })
@@ -16115,7 +16133,7 @@
                 // Dedupe hotel if it's already in ordered items
                 const itemCoords = new Set(orderedMapItems.map(i => `${i.lat.toFixed(4)},${i.lng.toFixed(4)}`));
                 const uniqueHotels = hotelPts.filter(h => !itemCoords.has(`${h.lat.toFixed(4)},${h.lng.toFixed(4)}`));
-                const allPts = [...orderedMapItems, ...uniqueHotels];
+                const allPts = [...orderedMapItems, ...uniqueHotels, ...extraOptionsPts];
                 if (allPts.length === 0) return null;
                 const dayNum = allDays ? allDays.findIndex(d => d.id === day.id) + 1 : '';
                 const dateLabel = day.date ? new Date(day.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
