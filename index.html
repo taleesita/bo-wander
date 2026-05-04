@@ -426,7 +426,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v106';
+    const APP_VERSION = 'v107';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -518,6 +518,13 @@
         window.dispatchEvent(new Event('resize'));
         // Also invalidate Leaflet map size after a beat
         setTimeout(() => window.dispatchEvent(new Event('resize')), 300);
+        // Force Leaflet containers to repaint
+        document.querySelectorAll('.leaflet-container').forEach(el => {
+          el.style.opacity = '0.99';
+          setTimeout(() => el.style.opacity = '1', 50);
+        });
+        // Dispatch event for React to force re-render
+        window.dispatchEvent(new Event('bw-force-rerender'));
       };
       window.addEventListener('pageshow', (e) => {
         if (e.persisted) {
@@ -1846,6 +1853,23 @@
       </svg>
     );
 
+    // Decode Google Maps encoded polyline to array of [lat, lng]
+    const decodePolyline = (encoded) => {
+      if (!encoded) return [];
+      const points = [];
+      let index = 0, lat = 0, lng = 0;
+      while (index < encoded.length) {
+        let b, shift = 0, result = 0;
+        do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+        lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+        shift = 0; result = 0;
+        do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+        lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+        points.push([lat / 1e5, lng / 1e5]);
+      }
+      return points;
+    };
+
     const PencilIcon = () => (
       <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
         <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25z"/>
@@ -1898,6 +1922,13 @@
       // No hours data at all → treat as always open (e.g. temples, parks, landmarks)
       if (!openingHours || Object.keys(openingHours).length === 0) {
         return { status: 'open', label: 'Open', hoursText: 'Hours not listed' };
+      }
+
+      // Check if ALL days are closed or empty (permanently closed heuristic)
+      const allValues = Object.values(openingHours);
+      const allClosed = allValues.every(v => !v || /^(closed|close)$/i.test(String(v).trim()));
+      if (allClosed && allValues.length > 0) {
+        return { status: 'permanently_closed', label: 'Permanently Closed', hoursText: 'Permanently closed' };
       }
 
       const now = customDate || new Date();
@@ -2029,43 +2060,39 @@
       // A pin is a "booking" if it has reservation_details
       const aHasRes = !!a.reservation_details;
       const bHasRes = !!b.reservation_details;
-      const bookingCats = ['activity', 'hotel', 'restaurant'];
-      const aIsBookingCat = bookingCats.includes(a.category);
-      const bIsBookingCat = bookingCats.includes(b.category);
-      // Case 1: spot + booking (different types, one has reservation_details)
-      // Case 2: same category, one is a spot (no res details) and one is a booking (has res details) — e.g. restaurant spot + restaurant reservation
-      // Case 3: same category bookings with different dates — e.g. two hotel stays
-      if (aHasRes !== bHasRes) {
-        // One has reservation, one doesn't — always allow merging if names match
-      } else if (aHasRes && bHasRes) {
-        // Both have reservations — must be same category with different dates
+      // ONLY merge when at least one pin has reservation_details (a booking doc).
+      // This prevents unrelated spots/restaurants from being merged just because they're nearby.
+      if (!aHasRes && !bHasRes) return false;
+      if (aHasRes && bHasRes) {
+        // Both have reservations — must be same category with different dates (e.g. two hotel stays)
         if (a.category !== b.category) return false;
         const aDate = a.reservation_details?.check_in || a.reservation_details?.date || '';
         const bDate = b.reservation_details?.check_in || b.reservation_details?.date || '';
         if (aDate && bDate && aDate === bDate) return false; // same date = likely duplicate
-      } else {
-        // Neither has reservation — only merge if one is a booking category and the other isn't
-        if (aIsBookingCat === bIsBookingCat) return false;
       }
-      // Compare normalized names — require substantial match, not just substring for short names
+      // Compare normalized names — require substantial match
       const na = normalizePinName(a.name);
       const nb = normalizePinName(b.name);
       if (na && nb) {
         const shorter = na.length <= nb.length ? na : nb;
         const longer = na.length <= nb.length ? nb : na;
-        // Short names (< 5 chars) must be exact match to avoid "Zen" matching "Citizen" etc.
         if (shorter.length < 5) {
           if (na === nb) return true;
         } else if (longer.includes(shorter)) {
-          // For longer names, substring is OK but the shorter must be >60% of the longer
           if (shorter.length / longer.length > 0.6) return true;
         }
       }
-      // Compare lat/lng proximity — pins must be within ~100m to merge by address
-      if (a.lat && a.lng && b.lat && b.lng) {
+      // Proximity merge ONLY when one has a reservation and names partially match
+      // (strict: names must share at least one significant word)
+      if ((aHasRes || bHasRes) && a.lat && a.lng && b.lat && b.lng) {
         const dlat = Math.abs(a.lat - b.lat);
         const dlng = Math.abs(a.lng - b.lng);
-        if (dlat < 0.001 && dlng < 0.001) return true; // ~100m
+        if (dlat < 0.0005 && dlng < 0.0005) { // ~50m, tighter radius
+          // Check if names share at least one word longer than 3 chars
+          const aWords = (na || '').split(/\s+/).filter(w => w.length > 3);
+          const bWords = new Set((nb || '').split(/\s+/).filter(w => w.length > 3));
+          if (aWords.some(w => bWords.has(w))) return true;
+        }
       }
       return false;
     };
@@ -3287,11 +3314,11 @@
                     <div>
                       <div className="flex items-center gap-1">
                         <button onClick={() => setShowHours(!showHours)} className="flex items-center gap-2 flex-1 text-left">
-                          <span className={`inline-block w-2 h-2 rounded-full ${openStatus.status === 'open' ? 'bg-green-500' : openStatus.status === 'closed' ? 'bg-red-500' : 'bg-gray-400'}`} />
-                          <span className={`text-xs font-semibold ${openStatus.status === 'open' ? 'text-green-600' : openStatus.status === 'closed' ? 'text-red-600' : 'text-gray-500'}`}>
+                          <span className={`inline-block w-2 h-2 rounded-full ${openStatus.status === 'open' ? 'bg-green-500' : (openStatus.status === 'closed' || openStatus.status === 'permanently_closed') ? 'bg-red-500' : 'bg-gray-400'}`} />
+                          <span className={`text-xs font-semibold ${openStatus.status === 'open' ? 'text-green-600' : (openStatus.status === 'closed' || openStatus.status === 'permanently_closed') ? 'text-red-600' : 'text-gray-500'}`}>
                             {openStatus.label}
                           </span>
-                          {(() => { const h = pin.opening_hours || {}; const allClosed = Object.values(h).every(v => !v || v === 'Closed'); return allClosed ? <span className="text-[10px] text-amber-500" title="All days show closed — try refreshing">⚠</span> : null; })()}
+                          {openStatus.status !== 'permanently_closed' && (() => { const h = pin.opening_hours || {}; const allClosed = Object.values(h).every(v => !v || v === 'Closed'); return allClosed ? <span className="text-[10px] text-amber-500" title="All days show closed — try refreshing">⚠</span> : null; })()}
                           <span className="text-xs text-gray-400">{showHours ? '▲' : '▼'}</span>
                         </button>
                         <button onClick={refreshHours} disabled={refreshingHours} className="text-[10px] text-blue-500 hover:text-blue-600 px-1" title="Refresh hours from Google">
@@ -11955,8 +11982,9 @@
           return null;
         };
 
-        // Fit bounds when the set of pins changes (e.g. switching collection)
-        const collectionKey = validPins.map(p => p.id).sort().join(',');
+        // Fit bounds when switching collection (NOT when filters change)
+        // Use collectionName as the key so toggling Open Now doesn't refit
+        const collectionKey = collectionName || validPins.map(p => p.id).sort().join(',');
         if (validPins.length > 0 && collectionKey !== prevCollectionKey.current) {
           prevCollectionKey.current = collectionKey;
           const smartCenter = findSmartCenter();
@@ -14338,7 +14366,8 @@
             .slice(0, 30);
         }
       } else {
-        filteredPins = pins.slice(0, 20);
+        // Non-meal mode: only show pins when user is searching, not a full list
+        filteredPins = [];
       }
 
       // Deduplicate co-located pins (spot + reservation for same place)
@@ -14382,7 +14411,28 @@
         delete base._autoTime;
         delete base.__mealPreset;
 
-        // If shortlist has 2+ options, save as options item
+        // Custom options group: 2+ selected pins
+        if (type === 'options_group' && shortlist.length >= 2) {
+          if (!name || !name.trim()) return; // group name required
+          onSave({
+            ...base,
+            id: item?.id || generateId(),
+            type: 'pin',
+            name: name.trim(),
+            emoji: '📋',
+            scheduled_time: scheduledTime,
+            estimated_duration_minutes: duration === '' ? 0 : (parseInt(duration) || 0),
+            description,
+            options: shortlist,
+            confirmed_option: null,
+            lat: shortlist[0].lat || 0,
+            lng: shortlist[0].lng || 0,
+          });
+          onClose();
+          return;
+        }
+
+        // If shortlist has 2+ options (from meal mode), save as options item
         if (shortlist.length >= 2) {
           const mealName = mealType ? mealType.charAt(0).toUpperCase() + mealType.slice(1) : 'Meal';
           onSave({
@@ -14458,7 +14508,7 @@
               {/* Type tabs — hidden when adding via meal slot since it auto-filters pins */}
               {!mealMode && (
                 <div className="flex gap-1 bg-gray-100 dark:bg-slate-800 rounded-lg p-1">
-                  {[['pin', '📌 Pin'], ['entry', '✏️ Custom']].map(([t, label]) => (
+                  {[['pin', '📌 Pin'], ['entry', '✏️ Custom'], ['options_group', '📋 Options']].map(([t, label]) => (
                     <button key={t} onClick={() => setType(t)}
                       className={`flex-1 text-sm py-1.5 rounded-md font-medium transition ${type === t ? 'bg-white dark:bg-slate-700 shadow text-gray-900 dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
                       {label}
@@ -14529,7 +14579,7 @@
                   <div className="max-h-56 overflow-y-auto space-y-1 border rounded-lg dark:border-slate-700 p-1">
                     {filteredPins.length === 0 && (
                       <p className="text-xs text-gray-400 text-center py-3">
-                        {mealMode ? 'No food pins yet — add some restaurants to your map first.' : 'No pins found'}
+                        {mealMode ? 'No food pins yet — add some restaurants to your map first.' : pinSearch ? 'No pins found' : 'Type to search your saved pins'}
                       </p>
                     )}
                     {filteredPins.map(pin => {
@@ -14635,13 +14685,131 @@
 
               {/* Meal emoji picker removed — meal slots now use smart pin filtering */}
 
-              {/* Name */}
-              <div>
-                <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Name</label>
-                <input type="text" value={name} onChange={e => setName(e.target.value)}
-                  placeholder={mealMode ? 'e.g. Lunch at Tsukiji' : 'Item name'}
-                  className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
-              </div>
+              {/* Options group form */}
+              {type === 'options_group' && (
+                <div className="space-y-2">
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Group name</label>
+                    <input type="text" value={name} onChange={e => setName(e.target.value)}
+                      placeholder="e.g. Coffee spots, Afternoon boba"
+                      className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                  </div>
+                  <input
+                    type="text" value={pinSearch} onChange={e => {
+                      setPinSearch(e.target.value);
+                      clearTimeout(webSearchTimer.current);
+                      const q = e.target.value.trim();
+                      if (q.length >= 3) {
+                        webSearchTimer.current = setTimeout(async () => {
+                          setWebSearching(true);
+                          try {
+                            const resp = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=6`);
+                            if (resp.ok) {
+                              const data = await resp.json();
+                              const results = (data.features || []).map(f => ({
+                                name: [f.properties.name, f.properties.city, f.properties.country].filter(Boolean).join(', '),
+                                displayName: f.properties.name || q,
+                                address: [f.properties.street, f.properties.city, f.properties.state, f.properties.country].filter(Boolean).join(', '),
+                                lat: f.geometry.coordinates[1],
+                                lng: f.geometry.coordinates[0],
+                                type: f.properties.osm_value || f.properties.type || '',
+                              }));
+                              setWebSearchResults(results);
+                            } else {
+                              setWebSearchResults([]);
+                            }
+                          } catch(e) {
+                            setWebSearchResults([]);
+                          }
+                          setWebSearching(false);
+                        }, 400);
+                      } else {
+                        setWebSearchResults([]);
+                      }
+                    }}
+                    placeholder="Search pins or find new places..."
+                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
+                  />
+                  {shortlist.length > 0 && (
+                    <div className="flex flex-wrap gap-1 p-1.5 bg-purple-50 dark:bg-purple-900/20 rounded-lg border border-purple-200 dark:border-purple-800/40">
+                      <span className="text-[10px] text-purple-600 dark:text-purple-400 font-medium w-full">Selected ({shortlist.length}):</span>
+                      {shortlist.map(s => (
+                        <span key={s.pin_id} className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/40 rounded text-[11px] text-purple-800 dark:text-purple-300">
+                          {s.emoji} {s.name.length > 18 ? s.name.substring(0, 18) + '…' : s.name}
+                          <button onClick={() => setShortlist(prev => prev.filter(x => x.pin_id !== s.pin_id))} className="text-purple-500 hover:text-red-500 ml-0.5">×</button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="max-h-56 overflow-y-auto space-y-1 border rounded-lg dark:border-slate-700 p-1">
+                    {filteredPins.length === 0 && (
+                      <p className="text-xs text-gray-400 text-center py-3">
+                        {pinSearch ? 'No pins found' : 'Type to search your saved pins'}
+                      </p>
+                    )}
+                    {filteredPins.map(pin => {
+                      const isShortlisted = shortlist.some(s => s.pin_id === pin.id);
+                      return (
+                        <button key={pin.id}
+                          onClick={() => {
+                            if (isShortlisted) {
+                              setShortlist(prev => prev.filter(s => s.pin_id !== pin.id));
+                            } else {
+                              setShortlist(prev => [...prev, { pin_id: pin.id, name: pin.name, emoji: pin.emoji, lat: pin.lat, lng: pin.lng }]);
+                            }
+                          }}
+                          className={`w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 transition ${isShortlisted ? 'bg-purple-100 dark:bg-purple-900/40' : 'hover:bg-gray-50 dark:hover:bg-slate-800'}`}
+                        >
+                          <span className="text-sm flex-shrink-0">{pin.emoji}</span>
+                          <div className="flex-1 min-w-0">
+                            <span className="truncate block dark:text-white">{pin.name}</span>
+                            {pin.address && <span className="text-[10px] text-gray-400 truncate block">{pin.address}</span>}
+                          </div>
+                          {isShortlisted && <span className="text-[10px] text-purple-600 dark:text-purple-400 flex-shrink-0">✓</span>}
+                        </button>
+                      );
+                    })}
+                    {webSearchResults.length > 0 && (
+                      <>
+                        <div className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider px-2 py-1">Web results</div>
+                        {webSearchResults.map((place, pi) => (
+                          <button key={`web-${pi}`}
+                            onClick={() => {
+                              const newPinId = Date.now().toString();
+                              if (onCreatePin) {
+                                onCreatePin({
+                                  id: newPinId, name: place.displayName, address: place.address,
+                                  emoji: '📍', category: 'poi',
+                                  lat: place.lat, lng: place.lng, description: '', photos: [],
+                                });
+                              }
+                              setShortlist(prev => [...prev, { pin_id: newPinId, name: place.displayName, emoji: '📍', lat: place.lat, lng: place.lng }]);
+                              setAddedSearchPlaces(prev => new Set(prev).add(place.displayName + place.lat + place.lng));
+                            }}
+                            className="w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 hover:bg-green-100 dark:hover:bg-green-900/30"
+                          >
+                            <span className="text-xs flex-shrink-0 text-green-600 dark:text-green-400">+</span>
+                            <div className="flex-1 min-w-0">
+                              <span className="truncate block dark:text-white">{place.displayName}</span>
+                              <span className="text-[10px] text-gray-400 truncate block">{place.address}</span>
+                            </div>
+                          </button>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Name — not shown for options_group (uses group name input above) */}
+              {type !== 'options_group' && (
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Name</label>
+                  <input type="text" value={name} onChange={e => setName(e.target.value)}
+                    placeholder={mealMode ? 'e.g. Lunch at Tsukiji' : 'Item name'}
+                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white" />
+                </div>
+              )}
 
               {/* Time + Duration */}
               <div className="grid grid-cols-2 gap-3">
@@ -14649,7 +14817,7 @@
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Time</label>
                   <input type="time" value={scheduledTime} onChange={e => setScheduledTime(e.target.value)}
                     className="w-full px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
-                    style={{ WebkitAppearance: 'none', boxSizing: 'border-box' }} />
+                    style={{ WebkitAppearance: 'none', boxSizing: 'border-box', minHeight: 42 }} />
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Duration (min)</label>
@@ -14669,8 +14837,9 @@
               </div>
 
               <button onClick={handleSave}
-                className={`w-full py-2 text-white rounded-lg text-sm font-medium transition ${shortlist.length >= 2 ? 'bg-amber-500 hover:bg-amber-600' : 'bg-blue-600 hover:bg-blue-700'}`}>
-                {shortlist.length >= 2 ? `Add ${shortlist.length} Options` : item?.id ? 'Save Changes' : 'Add Item'}
+                className={`w-full py-2 text-white rounded-lg text-sm font-medium transition ${shortlist.length >= 2 && (type === 'options_group' || mealMode) ? 'bg-amber-500 hover:bg-amber-600' : 'bg-blue-600 hover:bg-blue-700'}`}
+                disabled={type === 'options_group' && shortlist.length < 2}>
+                {type === 'options_group' && shortlist.length >= 2 ? `Add "${name}" (${shortlist.length} options)` : shortlist.length >= 2 ? `Add ${shortlist.length} Options` : item?.id ? 'Save Changes' : 'Add Item'}
               </button>
             </div>
           </div>
@@ -14977,13 +15146,13 @@
               <button onClick={(e) => { e.stopPropagation(); onViewDoc(matchedDoc); }} className="text-[10px] text-blue-500 hover:text-blue-600 shrink-0 px-1">View</button>
             )}
 
-            {/* Actions */}
-            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition flex-shrink-0">
-              <button onClick={() => onEdit({ ...item, _autoTime: autoTime })} className="p-1 hover:bg-gray-200 dark:hover:bg-slate-600 rounded text-gray-500">
+            {/* Actions — always visible on mobile, hover-reveal on desktop */}
+            <div className="flex items-center gap-0.5 md:opacity-0 md:group-hover:opacity-100 transition flex-shrink-0">
+              <button onClick={(e) => { e.stopPropagation(); onEdit({ ...item, _autoTime: autoTime }); }} className="p-2 -m-1 hover:bg-gray-200 dark:hover:bg-slate-600 rounded text-gray-500" title="Edit">
                 <PencilIcon />
               </button>
               {!confirmDelete ? (
-                <button onClick={() => setConfirmDelete(true)} className="p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded text-gray-500 hover:text-red-500">
+                <button onClick={(e) => { e.stopPropagation(); setConfirmDelete(true); }} className="p-2 -m-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded text-gray-500 hover:text-red-500" title="Delete">
                   <TrashIcon />
                 </button>
               ) : (
@@ -15048,34 +15217,52 @@
           markers.push(m);
         });
 
-        // Draw route line connecting non-hotel points in order
+        // Draw route lines connecting non-hotel points — use real walking polylines when available
         const routePts = validPts.filter(p => !p.isHotel);
         if (routePts.length >= 2) {
-          const latlngs = routePts.map(p => [p.lat, p.lng]);
-          window.L.polyline(latlngs, {
-            color: isDarkMode ? '#60a5fa' : '#3b82f6',
-            weight: 3, opacity: 0.7, dashArray: '8,6',
-          }).addTo(map);
+          const lineColor = isDarkMode ? '#60a5fa' : '#3b82f6';
+          for (let i = 1; i < routePts.length; i++) {
+            const pt = routePts[i];
+            // transit_info is on the destination item — it has the polyline for this segment
+            const bestMode = pt.transit_info?.mode;
+            const modeData = bestMode && pt.transit_info?.all_modes?.[bestMode];
+            const encoded = modeData?.polyline;
+            if (encoded) {
+              const decoded = decodePolyline(encoded);
+              if (decoded.length > 1) {
+                window.L.polyline(decoded, {
+                  color: lineColor, weight: 3, opacity: 0.7,
+                }).addTo(map);
+                continue;
+              }
+            }
+            // Fallback: straight dashed line
+            window.L.polyline([[routePts[i-1].lat, routePts[i-1].lng], [pt.lat, pt.lng]], {
+              color: lineColor, weight: 3, opacity: 0.5, dashArray: '8,6',
+            }).addTo(map);
+          }
         }
 
-        // Fit bounds with invalidateSize to handle portal rendering
-        const group = window.L.featureGroup(markers);
+        // Fit bounds to activity pins only (exclude hotel for tighter zoom on the day's cluster)
+        const activityPts = validPts.filter(p => !p.isHotel);
+        const fitPts = activityPts.length > 0 ? activityPts : validPts;
+        const fitMarkers = fitPts.map(p => window.L.marker([p.lat, p.lng]));
+        const group = window.L.featureGroup(fitMarkers);
         const bounds = group.getBounds();
-        // If only 1 point, center + zoom; otherwise fit bounds zoomed in
-        if (validPts.length === 1) {
-          map.setView([validPts[0].lat, validPts[0].lng], 15);
+        if (fitPts.length === 1) {
+          map.setView([fitPts[0].lat, fitPts[0].lng], 15);
         } else {
-          map.fitBounds(bounds.pad(0.2), { maxZoom: 16, minZoom: 12 });
+          map.fitBounds(bounds.pad(0.15), { maxZoom: 16, minZoom: 12 });
         }
 
         // Re-fit after a moment to handle portal size detection
         setTimeout(() => {
           if (mapRef.current) {
             mapRef.current.invalidateSize();
-            if (validPts.length === 1) {
-              mapRef.current.setView([validPts[0].lat, validPts[0].lng], 15);
+            if (fitPts.length === 1) {
+              mapRef.current.setView([fitPts[0].lat, fitPts[0].lng], 15);
             } else {
-              mapRef.current.fitBounds(bounds.pad(0.2), { maxZoom: 16, minZoom: 12 });
+              mapRef.current.fitBounds(bounds.pad(0.15), { maxZoom: 16, minZoom: 12 });
             }
           }
         }, 300);
@@ -15113,6 +15300,7 @@
       const [startTimeDraft, setStartTimeDraft] = useState(day.start_time || '');
       const [showMiniMap, setShowMiniMap] = useState(false);
       const [showSwapPicker, setShowSwapPicker] = useState(null); // null | 'swap' | 'move'
+      const [exportCopied, setExportCopied] = useState(false);
       const miniMapRef = useRef(null);
       const miniMapInstance = useRef(null);
 
@@ -15202,7 +15390,15 @@
         // Don't show if an options item exists for this meal type (e.g. "Dinner Options")
         if (allReal.some(it => it.options && it.options.length >= 2 && it.name?.toLowerCase().includes(meal.mealType))) return false;
         // Don't show if a meal-like item already exists in this window
-        return !allTimedItems.some(e => e.isMeal && e.startMins >= meal.windowStart && e.startMins <= meal.windowEnd);
+        if (allTimedItems.some(e => e.isMeal && e.startMins >= meal.windowStart && e.startMins <= meal.windowEnd)) return false;
+        // Hide meal slot if more than 5 hours past meal time AND this is today
+        const _now = new Date();
+        const _today = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, '0')}-${String(_now.getDate()).padStart(2, '0')}`;
+        if (day.date === _today) {
+          const currentMins = _now.getHours() * 60 + _now.getMinutes();
+          if (currentMins > meal.defaultTime + 300) return false; // 300 min = 5 hours
+        }
+        return true;
       }).map(meal => {
         // Find the best time: look for a gap in the schedule within the window
         // Default to the meal's default time, but shift if there's an item occupying that spot
@@ -15374,6 +15570,119 @@
         }
       };
 
+      // Export day recap
+      const handleExportDay = (e) => {
+        e.stopPropagation();
+        const lines = items.map(item => {
+          const pin = item.pin_id ? pins.find(p => p.id === item.pin_id) : null;
+          let line = `- ${item.emoji} ${item.name}`;
+          if (pin && (pin.personal_rating || pin.notes)) {
+            const ratingStr = pin.personal_rating ? '⭐'.repeat(pin.personal_rating) : '';
+            const notesStr = pin.notes ? ` – ${pin.notes}` : '';
+            if (ratingStr || notesStr) {
+              line += ` (${ratingStr}${notesStr})`;
+            }
+          }
+          return line;
+        });
+        const recap = lines.join('\n');
+        navigator.clipboard.writeText(recap).then(() => {
+          setExportCopied(true);
+          setTimeout(() => setExportCopied(false), 2000);
+        }).catch(err => console.error('Failed to copy:', err));
+      };
+
+      // Optimize route using nearest-neighbor algorithm
+      const handleOptimizeRoute = (e) => {
+        e.stopPropagation();
+        const haversine = (lat1, lng1, lat2, lng2) => {
+          const R = 6371;
+          const toRad = x => x * Math.PI / 180;
+          const dLat = toRad(lat2 - lat1);
+          const dLng = toRad(lng2 - lng1);
+          const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
+          return 2 * R * Math.asin(Math.sqrt(a));
+        };
+
+        // Separate items with fixed times (keep in place) vs flexible items to reorder
+        const itemsWithFixedTime = allReal.filter(i => i.scheduled_time);
+        const itemsWithoutTime = allReal.filter(i => !i.scheduled_time);
+
+        // Only optimize if there are 3+ flexible items
+        if (itemsWithoutTime.length < 3) return;
+
+        // Build list of items to optimize (no transit items, exclude fixed time items)
+        const toOptimize = itemsWithoutTime.filter(i => !i._isTransitDoc && i.lat && i.lng);
+        if (toOptimize.length < 3) return;
+
+        // Start from first item or starting point
+        let startLat = autoStartingPoint?.lat;
+        let startLng = autoStartingPoint?.lng;
+        if (!startLat || !startLng) {
+          if (itemsByOrder.length > 0 && itemsByOrder[0].lat && itemsByOrder[0].lng) {
+            startLat = itemsByOrder[0].lat;
+            startLng = itemsByOrder[0].lng;
+          } else if (toOptimize.length > 0) {
+            startLat = toOptimize[0].lat;
+            startLng = toOptimize[0].lng;
+          } else {
+            return; // Can't optimize without a starting location
+          }
+        }
+
+        // Nearest-neighbor algorithm
+        const optimized = [];
+        const visited = new Set();
+        let currentLat = startLat;
+        let currentLng = startLng;
+
+        while (optimized.length < toOptimize.length) {
+          let nearestItem = null;
+          let nearestDist = Infinity;
+          let nearestIdx = -1;
+
+          for (let i = 0; i < toOptimize.length; i++) {
+            if (visited.has(i)) continue;
+            const dist = haversine(currentLat, currentLng, toOptimize[i].lat, toOptimize[i].lng);
+            if (dist < nearestDist) {
+              nearestDist = dist;
+              nearestItem = toOptimize[i];
+              nearestIdx = i;
+            }
+          }
+
+          if (nearestItem) {
+            optimized.push(nearestItem);
+            visited.add(nearestIdx);
+            currentLat = nearestItem.lat;
+            currentLng = nearestItem.lng;
+          } else {
+            break;
+          }
+        }
+
+        // Reconstruct the full day's item order
+        const newOrder = [...itemsWithFixedTime];
+        for (const item of optimized) {
+          if (!newOrder.some(i => i.id === item.id)) {
+            newOrder.push(item);
+          }
+        }
+
+        // Add any remaining unoptimized items (shouldn't happen, but for safety)
+        for (const item of itemsWithoutTime) {
+          if (!newOrder.some(i => i.id === item.id)) {
+            newOrder.push(item);
+          }
+        }
+
+        // Update the order and save
+        onUpdateItems(newOrder.map((item, i) => ({
+          ...item,
+          order_in_day: i,
+        })));
+      };
+
       return (
         <div
           className={`rounded-xl overflow-hidden transition-all ${isExpanded ? 'bg-white dark:bg-slate-800/40 shadow-sm ring-2 ring-blue-200 dark:ring-blue-800/50' : 'ring-1 ring-gray-200 dark:ring-slate-700 hover:bg-gray-50 dark:hover:bg-slate-800/30'}`}
@@ -15392,6 +15701,24 @@
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-400">{items.length} item{items.length !== 1 ? 's' : ''}{totalMinutes > 0 ? ` · ${totalHrs > 0 ? totalHrs + 'h ' : ''}${totalMins > 0 ? totalMins + 'm' : ''}` : ''}{totalTransitMin > 0 ? ` (${totalTransitMin}m travel)` : ''}</span>
+                {items.length >= 3 && (
+                  <button
+                    onClick={handleOptimizeRoute}
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-700/50 rounded transition"
+                    title="Optimize route with nearest-neighbor algorithm"
+                  >
+                    🔄
+                  </button>
+                )}
+                {items.length > 0 && (
+                  <button
+                    onClick={handleExportDay}
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-700/50 rounded transition"
+                    title="Export day recap to clipboard"
+                  >
+                    {exportCopied ? '✓' : '📋'}
+                  </button>
+                )}
                 <span className={`text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}>▾</span>
               </div>
             </div>
@@ -15557,6 +15884,7 @@
                     const d = new Date(day.date + 'T12:00:00');
                     d.setHours(h || 12, m || 0, 0, 0);
                     const status = getOpenStatus(pin.opening_hours, d);
+                    if (status.status === 'permanently_closed') return 'Perm. Closed';
                     return status.status === 'closed' ? 'Closed' : null;
                   })()}
                   isFirst={idx === 0}
@@ -15676,7 +16004,7 @@
                 // Build ordered route: items in display order (scheduled + auto-timed)
                 const orderedMapItems = allSorted
                   .filter(i => !i._isMealSlot && !i._isTransitDoc && i.lat && i.lng)
-                  .map(i => ({ lat: i.lat, lng: i.lng, name: i.name, emoji: i.emoji || '📌', isHotel: false }));
+                  .map(i => ({ lat: i.lat, lng: i.lng, name: i.name, emoji: i.emoji || '📌', isHotel: false, transit_info: i.transit_info }));
                 // Add hotel as context point (not numbered, not part of route)
                 const hotelPts = (dayDocs || []).filter(d => d._isHotelStay && !d._isCheckOut).map(d => {
                   // Match by pin ID first, then by exact name match
@@ -17274,7 +17602,7 @@
                 headers: {
                   'Content-Type': 'application/json',
                   'X-Goog-Api-Key': apiKey,
-                  'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.legs.steps.transitDetails',
+                  'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs.steps.transitDetails',
                 },
                 body: JSON.stringify(body),
               });
@@ -17299,7 +17627,8 @@
               const route = data.routes?.[0];
               if (!route) return { mode, minutes: null };
               const seconds = parseInt(route.duration?.replace('s', '') || '0');
-              return { mode, minutes: Math.round(seconds / 60), meters: route.distanceMeters };
+              const polyline = route.polyline?.encodedPolyline || null;
+              return { mode, minutes: Math.round(seconds / 60), meters: route.distanceMeters, polyline };
             } catch (e) {
               if (!firstError) firstError = e?.message || 'Network error';
               return { mode, minutes: null };
@@ -17308,7 +17637,10 @@
 
           const transit = {};
           results.forEach(r => {
-            if (r.minutes != null) transit[r.mode] = { minutes: r.minutes, meters: r.meters };
+            if (r.minutes != null) {
+              transit[r.mode] = { minutes: r.minutes, meters: r.meters };
+              if (r.polyline) transit[r.mode].polyline = r.polyline;
+            }
           });
 
           // Pick best mode: prefer walking, then transit, then driving
@@ -17820,7 +18152,8 @@
                                   if (!src) return '';
                                   if (src.match(/Subject:|From:\s*\S+@|Dear\s|Check-in:|Check-out:|Booked via:|PIN:|Confirmation #|Thank you for choosing/i)) return '';
                                   let clean = src
-                                    .replace(/^[\s📸🍽🏨]*From photo:?\s*[''']?/i, '').replace(/[''']$/,'')
+                                    .replace(/^[\s📸📷🖼️🍽🏨]*(?:From\s+(?:photo|image))?:?\s*[''']?/i, '').replace(/[''']$/,'')
+                                    .replace(/©\s*O\s*ps4|©.*?OCR artifact/gi, '')
                                     .replace(/Source:\s*\[.*?\]\(.*?\)/g, '').replace(/\s*---\s*/g, ' ')
                                     .replace(/Details:.*$/s, '')
                                     .replace(/See (my|our)\s+\w.*?\./gi, '')
@@ -17927,7 +18260,17 @@
 
                                     {/* Right: content */}
                                     <div className="flex-1 pl-5 min-w-0">
-                                  <h3 className="text-base font-medium text-gray-800 dark:text-white" style={{ fontFamily: 'Georgia, serif' }}>
+                                  <h3
+                                    className={`text-base font-medium dark:text-white ${item.pin_id && !item._isTransitDoc ? 'text-blue-600 dark:text-blue-400 cursor-pointer hover:underline' : 'text-gray-800'}`}
+                                    style={{ fontFamily: 'Georgia, serif' }}
+                                    onClick={item.pin_id && !item._isTransitDoc ? () => {
+                                      const clickedPin = collectionPins.find(p => p.id === item.pin_id);
+                                      if (clickedPin && onSelectPinFromItinerary) {
+                                        setShowPrettyView(false);
+                                        setTimeout(() => onSelectPinFromItinerary(clickedPin), 150);
+                                      }
+                                    } : undefined}
+                                  >
                                     {item._isTransitDoc && item._isArrival ? 'Arrives ' : ''}{item.emoji} {item.name || 'Untitled'}
                                   </h3>
 
@@ -18106,6 +18449,14 @@
       const [darkMode, setDarkMode] = useState(
         window.matchMedia('(prefers-color-scheme: dark)').matches
       );
+
+      // ---- Force re-render on white screen fix ----
+      const [, forceRerender] = useState(0);
+      useEffect(() => {
+        const handler = () => forceRerender(n => n + 1);
+        window.addEventListener('bw-force-rerender', handler);
+        return () => window.removeEventListener('bw-force-rerender', handler);
+      }, []);
 
       // ---- Offline detection & sync-on-reconnect ----
       const [isOffline, setIsOffline] = useState(!navigator.onLine);
