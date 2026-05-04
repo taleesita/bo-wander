@@ -426,7 +426,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v107';
+    const APP_VERSION = 'v108';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -11615,6 +11615,8 @@
       const tileLayerRef = useRef(null);
       const markersRef = useRef(new Map());
       const prevCollectionKey = useRef(null);
+      const prevOpenNowRef = useRef(openNowFilter);
+      const geocodedCollectionRef = useRef(null);
       const userLocationRef = useRef(null);
       const userAccuracyRef = useRef(null);
       const previewMarkerRef = useRef(null);
@@ -11983,9 +11985,12 @@
         };
 
         // Fit bounds when switching collection (NOT when filters change)
-        // Use collectionName as the key so toggling Open Now doesn't refit
-        const collectionKey = collectionName || validPins.map(p => p.id).sort().join(',');
-        if (validPins.length > 0 && collectionKey !== prevCollectionKey.current) {
+        // Use pin IDs as the key so initial load triggers fit when pins arrive
+        const collectionKey = validPins.map(p => p.id).sort().join(',');
+        const openNowChanged = openNowFilter !== prevOpenNowRef.current;
+        prevOpenNowRef.current = openNowFilter;
+        // Skip refit if ONLY the Open Now filter toggled (pins changed but collection didn't)
+        if (validPins.length > 0 && collectionKey !== prevCollectionKey.current && !openNowChanged) {
           prevCollectionKey.current = collectionKey;
           const smartCenter = findSmartCenter();
           if (smartCenter) {
@@ -11996,9 +12001,9 @@
               safeFitBounds(map, bounds);
             } catch(e) { console.warn('bounds error:', e); }
           }
-        } else if (validPins.length === 0 && collectionKey !== prevCollectionKey.current) {
-          prevCollectionKey.current = collectionKey;
-          // No pins — geocode the collection name to center the map there
+        } else if (validPins.length === 0 && collectionName && collectionName !== geocodedCollectionRef.current) {
+          geocodedCollectionRef.current = collectionName;
+          // No pins yet — geocode the collection name to center the map
           if (collectionName) {
             fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(collectionName)}&limit=1`, { signal: abortController.signal })
               .then(r => r.json())
