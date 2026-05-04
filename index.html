@@ -18755,9 +18755,11 @@
           const entries = [];
           const seenNames = new Set();
           // Match: number (with optional dot/paren/dash), then space(s), then name
-          const numRe = /^(\d{1,3})[.):\-\s]*\s+([A-Za-z぀-鿿㐀-䶵\u{20000}-\u{2A6DF}][\w\s\-&'''()぀-鿿㐀-䶵\u{20000}-\u{2A6DF}]{2,80})/u;
-          // Also match lines like "Fucha Vegetarian Cuisine BON" — capitalized multi-word names
-          const nameOnlyRe = /^([A-Z][a-zA-Z]+(?:\s+[A-Za-z\-&']+){1,8})\s*$/;
+          const numRe = /^(\d{1,3})[.):\-\s]*\s+([A-Za-z぀-鿿㐀-䶵\u{20000}-\u{2A6DF}][\w\s\-&'''().぀-鿿㐀-䶵\u{20000}-\u{2A6DF}]{2,80})/u;
+          // Also match lines like "Fucha Vegetarian Cuisine BON" or "TENZO" — capitalized names (allow periods, single words too)
+          const nameOnlyRe = /^([A-Z][a-zA-Z.]+(?:\s+[A-Za-z.\-&']+){0,8})\s*$/;
+          // Match lines where OCR mangled the number prefix: 1-2 junk chars then a capitalized name
+          const mangledNumRe = /^[^A-Za-z]{0,3}\s*([A-Z][a-zA-Z.]+(?:\s+[A-Za-z.\-&']+){1,8})\s*$/;
           // Common junk patterns to skip
           const junkRe = /^(tokyo|kyoto|osaka|guide|muslim|check|around|prices?|available|page|chapter|section|copyright|address|access|hours?|closed|open|lunch|dinner|https?|www\.|map|tel|fax|website|click|menu|home|search|login|sign|view|download|subscribe|share|follow|contact|navigation|footer|header|sidebar|banner|cookie|privacy|terms|about|more|next|prev|back|continue|submit|cancel|close|image|photo|picture|logo|icon|button|link)\b/i;
           // Also reject names that are ALL CAPS and look like UI/navigation text
@@ -18797,9 +18799,16 @@
           // Pass 2: if few numbered entries found, look for standalone capitalized names
           if (entries.length < 3) {
             for (let i = 0; i < joined.length; i++) {
+              // Try nameOnlyRe (exact standalone name lines)
               const m = joined[i].match(nameOnlyRe);
-              if (m && m[1].length >= 5 && !junkRe.test(m[1])) {
+              if (m && m[1].length >= 4 && !junkRe.test(m[1])) {
                 addEntry(m[1], i + 1);
+                continue;
+              }
+              // Try mangledNumRe (OCR garbled the number prefix)
+              const m2 = joined[i].match(mangledNumRe);
+              if (m2 && m2[1].length >= 5 && !junkRe.test(m2[1])) {
+                addEntry(m2[1], i + 1);
               }
             }
           }
