@@ -426,7 +426,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v109';
+    const APP_VERSION = 'v110';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -15701,7 +15701,7 @@
         const lines = items.map(item => {
           const pin = item.pin_id ? pins.find(p => p.id === item.pin_id) : null;
           let line = `- ${item.emoji} ${item.name}`;
-          const notes = pin?.notes || item.description || '';
+          const notes = pin?.personal_notes || item.description || '';
           const rating = pin?.personal_rating ? '⭐'.repeat(pin.personal_rating) : '';
           if (rating || notes) {
             const inner = [rating, notes].filter(Boolean).join(' – ');
