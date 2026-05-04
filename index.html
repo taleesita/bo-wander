@@ -1464,14 +1464,42 @@
         }
       },
 
+      // Track deleted item IDs so they can't resurrect from Firestore when offline
+      _deletedItemsKey: 'bo_deleted_itin_items',
+      _getDeletedIds() {
+        try { return JSON.parse(localStorage.getItem(this._deletedItemsKey) || '[]'); } catch { return []; }
+      },
+      _addDeletedId(id) {
+        const ids = this._getDeletedIds();
+        if (!ids.includes(id)) { ids.push(id); localStorage.setItem(this._deletedItemsKey, JSON.stringify(ids)); }
+      },
+      _removeDeletedId(id) {
+        const ids = this._getDeletedIds().filter(x => x !== id);
+        localStorage.setItem(this._deletedItemsKey, JSON.stringify(ids));
+      },
+      _retryDeletesInBackground() {
+        const ids = this._getDeletedIds();
+        if (!ids.length) return;
+        ids.forEach(id => {
+          db.collection('itinerary_items').doc(id).delete().then(() => {
+            this._removeDeletedId(id);
+          }).catch(() => {});
+        });
+      },
+
       async loadItems(itinId) {
-        const local = this._loadLocal(this._itemsLocalKey).filter(i => i.itinerary_id === itinId);
+        const deletedIds = new Set(this._getDeletedIds());
+        const local = this._loadLocal(this._itemsLocalKey).filter(i => i.itinerary_id === itinId && !deletedIds.has(i.id));
         try {
           const snap = await db.collection('itinerary_items').where('itinerary_id', '==', itinId).get();
           const items = [];
-          snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+          snap.forEach(doc => {
+            if (!deletedIds.has(doc.id)) items.push({ id: doc.id, ...doc.data() });
+          });
           const byId = {};
           [...local, ...items].forEach(it => { byId[it.id] = it; });
+          // Retry any pending deletes now that we're online
+          this._retryDeletesInBackground();
           return Object.values(byId);
         } catch (e) {
           console.warn('Failed to load itinerary items from Firestore, using localStorage:', e.message);
@@ -1480,12 +1508,16 @@
       },
 
       async deleteItem(itemId) {
-        // Remove from localStorage first so it can't resurrect from cache
+        // Track as deleted so it can't resurrect from Firestore
+        this._addDeletedId(itemId);
+        // Remove from localStorage
         this._removeLocal(this._itemsLocalKey, itemId);
         try {
           await db.collection('itinerary_items').doc(itemId).delete();
+          // Successfully deleted from Firestore — remove from pending deletes
+          this._removeDeletedId(itemId);
         } catch (e) {
-          console.warn('[Itinerary Items] Firestore delete failed (kept local removal):', e.message);
+          console.warn('[Itinerary Items] Firestore delete failed, will retry later:', e.message);
         }
       },
 
@@ -15698,7 +15730,16 @@
       // Export day recap
       const handleExportDay = (e) => {
         e.stopPropagation();
-        const lines = items.map(item => {
+        // Use display order: items with scheduled_time sorted chronologically, then unscheduled by order_in_day
+        const sortedItems = [...items].sort((a, b) => {
+          const ta = a.scheduled_time || '';
+          const tb = b.scheduled_time || '';
+          if (ta && tb) return ta.localeCompare(tb);
+          if (ta) return -1;
+          if (tb) return 1;
+          return (a.order_in_day || 0) - (b.order_in_day || 0);
+        });
+        const lines = sortedItems.map(item => {
           const pin = item.pin_id ? pins.find(p => p.id === item.pin_id) : null;
           let line = `- ${item.emoji} ${item.name}`;
           const notes = pin?.personal_notes || item.description || '';
