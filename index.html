@@ -426,7 +426,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v112';
+    const APP_VERSION = 'v114';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -2258,10 +2258,17 @@
       const groupBadge = coLocatedPins && coLocatedPins.length > 1 && dates.length === 0
         ? `<div style="position:absolute;top:-6px;right:-6px;background:#3b82f6;color:#fff;font-size:8px;font-weight:700;width:14px;height:14px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.3);pointer-events:none;z-index:1;">${coLocatedPins.length}</div>`
         : '';
+      // Permanently closed badge
+      const openStatus = pin.opening_hours ? getOpenStatus(pin.opening_hours) : null;
+      const closedBadge = openStatus && openStatus.status === 'permanently_closed'
+        ? `<div style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);background:#ef4444;color:#fff;font-size:6px;font-weight:800;line-height:1;padding:1px 3px;border-radius:2px;white-space:nowrap;pointer-events:none;z-index:2;letter-spacing:0.3px;">CLOSED</div>`
+        : '';
+      const needsWrapper = dateBadge || closedBadge;
+      const wrapStyle = needsWrapper ? 'position:relative;' : wrapper;
       if (isCustomIcon(pin.emoji)) {
-        return `<div style="${wrapper}"><div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};"><img src="${pin.emoji}" style="width:20px;height:20px;border-radius:50%;object-fit:cover;" /></div>${dateBadge}${groupBadge}</div>`;
+        return `<div style="${wrapStyle}"><div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};${closedBadge ? 'opacity:0.5;' : ''}"><img src="${pin.emoji}" style="width:20px;height:20px;border-radius:50%;object-fit:cover;" /></div>${dateBadge}${closedBadge}${groupBadge}</div>`;
       }
-      return `<div style="${wrapper}"><div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};">${pin.emoji}</div>${dateBadge}${groupBadge}</div>`;
+      return `<div style="${wrapStyle}"><div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};${closedBadge ? 'opacity:0.5;' : ''}">${pin.emoji}</div>${dateBadge}${closedBadge}${groupBadge}</div>`;
     };
 
     const dayName = (key) => {
@@ -2274,25 +2281,46 @@
     };
 
     // ==================== COMPONENTS ====================
-    const SVGStar = ({ filled = false, onClick, className = '' }) => (
-      <span
-        onClick={onClick}
-        className={`cursor-pointer text-lg ${className} ${!filled ? 'opacity-30' : ''}`}
-        style={{ color: filled ? '#8B5CF6' : '#9CA3AF' }}
-      >
-        ★
-      </span>
-    );
+    const SVGStar = ({ filled = false, half = false, onClick, onHalfClick, className = '' }) => {
+      const baseColor = filled || half ? '#8B5CF6' : '#9CA3AF';
+      const opacity = filled || half ? 1 : 0.3;
+      return (
+        <span
+          className={`cursor-pointer text-lg ${className} relative inline-block select-none`}
+          style={{ color: baseColor, opacity, width: '1.2em', textAlign: 'center' }}
+        >
+          {half && !filled ? (
+            <span style={{ position: 'relative', display: 'inline-block' }}>
+              <span style={{ color: '#9CA3AF', opacity: 0.3 }}>★</span>
+              <span style={{ position: 'absolute', left: 0, top: 0, overflow: 'hidden', width: '50%', color: '#8B5CF6', opacity: 1 }}>★</span>
+            </span>
+          ) : '★'}
+          {/* Left half = half star, right half = full star */}
+          {onHalfClick && (
+            <React.Fragment>
+              <span onClick={onHalfClick} style={{ position: 'absolute', left: 0, top: 0, width: '50%', height: '100%', zIndex: 1 }} />
+              <span onClick={onClick} style={{ position: 'absolute', right: 0, top: 0, width: '50%', height: '100%', zIndex: 1 }} />
+            </React.Fragment>
+          )}
+          {!onHalfClick && onClick && (
+            <span onClick={onClick} style={{ position: 'absolute', left: 0, top: 0, width: '100%', height: '100%', zIndex: 1 }} />
+          )}
+        </span>
+      );
+    };
 
     const RatingStars = ({ rating, onRate, color = 'purple' }) => {
       const stars = [1, 2, 3, 4, 5];
+      const r = rating || 0;
       return (
-        <div className="flex gap-1">
+        <div className="flex gap-0.5">
           {stars.map(s => (
             <SVGStar
               key={s}
-              filled={s <= (rating || 0)}
-              onClick={() => onRate && onRate(s)}
+              filled={s <= r}
+              half={s - 0.5 === r}
+              onClick={() => onRate && onRate(r === s ? 0 : s)}
+              onHalfClick={() => onRate && onRate(r === s - 0.5 ? 0 : s - 0.5)}
               className={color === 'gold' ? 'text-amber-400' : 'text-purple-500'}
             />
           ))}
@@ -13236,7 +13264,7 @@
                             </span>
                           )}
                           {selectedPin.personal_rating && (
-                            <span className="text-purple-500">{'★'.repeat(selectedPin.personal_rating)}{'☆'.repeat(5 - selectedPin.personal_rating)}</span>
+                            <span className="text-purple-500">{'★'.repeat(Math.floor(selectedPin.personal_rating))}{selectedPin.personal_rating % 1 >= 0.5 ? '⯨' : ''}{'☆'.repeat(5 - Math.ceil(selectedPin.personal_rating))}</span>
                           )}
                         </div>
                       )}
@@ -15522,8 +15550,129 @@
       );
     };
 
+    // ---- DayReview (swipeable card-by-card review for a day) ----
+    const DayReview = ({ items, pins, isDarkMode, onClose, onSaveItemReview, onSavePinReview }) => {
+      const [idx, setIdx] = useState(0);
+      const [reviews, setReviews] = useState({});
+      const touchStart = useRef(null);
+
+      // Filter to real items only (no transit docs, no meal slots)
+      const reviewable = items.filter(i => !i._isTransitDoc && !i._isMealSlot && !String(i.id).startsWith('transit-') && !String(i.id).startsWith('meal-slot-'));
+      const item = reviewable[idx];
+      if (!item) return null;
+
+      const pin = item.pin_id ? pins.find(p => p.id === item.pin_id) : null;
+
+      // Get current rating/notes — item-level overrides pin-level
+      const currentRating = reviews[item.id]?.rating ?? item.personal_rating ?? pin?.personal_rating ?? 0;
+      const currentNotes = reviews[item.id]?.notes ?? item.personal_notes ?? pin?.personal_notes ?? '';
+
+      const saveReview = (rating, notes) => {
+        setReviews(prev => ({ ...prev, [item.id]: { rating, notes } }));
+        // Save to pin if pin-linked, otherwise save to item
+        if (pin) {
+          onSavePinReview({ ...pin, personal_rating: rating, personal_notes: notes });
+        }
+        // Always save to item too (for pinless items AND for recap export)
+        onSaveItemReview({ ...item, personal_rating: rating, personal_notes: notes });
+      };
+
+      const goNext = () => { if (idx < reviewable.length - 1) setIdx(idx + 1); else onClose(); };
+      const goPrev = () => { if (idx > 0) setIdx(idx - 1); };
+
+      const handleTouchStart = (e) => { touchStart.current = e.touches[0].clientX; };
+      const handleTouchEnd = (e) => {
+        if (touchStart.current == null) return;
+        const diff = e.changedTouches[0].clientX - touchStart.current;
+        if (Math.abs(diff) > 60) {
+          if (diff < 0) goNext();
+          else goPrev();
+        }
+        touchStart.current = null;
+      };
+
+      return (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60" onClick={onClose}>
+          <div
+            className={`relative w-full max-w-sm mx-4 rounded-2xl shadow-2xl overflow-hidden ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-white text-gray-900'}`}
+            onClick={e => e.stopPropagation()}
+            onTouchStart={handleTouchStart}
+            onTouchEnd={handleTouchEnd}
+          >
+            {/* Header */}
+            <div className={`flex items-center justify-between px-4 py-3 border-b ${isDarkMode ? 'border-slate-700' : 'border-gray-200'}`}>
+              <span className="text-sm font-semibold">Review {idx + 1} of {reviewable.length}</span>
+              <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-lg">✕</button>
+            </div>
+
+            {/* Card content */}
+            <div className="p-5">
+              {/* Emoji + Name */}
+              <div className="flex items-center gap-3 mb-4">
+                <span className="text-3xl">{item.emoji || '📌'}</span>
+                <div>
+                  <h3 className="text-lg font-bold leading-tight">{item.name}</h3>
+                  {item.scheduled_time && (
+                    <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      {formatTime(item.scheduled_time)}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Star Rating */}
+              <div className="mb-4">
+                <label className={`text-xs font-semibold block mb-1.5 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Rating</label>
+                <div className="flex justify-center">
+                  <RatingStars
+                    rating={currentRating}
+                    onRate={(r) => saveReview(r, currentNotes)}
+                    color="purple"
+                  />
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className={`text-xs font-semibold block mb-1.5 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Notes</label>
+                <textarea
+                  value={currentNotes}
+                  onChange={e => saveReview(currentRating, e.target.value)}
+                  className={`w-full px-3 py-2 rounded-lg border text-sm resize-none ${isDarkMode ? 'bg-slate-700 border-slate-600 text-white placeholder-gray-400' : 'bg-gray-50 border-gray-200 text-gray-900 placeholder-gray-400'}`}
+                  rows={3}
+                  placeholder="How was it?"
+                />
+              </div>
+            </div>
+
+            {/* Navigation */}
+            <div className={`flex items-center justify-between px-4 py-3 border-t ${isDarkMode ? 'border-slate-700' : 'border-gray-200'}`}>
+              <button
+                onClick={goPrev}
+                disabled={idx === 0}
+                className={`px-4 py-1.5 rounded-lg text-sm font-medium ${idx === 0 ? 'opacity-30 cursor-not-allowed' : 'hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+              >
+                ← Prev
+              </button>
+              <div className="flex gap-1">
+                {reviewable.map((_, i) => (
+                  <div key={i} className={`w-1.5 h-1.5 rounded-full ${i === idx ? 'bg-purple-500' : isDarkMode ? 'bg-slate-600' : 'bg-gray-300'}`} />
+                ))}
+              </div>
+              <button
+                onClick={goNext}
+                className="px-4 py-1.5 rounded-lg text-sm font-medium bg-purple-500 text-white hover:bg-purple-600"
+              >
+                {idx === reviewable.length - 1 ? 'Done ✓' : 'Next →'}
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
     // ---- DayView (single day card) ----
-    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, onSelectPin, transitError, onRecalcTransit, weather, weatherCodeMap, weatherLocation, onWeatherLocationChange, allHotels, dayDocs, allDays, onSwapDays, onMoveAllToDay }) => {
+    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, onSelectPin, transitError, onRecalcTransit, weather, weatherCodeMap, weatherLocation, onWeatherLocationChange, allHotels, dayDocs, allDays, onSwapDays, onMoveAllToDay, onReviewDay }) => {
       const [dragItemId, setDragItemId] = useState(null);
       const [dragOverIndex, setDragOverIndex] = useState(null);
       const [showStartPicker, setShowStartPicker] = useState(false);
@@ -15817,8 +15966,10 @@
         const lines = sortedItems.map(item => {
           const pin = item.pin_id ? pins.find(p => p.id === item.pin_id) : null;
           let line = `- ${item.emoji} ${item.name}`;
-          const notes = pin?.personal_notes || item.description || '';
-          const rating = pin?.personal_rating ? '⭐'.repeat(pin.personal_rating) : '';
+          const effectiveRating = item.personal_rating || pin?.personal_rating || 0;
+          const effectiveNotes = item.personal_notes || pin?.personal_notes || item.description || '';
+          const notes = effectiveNotes;
+          const rating = effectiveRating ? '⭐'.repeat(Math.floor(effectiveRating)) + (effectiveRating % 1 >= 0.5 ? '✨' : '') : '';
           if (rating || notes) {
             const inner = [rating, notes].filter(Boolean).join(' – ');
             line += ` (${inner})`;
@@ -15952,6 +16103,15 @@
                     title="Optimize walking order"
                   >
                     🚶‍♂️↗
+                  </button>
+                )}
+                {items.length > 0 && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onReviewDay && onReviewDay(day.id); }}
+                    className="flex items-center gap-1 px-1.5 py-0.5 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-700/50 rounded transition"
+                    title="Review day — rate & add notes"
+                  >
+                    ⭐
                   </button>
                 )}
                 {items.length > 0 && (
@@ -17127,6 +17287,7 @@
       const [items, setItems] = useState([]);
       const [loading, setLoading] = useState(true);
       const [expandedDays, setExpandedDays] = useState({});
+      const todayDayRef = React.useRef(null);
       const [editingItem, setEditingItem] = useState(null);  // null = closed, {} = new item for a day
       const [addingToDay, setAddingToDay] = useState(null);  // day_id we're adding to
       const [showNewItinerary, setShowNewItinerary] = useState(false);
@@ -17136,6 +17297,7 @@
       const [newEndDate, setNewEndDate] = useState('');
       const [showDayPicker, setShowDayPicker] = useState(null); // pin object to add via day picker
       const [showPrettyView, setShowPrettyView] = useState(false);
+      const [reviewDayId, setReviewDayId] = useState(null);
       const [weatherData, setWeatherData] = useState({});
       const [weatherLocations, setWeatherLocations] = useState({}); // { date: { name, lat, lng } } // { 'YYYY-MM-DD': { high, low, code, isHistorical } }
       const [travelDocs, setTravelDocs] = useState([]);
@@ -17583,6 +17745,12 @@
             const futureDay = !todayDay && loadedDays.filter(d => d.date > today).sort((a, b) => a.date.localeCompare(b.date))[0];
             const expandDay = todayDay || futureDay || loadedDays[0];
             setExpandedDays({ [expandDay.id]: true });
+            // Auto-scroll to today's day after render
+            setTimeout(() => {
+              if (todayDayRef.current) {
+                todayDayRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }
+            }, 300);
           }
         });
       }, [activeItinerary?.id]);
@@ -18240,9 +18408,13 @@
                   >Collapse all</button>
                 </div>
               )}
-              {days.map(day => (
+              {days.map(day => {
+                const _now = new Date();
+                const _today = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, '0')}-${String(_now.getDate()).padStart(2, '0')}`;
+                const isToday = day.date === _today;
+                return (
+                <div key={day.id} ref={isToday ? todayDayRef : null}>
                 <DayView
-                  key={day.id}
                   day={day}
                   items={items.filter(i => i.day_id === day.id).sort((a, b) => (a.order_in_day || 0) - (b.order_in_day || 0))}
                   pins={collectionPins}
@@ -18288,8 +18460,10 @@
                   allDays={days}
                   onSwapDays={handleSwapDays}
                   onMoveAllToDay={handleMoveAllToDay}
+                  onReviewDay={(dayId) => setReviewDayId(dayId)}
                 />
-              ))}
+                </div>
+              );})}
 
               {/* Add day button */}
               <button
@@ -18318,6 +18492,37 @@
               }}
             />
           )}
+
+          {/* Day Review modal */}
+          {reviewDayId && (() => {
+            const dayItems = items.filter(i => i.day_id === reviewDayId).sort((a, b) => {
+              const ta = a.scheduled_time || '';
+              const tb = b.scheduled_time || '';
+              if (ta && tb) return ta.localeCompare(tb);
+              if (ta) return -1;
+              if (tb) return 1;
+              return (a.order_in_day || 0) - (b.order_in_day || 0);
+            });
+            return ReactDOM.createPortal(
+              <div className={isDarkMode ? 'dark' : ''}>
+                <DayReview
+                  items={dayItems}
+                  pins={collectionPins}
+                  isDarkMode={isDarkMode}
+                  onClose={() => setReviewDayId(null)}
+                  onSaveItemReview={(updatedItem) => {
+                    setItems(prev => prev.map(i => i.id === updatedItem.id ? { ...i, personal_rating: updatedItem.personal_rating, personal_notes: updatedItem.personal_notes } : i));
+                    MockFirebase.saveItems([{ ...updatedItem }]);
+                  }}
+                  onSavePinReview={(updatedPin) => {
+                    // savePin triggers onPinsSnapshot which updates parent state
+                    MockFirebase.savePin(updatedPin);
+                  }}
+                />
+              </div>,
+              document.body
+            );
+          })()}
 
           {/* Pretty itinerary preview — portaled to body to escape stacking context */}
           {showPrettyView && activeItinerary && (() => {
@@ -18965,6 +19170,14 @@
                   return updated;
                 }
                 return pin;
+              });
+              // Auto-flag vegetarian/vegan from descriptions (one-time scan)
+              const vegRe = /\b(vegetarian|vegan|plant[-\s]?based|meatless)\b/i;
+              fixed.forEach(pin => {
+                if (!pin.is_vegetarian && pin.description && vegRe.test(pin.description)) {
+                  pin.is_vegetarian = true;
+                  toResave.push(pin);
+                }
               });
               if (toResave.length > 0) {
                 toResave.forEach(p => { try { MockFirebase.savePin(p); } catch {} });
@@ -19950,10 +20163,10 @@
               {/* Back arrow (left) — title is shown as small overlay chip on desktop only */}
               <button
                 onClick={() => { setSelectedPin(null); setCoLocatedPins([]); setPreviewPin(null); setEditingPin(null); setShowAddMenu(false); setView('home'); }}
-                className="pointer-events-auto w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-lg flex-shrink-0"
-                title={`Back — ${collections.find(c => c.id === activeCollection)?.name || 'Maps'}`}
+                className="pointer-events-auto w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-base flex-shrink-0"
+                title={`Home — ${collections.find(c => c.id === activeCollection)?.name || 'Maps'}`}
               >
-                ←
+                🏠
               </button>
 
               {/* Search (center, takes remaining space) */}
@@ -20596,7 +20809,8 @@
                 setCameFromItinerary(true);
                 setTimeout(() => {
                   selectPinWithGroup(pin);
-                  if (pin.lat && pin.lng) setMapPanTarget({ lat: pin.lat, lng: pin.lng, zoom: 16, _t: Date.now() });
+                  // No setMapPanTarget here — selectPinWithGroup sets selectedPin,
+                  // which triggers the marker effect that flies to pin WITH mobile offset
                 }, 150);
               }}
             />
