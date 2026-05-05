@@ -426,7 +426,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v110';
+    const APP_VERSION = 'v111';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -511,6 +511,9 @@
       // Fix white screen when returning from external app (Google Maps, etc.)
       // Multiple triggers needed: BFCache (pageshow), tab switch (visibilitychange), focus
       const _bwForceRepaint = () => {
+        // Check if page content is actually blank (body has no rendered height)
+        const root = document.getElementById('root');
+        const isBlank = root && root.offsetHeight === 0;
         // Force layout recalc + Leaflet tile refresh
         document.body.style.display = 'none';
         document.body.offsetHeight; // force reflow
@@ -525,6 +528,11 @@
         });
         // Dispatch event for React to force re-render
         window.dispatchEvent(new Event('bw-force-rerender'));
+        // If page is truly blank (WebView was purged), reload entirely
+        if (isBlank) {
+          console.warn('[BW] Page blank after return — reloading');
+          setTimeout(() => { if (document.getElementById('root')?.offsetHeight === 0) location.reload(); }, 500);
+        }
       };
       window.addEventListener('pageshow', (e) => {
         if (e.persisted) {
@@ -536,11 +544,33 @@
       document.addEventListener('visibilitychange', () => {
         if (!document.hidden) {
           setTimeout(_bwForceRepaint, 100);
+          setTimeout(_bwForceRepaint, 1000); // extra attempt for iOS PWA
         }
       });
       window.addEventListener('focus', () => {
         setTimeout(_bwForceRepaint, 150);
       });
+
+      // Open Google Maps links in native app on iOS to avoid in-app browser white screen
+      window._bwOpenMapsUrl = (url) => {
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
+        if (isIOS && isStandalone) {
+          // Use comgooglemaps:// scheme to open Google Maps app, fallback to Apple Maps
+          // Extract the path/query from the URL
+          const u = new URL(url);
+          const comgoogle = 'comgooglemaps://' + u.pathname + u.search;
+          // Try Google Maps app first, fallback to web after brief delay
+          const fallbackTimer = setTimeout(() => { window.location.href = url; }, 500);
+          window.location.href = comgoogle;
+          // If Google Maps opens, we stay in our app — clear fallback
+          document.addEventListener('visibilitychange', function _h() {
+            if (document.hidden) { clearTimeout(fallbackTimer); document.removeEventListener('visibilitychange', _h); }
+          });
+        } else {
+          window.open(url, '_blank', 'noopener');
+        }
+      };
     }
     // Wrapped fetch that auto-detects the endpoint and increments the counter.
     // Uses window.__bwFetch if already patched (idempotent).
@@ -3395,7 +3425,7 @@
                           const lng = parseFloat(pin.lng);
                           q = !isNaN(lat) && !isNaN(lng) ? `${lat},${lng}` : '';
                         }
-                        if (q) window.open(`https://www.google.com/maps/dir/?api=1&destination=${q}`, '_blank', 'noopener');
+                        if (q) window._bwOpenMapsUrl(`https://www.google.com/maps/dir/?api=1&destination=${q}`);
                       }}
                       className="flex-1 flex items-center justify-center gap-1.5 bg-blue-600 text-white px-2 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-700"
                     >
@@ -3839,7 +3869,7 @@
                     </div>
                     <div className="flex items-center gap-2">
                       {pin.website && <a href={pin.website} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 text-xs hover:underline">Website</a>}
-                      <a href={pin.google_maps_url || `https://www.google.com/maps/search/${encodeURIComponent(pin.name)}`} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 text-xs hover:underline">Maps</a>
+                      <button onClick={() => window._bwOpenMapsUrl(pin.google_maps_url || `https://www.google.com/maps/search/${encodeURIComponent(pin.name)}`)} className="text-blue-600 dark:text-blue-400 text-xs hover:underline">Maps</button>
                     </div>
                   </div>
                 )}
@@ -3927,14 +3957,12 @@
                       <p className="text-xs text-gray-400">{ratingFetchStatus}</p>
                     )}
                     <div className="flex items-center gap-3">
-                      <a
-                        href={`https://www.google.com/maps/search/${encodeURIComponent(pin.name + ' ' + (pin.address || ''))}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        onClick={() => window._bwOpenMapsUrl(`https://www.google.com/maps/search/${encodeURIComponent(pin.name + ' ' + (pin.address || ''))}`)}
                         className="text-sm text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
                       >
                         🔍 Look up on Google Maps
-                      </a>
+                      </button>
                       {onRetryRatings && (
                         <button
                           onClick={onRetryRatings}
@@ -4233,7 +4261,23 @@
           if (aNameMatch !== bNameMatch) return aNameMatch - bNameMatch;
           return a.name.localeCompare(b.name);
         });
-        return matches.slice(0, 8);
+        // Dedup by name — fuzzy match to catch slight variations like
+        // "Kyushu Jangara Ramen Harajuku" vs "Kyushu Jangara Ramen Harajuku Store"
+        const seenNames = [];
+        const deduped = matches.filter(p => {
+          const name = p.name.toLowerCase().trim();
+          for (const prev of seenNames) {
+            // Exact match
+            if (name === prev) return false;
+            // One name contains the other and they share >60% length
+            const shorter = name.length <= prev.length ? name : prev;
+            const longer = name.length <= prev.length ? prev : name;
+            if (shorter.length >= 5 && longer.includes(shorter) && shorter.length / longer.length > 0.6) return false;
+          }
+          seenNames.push(name);
+          return true;
+        });
+        return deduped.slice(0, 8);
       }, [query, pins, activeCollection]);
 
       const showDropdown = isFocused && query.length >= 2 && (matchingPins.length > 0 || placeResults.length > 0 || searching);
@@ -12675,14 +12719,12 @@
           </div>
           <div ref={mapRef} className="flex-1 w-full" />
           <div className="bg-white dark:bg-slate-800 border-t dark:border-slate-700 p-4 flex gap-2">
-            <a
-              href={`https://www.google.com/maps/search/${encodeURIComponent(pin.address)}`}
-              target="_blank"
-              rel="noopener noreferrer"
+            <button
+              onClick={() => window._bwOpenMapsUrl(`https://www.google.com/maps/search/${encodeURIComponent(pin.address)}`)}
               className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg text-center hover:bg-blue-700 text-sm"
             >
               Google Maps
-            </a>
+            </button>
             <button
               onClick={onClose}
               className="flex-1 px-4 py-2 border border-gray-300 dark:border-slate-600 rounded-lg dark:text-white text-sm hover:bg-gray-100 dark:hover:bg-slate-700"
@@ -15166,21 +15208,21 @@
               {transitInfo.all_modes && Object.keys(transitInfo.all_modes).length > 1 ? (
                 // Show all available modes as clickable pills — each opens Google Maps with that mode
                 Object.entries(transitInfo.all_modes).map(([mode, data]) => (
-                  <a key={mode} href={mapsUrlForMode(mode)} target="_blank" rel="noopener noreferrer"
+                  <button key={mode} onClick={(e) => { e.preventDefault(); window._bwOpenMapsUrl(mapsUrlForMode(mode)); }}
                     className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full cursor-pointer hover:opacity-80 transition ${mode === transitInfo.mode ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400' : ''}`}
                     title={`Open ${mode} directions in Google Maps`}
                   >
                     {mode === 'walking' ? '🚶' : mode === 'transit' ? '🚃' : '🚗'}
                     <span>{data.minutes}m</span>
-                  </a>
+                  </button>
                 ))
               ) : (
-                <a href={transitInfo.maps_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 hover:text-blue-500 transition" title="Open directions in Google Maps">
+                <button onClick={(e) => { e.preventDefault(); window._bwOpenMapsUrl(transitInfo.maps_url); }} className="inline-flex items-center gap-1 hover:text-blue-500 transition" title="Open directions in Google Maps">
                   <span>{transitInfo.mode === 'walking' ? '🚶' : transitInfo.mode === 'transit' ? '🚃' : '🚗'}</span>
                   <span>{transitInfo.estimated_time_minutes}m</span>
-                </a>
+                </button>
               )}
-              <a href={transitInfo.maps_url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline ml-0.5">↗</a>
+              <button onClick={(e) => { e.preventDefault(); window._bwOpenMapsUrl(transitInfo.maps_url); }} className="text-blue-500 hover:underline ml-0.5">↗</button>
               <div className="flex-1 border-t dark:border-slate-700 border-dashed"></div>
             </div>
             );
