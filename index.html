@@ -448,7 +448,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v116';
+    const APP_VERSION = 'v117';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -2165,16 +2165,51 @@
 
     const isCustomIcon = (emoji) => emoji && (emoji.startsWith('data:') || emoji.startsWith('http'));
     const formatPinDate = (rd) => {
-      const dateStr = rd?.check_in || rd?.date || '';
+      // Look across the common date fields — PDF-parsed activities sometimes use start_date/end_date
+      // and some legacy hotel docs put it under arrival_date.
+      const dateStr = rd?.check_in || rd?.date || rd?.start_date || rd?.arrival_date || rd?.activity_date || '';
       if (!dateStr) return null;
-      // Parse as local date parts to avoid UTC timezone shift
-      // (new Date('2026-05-08') parses as UTC midnight → May 7 in negative-offset timezones)
-      const parts = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
-      if (!parts) return null;
-      const month = parseInt(parts[2], 10) - 1;
-      const day = parseInt(parts[3], 10);
-      const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][month];
-      return mon ? `${mon} ${day}` : null;
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const monthFull = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+      const s = String(dateStr).trim();
+
+      // ISO YYYY-MM-DD or YYYY/MM/DD or YYYY.MM.DD (handles ISO datetime too)
+      let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+      if (m) {
+        const month = parseInt(m[2], 10) - 1;
+        const day = parseInt(m[3], 10);
+        if (months[month]) return `${months[month]} ${day}`;
+      }
+      // US-style M/D/YYYY or M-D-YYYY
+      m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
+      if (m) {
+        const month = parseInt(m[1], 10) - 1;
+        const day = parseInt(m[2], 10);
+        if (months[month]) return `${months[month]} ${day}`;
+      }
+      // "May 8, 2026" / "May 8 2026" / "8 May 2026"
+      m = s.match(/^([A-Za-z]+)\s+(\d{1,2})(?:,?\s+(\d{4}))?/);
+      if (m) {
+        const idx = monthFull.indexOf(m[1].toLowerCase());
+        const day = parseInt(m[2], 10);
+        if (idx >= 0) return `${months[idx]} ${day}`;
+      }
+      m = s.match(/^(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{4}))?/);
+      if (m) {
+        const idx = monthFull.indexOf(m[2].toLowerCase());
+        const day = parseInt(m[1], 10);
+        if (idx >= 0) return `${months[idx]} ${day}`;
+      }
+      // Final fallback: let the JS parser try; if it lands on a valid date, format it.
+      const parsed = new Date(s);
+      if (!isNaN(parsed.getTime())) {
+        // Avoid UTC drift for bare YYYY-MM-DD by reading UTC parts when the input was ISO without tz
+        const isBareIso = /^\d{4}-\d{2}-\d{2}$/.test(s);
+        const monthIdx = isBareIso ? parsed.getUTCMonth() : parsed.getMonth();
+        const day = isBareIso ? parsed.getUTCDate() : parsed.getDate();
+        return `${months[monthIdx]} ${day}`;
+      }
+      return null;
     };
 
     // Normalize a pin name for same-place matching (strip common suffixes/prefixes)
@@ -15211,7 +15246,10 @@
                       {matches.map(p => (
                         <button key={p.id} className="flex items-center gap-2 w-full px-2 py-1 text-left text-sm rounded hover:bg-amber-100 dark:hover:bg-amber-900/30 transition"
                           onClick={() => {
-                            const newOpt = { pin_id: p.id, name: p.name, emoji: (PIN_CATEGORIES[p.category] || PIN_CATEGORIES.other).emoji, lat: p.lat, lng: p.lng };
+                            // Prefer the pin's own stored emoji (which may be a custom override like 🍜 for ramen),
+                            // then fall back to the category icon. Note: PIN_CATEGORIES uses `.icon`, not `.emoji` —
+                            // the previous code read `.emoji` and always got undefined, so options had no emoji.
+                            const newOpt = { pin_id: p.id, name: p.name, emoji: p.emoji || (PIN_CATEGORIES[p.category] || PIN_CATEGORIES.other).icon || '📍', lat: p.lat, lng: p.lng };
                             onEdit({ ...item, options: [...(item.options || []), newOpt], _skipForm: true });
                             setOptionsGroupSearch('');
                           }}>
