@@ -17532,23 +17532,38 @@
             MockFirebase.saveItems(autoAddedItems);
           }
 
-          // Dedup: remove duplicate items for same pin on same day (keep first)
+          // Dedup: remove duplicate items for same pin or similar name on same day (keep first)
           const seen = new Set();
+          const seenDayNames = {}; // day_id -> [names]
           const dupeIds = [];
           for (const item of loadedItems) {
-            if (!item.pin_id) continue;
-            const key = `${item.day_id}::${item.pin_id}`;
-            if (seen.has(key)) {
-              dupeIds.push(item.id);
-            } else {
-              // Also check by name for same day
-              const nameKey = `${item.day_id}::${(item.name || '').toLowerCase().trim()}`;
-              if (item.name && item.name.length >= 4 && seen.has(nameKey)) {
-                dupeIds.push(item.id);
-              } else {
-                seen.add(key);
-                if (item.name && item.name.length >= 4) seen.add(nameKey);
+            const dayId = item.day_id;
+            // Check by pin_id
+            if (item.pin_id) {
+              const key = `${dayId}::${item.pin_id}`;
+              if (seen.has(key)) { dupeIds.push(item.id); continue; }
+              seen.add(key);
+            }
+            // Check by name (exact + fuzzy)
+            const itemName = (item.name || '').toLowerCase().trim();
+            if (itemName.length >= 4) {
+              const nameKey = `${dayId}::${itemName}`;
+              if (seen.has(nameKey)) { dupeIds.push(item.id); continue; }
+              // Fuzzy: check if any previous name on this day contains or is contained by this name
+              const dayNames = seenDayNames[dayId] || [];
+              let fuzzyDupe = false;
+              for (const prev of dayNames) {
+                const shorter = itemName.length <= prev.length ? itemName : prev;
+                const longer = itemName.length <= prev.length ? prev : itemName;
+                if (shorter.length >= 5 && longer.includes(shorter) && shorter.length / longer.length > 0.6) {
+                  fuzzyDupe = true;
+                  break;
+                }
               }
+              if (fuzzyDupe) { dupeIds.push(item.id); continue; }
+              seen.add(nameKey);
+              if (!seenDayNames[dayId]) seenDayNames[dayId] = [];
+              seenDayNames[dayId].push(itemName);
             }
           }
           if (dupeIds.length > 0) {
