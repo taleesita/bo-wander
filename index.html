@@ -450,7 +450,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v118';
+    const APP_VERSION = 'v119';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -14513,10 +14513,11 @@
       const [selectedPinId, setSelectedPinId] = useState(item?.pin_id || '');
       const [name, setName] = useState(item?.name || '');
       const [emoji, setEmoji] = useState(item?.emoji || '📌');
-      // Initial time priority: explicit scheduled_time > computed _autoTime > meal-slot hint __mealTime > empty.
-      // The meal-slot hint matters when adding from a Dinner/Lunch/Breakfast slot — without this fallback
-      // the form saved an empty scheduled_time and the row would auto-time to day.start_time (e.g. 7am).
-      const [scheduledTime, setScheduledTime] = useState(item?.scheduled_time || item?._autoTime || item?.__mealTime || '');
+      // Initial time priority: explicit scheduled_time > meal-slot hint __mealTime > empty.
+      // We deliberately do NOT pre-fill from _autoTime (the cascading time computed from day.start_time):
+      // pre-filling made every newly-edited item appear pre-set to the day's auto-time, so saving the
+      // form would silently lock that auto-time in as an explicit time even if the user wanted blank.
+      const [scheduledTime, setScheduledTime] = useState(item?.scheduled_time || item?.__mealTime || '');
       const [webSearchResults, setWebSearchResults] = useState([]);
       const [addedSearchPlaces, setAddedSearchPlaces] = useState(new Set());
       const [webSearching, setWebSearching] = useState(false);
@@ -15212,7 +15213,7 @@
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="text-xs font-mono text-amber-600 dark:text-amber-400">{formatT(item.scheduled_time || autoTime)}</span>
+                <span className="text-xs font-mono text-amber-600 dark:text-amber-400">{formatT(item.scheduled_time)}</span>
                 <span className="text-sm font-medium text-amber-700 dark:text-amber-300">{item.name} ({item.options.length})</span>
               </div>
               <div className="flex items-center gap-1">
@@ -15320,9 +15321,12 @@
         );
       }
 
-      // If item has its own scheduled_time, prefer that. Otherwise fall back to auto-computed time from day start.
-      const timeStr = item.scheduled_time || autoTime || '';
-      const isAutoTime = !item.scheduled_time && !!autoTime;
+      // Show only the explicitly-set scheduled_time. We intentionally don't fall back to the auto-computed
+      // time from day.start_time — items without their own scheduled_time render as blank (no time displayed).
+      // The autoTime prop is still kept in scope for internal use (closed-warning calc, sort-order fallback)
+      // but is never shown in the UI.
+      const timeStr = item.scheduled_time || '';
+      const isAutoTime = false;
       const formatTime = (t) => {
         if (!t) return '';
         const [h, m] = t.split(':');
