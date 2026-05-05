@@ -179,7 +179,9 @@
       right: 0;
       background: white;
       border-radius: 24px 24px 0 0;
-      max-height: 85vh;
+      /* Reduced from 85vh so more of the map (and the selected pin) is visible above the drawer.
+         Content longer than this scrolls inside the sheet. */
+      max-height: 65vh;
       overflow-y: auto;
       z-index: 1100;
       box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.18);
@@ -448,7 +450,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v117';
+    const APP_VERSION = 'v118';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -12284,6 +12286,11 @@
             className: 'category-marker'
           });
           marker.setIcon(icon);
+          // Bring the freshly-selected marker to the top of the z-stack so its blue pulse isn't
+          // hidden behind neighbouring pins in dense clusters. zIndexOffset is set on initial
+          // marker creation but isn't updated when selection changes — so without this update,
+          // a previously-unselected pin stays buried under its neighbours when it becomes selected.
+          try { marker.setZIndexOffset(isSelected ? 10000 : 0); } catch (e) {}
         });
         if (selectedPin && selectedPin.lat && selectedPin.lng && !isNaN(parseFloat(selectedPin.lat)) && !isNaN(parseFloat(selectedPin.lng))) {
           try {
@@ -12306,14 +12313,16 @@
                 safeFlyTo(map, [sLat, sLng], targetZoom, { duration: 0.4 });
               }
             } else {
-              // Mobile: offset pin upward so it's visible above the bottom sheet
-              // The sheet covers roughly the bottom 55% of the screen
+              // Mobile: offset pin upward so it's visible above the bottom sheet.
+              // Sheet now caps at 65vh (was 85vh), so visible map strip is the top ~35vh.
+              // Aim to land the pin near the middle of that visible strip — at ~17.5% from the top of the screen.
+              // Default Leaflet centers at 50% — we shift the center down by ~32.5% of screen height
+              // so the actual pin appears at roughly (50% - 32.5%) = 17.5% from the top.
               try {
                 const size = map.getSize();
                 if (size && size.x > 0 && size.y > 0 && size.x < 768) {
                   const targetPoint = map.project([sLat, sLng], targetZoom);
-                  // Push the pin into the top third of the screen by shifting center down
-                  const sheetOffset = size.y * 0.3;
+                  const sheetOffset = size.y * 0.325;
                   const offsetPoint = L.point(targetPoint.x, targetPoint.y + sheetOffset);
                   const offsetLatLng = map.unproject(offsetPoint, targetZoom);
                   safeFlyTo(map, offsetLatLng, targetZoom, { duration: 0.4 });
