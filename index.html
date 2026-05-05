@@ -426,7 +426,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v114';
+    const APP_VERSION = 'v115';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -20178,7 +20178,18 @@
               activeCollection={activeCollection}
               collections={collections}
               mapCenter={mapCenter}
-              onSelectPin={(pin) => selectPinWithGroup(pin)}
+              onSelectPin={(pin) => {
+                // If Open Now filter is active and this pin is currently closed,
+                // disable Open Now so the selected pin stays visible after we pan to it.
+                // (Hotels/activities are exempt from the filter, so no need to toggle.)
+                if (listFilters.openNow && pin && pin.category !== 'hotel' && pin.category !== 'activity') {
+                  const status = getOpenStatus(pin.opening_hours || {});
+                  if (status.status !== 'open') {
+                    setListFilters(f => ({ ...f, openNow: false }));
+                  }
+                }
+                selectPinWithGroup(pin);
+              }}
               onAddPlace={(place) => {
                 const result = guessEmojiAndCategory(place.name, place.type);
                 const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
