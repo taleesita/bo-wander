@@ -1522,12 +1522,45 @@
         const local = this._loadLocal(this._itemsLocalKey).filter(i => i.itinerary_id === itinId && !deletedIds.has(i.id));
         try {
           const snap = await db.collection('itinerary_items').where('itinerary_id', '==', itinId).get();
+          const firestoreIds = new Set();
           const items = [];
           snap.forEach(doc => {
+            firestoreIds.add(doc.id);
             if (!deletedIds.has(doc.id)) items.push({ id: doc.id, ...doc.data() });
           });
+          // When Firestore succeeds, it's the source of truth:
+          // - Use Firestore items as the base
+          // - Only add local items that don't exist in Firestore (recently created offline)
           const byId = {};
-          [...local, ...items].forEach(it => { byId[it.id] = it; });
+          items.forEach(it => { byId[it.id] = it; });
+          // Merge local-only items (created offline within last 30s, not yet in Firestore)
+          const _now = Date.now();
+          local.forEach(it => {
+            if (!firestoreIds.has(it.id) && !deletedIds.has(it.id)) {
+              const createdAt = it.created_at ? new Date(it.created_at).getTime() : 0;
+              if (_now - createdAt < 30000) {
+                byId[it.id] = it; // keep recently created offline item
+              }
+              // else: item is old and not in Firestore — was deleted on another device, skip it
+            }
+          });
+          // Clean up localStorage: remove items that exist in local but were deleted on another device
+          // (i.e., they're in local, not in Firestore, and not recently created — check by age)
+          const allLocal = this._loadLocal(this._itemsLocalKey);
+          const now = Date.now();
+          const staleItems = allLocal.filter(i => {
+            if (i.itinerary_id !== itinId) return false;
+            if (firestoreIds.has(i.id)) return false; // exists in Firestore — keep
+            if (deletedIds.has(i.id)) return false; // already tracked as deleted
+            // If item was created very recently (<30s ago), keep it (might not have synced yet)
+            const createdAt = i.created_at ? new Date(i.created_at).getTime() : 0;
+            if (now - createdAt < 30000) return false;
+            return true; // stale: in local but not in Firestore and not recently created
+          });
+          if (staleItems.length > 0) {
+            staleItems.forEach(i => this._removeLocal(this._itemsLocalKey, i.id));
+            console.log('[Itinerary] Cleaned', staleItems.length, 'stale local items (deleted on other device)');
+          }
           // Retry any pending deletes now that we're online
           this._retryDeletesInBackground();
           return Object.values(byId);
