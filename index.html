@@ -119,6 +119,28 @@
       z-index: 9999 !important;
     }
 
+    /* Permanent name labels on day mini-map */
+    .leaflet-tooltip.day-mini-label {
+      background: rgba(255, 255, 255, 0.94);
+      color: #1f2937;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+      padding: 1px 5px;
+      font-size: 10px;
+      font-weight: 500;
+      line-height: 1.3;
+      border-radius: 4px;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    .leaflet-tooltip.day-mini-label:before { display: none; }
+    .dark .leaflet-tooltip.day-mini-label,
+    html.dark .leaflet-tooltip.day-mini-label {
+      background: rgba(30, 41, 59, 0.94);
+      color: #e2e8f0;
+      border-color: rgba(255, 255, 255, 0.08);
+    }
+
     select {
       padding-right: 2rem !important;
       appearance: auto;
@@ -426,7 +448,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v115';
+    const APP_VERSION = 'v116';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -1476,15 +1498,31 @@
       },
 
       async saveItems(items) {
+        // Deep-clean undefined values — Firestore rejects them and the batch silently fails.
+        // (Same shape as cleanForFirestore in savePin; duplicated to avoid a wider refactor.)
+        const cleanForFirestore = (obj) => {
+          if (obj === null || obj === undefined) return null;
+          if (typeof obj !== 'object') return obj;
+          if (Array.isArray(obj)) return obj.map(cleanForFirestore);
+          const cleaned = {};
+          for (const [k, v] of Object.entries(obj)) {
+            // Strip transient-only fields that should never persist
+            if (k === '_skipForm' || k === '_autoTime' || k === '_isMealSlot' || k === '_isTransitDoc' ||
+                k === '_isHotelStay' || k === '_isCheckIn' || k === '_isCheckOut' || k === '_pinId' ||
+                k === '_pinDoc' || k.startsWith('__')) continue;
+            if (v !== undefined) cleaned[k] = cleanForFirestore(v);
+          }
+          return cleaned;
+        };
         items.forEach(item => {
-          const data = { ...item, updated_at: new Date().toISOString() };
+          const data = cleanForFirestore({ ...item, updated_at: new Date().toISOString() });
           if (!data.created_at) data.created_at = data.updated_at;
           this._mergeLocal(this._itemsLocalKey, data);
         });
         try {
           const batch = db.batch();
           items.forEach(item => {
-            const data = { ...item, updated_at: new Date().toISOString() };
+            const data = cleanForFirestore({ ...item, updated_at: new Date().toISOString() });
             if (!data.created_at) data.created_at = data.updated_at;
             batch.set(db.collection('itinerary_items').doc(item.id), data, { merge: true });
           });
@@ -2228,20 +2266,40 @@
         .map(p => formatPinDate(p.reservation_details))
         .filter(Boolean);
 
-      // Fallback: check travel docs for hotel pins without reservation_details
-      if (dates.length === 0 && travelDocsRef) {
+      // Fallback: check travel docs for hotel pins without reservation_details.
+      // Run this whenever there's any hotel without reservation_details — not gated on dates being empty,
+      // so a hotel pin in a co-located group still gets its own date label even if neighbors already produced one.
+      // Match using normalized (alphanumeric, lowercase) tokens in either direction so punctuation, emoji prefixes,
+      // or word reordering between pin names and doc titles don't break the match.
+      if (travelDocsRef) {
+        const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        const hotelDocs = travelDocsRef.filter(d => d.type === 'hotel' && d.title && d.check_in);
         for (const p of pinsToCheck) {
           if (p.category !== 'hotel' || p.reservation_details) continue;
-          const nameLC = (p.name || '').toLowerCase();
-          if (!nameLC) continue;
-          const doc = travelDocsRef.find(d => d.type === 'hotel' && d.title && d.title.toLowerCase().includes(nameLC.substring(0, 10)) && d.check_in);
+          const nameN = norm(p.name);
+          if (!nameN) continue;
+          const nameTokens = nameN.split(' ').filter(w => w.length >= 3);
+          if (nameTokens.length === 0) continue;
+          // Pick a distinctive key: prefer first 2 tokens of length 3+, but allow a single 6+ char token to qualify.
+          const key2 = nameTokens.slice(0, 2).join(' ');
+          const distinctiveToken = nameTokens.find(t => t.length >= 6);
+          const doc = hotelDocs.find(d => {
+            const titleN = norm(d.title);
+            if (!titleN) return false;
+            // Either direction substring match, or shared distinctive token
+            if (titleN.includes(key2)) return true;
+            if (key2 && nameN.includes(norm(d.title).split(' ').slice(0, 2).join(' '))) return true;
+            if (distinctiveToken && titleN.split(' ').includes(distinctiveToken)) return true;
+            return false;
+          });
           if (doc) {
             const parts = (doc.check_in || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
             if (parts) {
               const month = parseInt(parts[2], 10) - 1;
               const day = parseInt(parts[3], 10);
               const d = new Date(parseInt(parts[1]), month, day);
-              dates.push(`${d.toLocaleDateString('en-US', { month: 'short' })} ${day}`);
+              const label = `${d.toLocaleDateString('en-US', { month: 'short' })} ${day}`;
+              if (!dates.includes(label)) dates.push(label);
             }
           }
         }
@@ -14411,7 +14469,10 @@
       const [selectedPinId, setSelectedPinId] = useState(item?.pin_id || '');
       const [name, setName] = useState(item?.name || '');
       const [emoji, setEmoji] = useState(item?.emoji || '📌');
-      const [scheduledTime, setScheduledTime] = useState(item?.scheduled_time || item?._autoTime || '');
+      // Initial time priority: explicit scheduled_time > computed _autoTime > meal-slot hint __mealTime > empty.
+      // The meal-slot hint matters when adding from a Dinner/Lunch/Breakfast slot — without this fallback
+      // the form saved an empty scheduled_time and the row would auto-time to day.start_time (e.g. 7am).
+      const [scheduledTime, setScheduledTime] = useState(item?.scheduled_time || item?._autoTime || item?.__mealTime || '');
       const [webSearchResults, setWebSearchResults] = useState([]);
       const [addedSearchPlaces, setAddedSearchPlaces] = useState(new Set());
       const [webSearching, setWebSearching] = useState(false);
@@ -15434,7 +15495,15 @@
           });
           const m = window.L.marker([pt.lat, pt.lng], { icon }).addTo(map);
           const prefix = num ? num + '. ' : isExtra ? '↳ ' : '🏨 ';
-          m.bindTooltip(`${prefix}${pt.name}`, { direction: 'top', offset: [0, -10] });
+          // Permanent label below the pin so the spot name is always visible without clicking.
+          // Truncate long names to keep the map readable.
+          const labelText = pt.name && pt.name.length > 28 ? pt.name.slice(0, 26) + '…' : (pt.name || '');
+          m.bindTooltip(`${prefix}${labelText}`, {
+            direction: 'bottom',
+            offset: [0, markerSize / 2 + 2],
+            permanent: true,
+            className: 'day-mini-label',
+          });
           markers.push(m);
         });
 
