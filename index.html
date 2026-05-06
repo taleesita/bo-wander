@@ -450,7 +450,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v123';
+    const APP_VERSION = 'v124';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -14164,19 +14164,24 @@
                     const hasMultipleCovers = !col.cover_image && getCoversForName(col.name).length > 1;
                     return (
                       <div key={col.id} className="group relative rounded-xl overflow-hidden shadow-lg hover:shadow-xl transition transform hover:-translate-y-1">
-                        {/* Favorite toggle — top-left, always visible (mobile + desktop) so it's tappable on touch */}
+                        {/* Favorite toggle — top-RIGHT so it doesn't overlap the title.
+                            Wraps a 32px pill in a p-2 outer button so the tap target is ~48px
+                            (mobile users were missing the small button and opening the map behind it). */}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             onCreateCollection({ id: col.id, is_favorite: !col.is_favorite, _update: true });
                           }}
-                          className={`absolute top-2 left-2 p-1.5 rounded-full transition ${col.is_favorite ? 'bg-yellow-400 text-white shadow-md' : 'bg-black bg-opacity-40 hover:bg-opacity-70 text-white'}`}
+                          className="absolute top-0 right-0 p-2 flex items-center justify-center"
                           title={col.is_favorite ? 'Unfavorite — won\'t pin to top' : 'Favorite — pins to top of home screen'}
-                          style={{ zIndex: 2 }}
+                          aria-label={col.is_favorite ? 'Unfavorite map' : 'Favorite map'}
+                          style={{ zIndex: 3 }}
                         >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill={col.is_favorite ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
-                            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
-                          </svg>
+                          <span className={`flex items-center justify-center w-8 h-8 rounded-full transition ${col.is_favorite ? 'bg-yellow-400 text-white shadow-md' : 'bg-black bg-opacity-50 hover:bg-opacity-70 text-white'}`}>
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill={col.is_favorite ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+                              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                            </svg>
+                          </span>
                         </button>
                         <button
                           onClick={() => onSelectCollection(col.id)}
@@ -14201,8 +14206,10 @@
                             </p>
                           </div>
                         </button>
-                        {/* Hover action buttons — hidden on mobile to prevent touch-hover eating clicks */}
-                        <div className={`absolute top-2 right-2 flex gap-1 transition-opacity ${isMobile ? 'hidden' : 'opacity-0 group-hover:opacity-100'}`}>
+                        {/* Hover action buttons — hidden on mobile to prevent touch-hover eating clicks.
+                            Shifted left from right-2 to right-14 so the always-visible favorite star
+                            (top-right) doesn't sit on top of these on desktop hover. */}
+                        <div className={`absolute top-2 right-14 flex gap-1 transition-opacity ${isMobile ? 'hidden' : 'opacity-0 group-hover:opacity-100'}`}>
                           {hasMultipleCovers && (
                             <button
                               onClick={(e) => {
@@ -20630,18 +20637,30 @@
                   showToast('Failed to save share data: ' + (e.message || e), 'error');
                   return;
                 }
+                // ALWAYS copy to clipboard first so the user has the URL even if they cancel
+                // the OS share sheet on mobile (or the share API isn't available).
+                let copied = false;
                 try {
-                  if (isMobile && navigator.share) {
+                  await navigator.clipboard.writeText(url);
+                  copied = true;
+                } catch (e) { /* clipboard may be blocked in some contexts; we'll fall back below */ }
+                // Then offer the OS share sheet on mobile (the user can pick a target or cancel)
+                let sharedViaSheet = false;
+                if (isMobile && navigator.share) {
+                  try {
                     await navigator.share({ title: `Bo Wander - ${col.name}`, text: `Check out my ${col.name} map on Bo Wander`, url });
-                  } else {
-                    await navigator.clipboard.writeText(url);
-                    showToast('Share link copied!');
+                    sharedViaSheet = true;
+                  } catch (e) {
+                    // User cancelled or share failed — no-op since we already copied
                   }
-                } catch (e) {
-                  if (e.name !== 'AbortError') {
-                    // Clipboard/share failed — show the URL directly
-                    showToast('Link: ' + url);
-                  }
+                }
+                if (sharedViaSheet) {
+                  showToast(copied ? 'Shared! Link also copied to clipboard.' : 'Shared!');
+                } else if (copied) {
+                  showToast('Share link copied to clipboard!');
+                } else {
+                  // Clipboard blocked AND no share sheet — surface the URL so the user can long-press to copy
+                  showToast('Link: ' + url);
                 }
               }}
               onFetchTabelog={(() => {
