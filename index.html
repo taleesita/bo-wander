@@ -450,7 +450,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v127';
+    const APP_VERSION = 'v129';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -17693,39 +17693,44 @@
       const [newEndDate, setNewEndDate] = useState('');
       const [showDayPicker, setShowDayPicker] = useState(null); // pin object to add via day picker
       // Ref to the day button that should be centered when the picker opens
-      // (today's day if the trip covers today, otherwise the next upcoming day so the user
-      // doesn't have to scroll past D1, D2, D3… to reach a future day on a long trip).
+      // (today's day if the trip covers today, otherwise the next upcoming day).
       const dayPickerTargetRef = useRef(null);
       useEffect(() => {
         if (!showDayPicker) return;
-        // Use manual scrollTop calculation rather than scrollIntoView. scrollIntoView was
-        // sometimes scrolling the wrong ancestor (or no-op'ing entirely) inside the modal —
-        // manually setting the scrollable parent's scrollTop is reliable across browsers.
-        const t = setTimeout(() => {
+        // Retry until BOTH the button is laid out (height > 0) AND the scroll container has
+        // overflowed (scrollHeight > clientHeight). Without the height check, a too-early
+        // attempt got bRect/cRect of all zeros, computed scrollTop=0, and exited — leaving
+        // the user at the top with auto-scroll silently no-op'd.
+        let cancelled = false;
+        const tryScroll = (attempt) => {
+          if (cancelled) return;
           const btn = dayPickerTargetRef.current;
-          if (!btn) return;
-          // Walk up from the button to the nearest element that actually scrolls.
+          const btnRect = btn && btn.getBoundingClientRect();
+          if (!btn || !btnRect || btnRect.height === 0 || btnRect.width === 0) {
+            if (attempt < 14) setTimeout(() => tryScroll(attempt + 1), 50);
+            return;
+          }
+          // Walk up to the nearest element that actually scrolls.
           let container = btn.parentElement;
           while (container) {
-            const overflowY = window.getComputedStyle(container).overflowY;
-            if ((overflowY === 'auto' || overflowY === 'scroll') && container.scrollHeight > container.clientHeight) break;
+            const cs = window.getComputedStyle(container);
+            if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && container.scrollHeight > container.clientHeight + 1) break;
             container = container.parentElement;
           }
-          if (!container) return;
-          // offsetTop is relative to offsetParent — fall back to a measured rect difference
-          // when offsetParent isn't the scroll container.
-          let targetTop;
-          if (btn.offsetParent === container) {
-            targetTop = btn.offsetTop;
-          } else {
-            const cRect = container.getBoundingClientRect();
-            const bRect = btn.getBoundingClientRect();
-            targetTop = container.scrollTop + (bRect.top - cRect.top);
+          if (!container) {
+            if (attempt < 14) setTimeout(() => tryScroll(attempt + 1), 50);
+            return;
           }
-          const desired = targetTop - (container.clientHeight / 2) + (btn.offsetHeight / 2);
-          container.scrollTop = Math.max(0, desired);
-        }, 80);
-        return () => clearTimeout(t);
+          const cRect = container.getBoundingClientRect();
+          const relTop = container.scrollTop + (btnRect.top - cRect.top);
+          // Center target in container, clamped to the actual scrollable range.
+          const maxScroll = container.scrollHeight - container.clientHeight;
+          const desired = Math.max(0, Math.min(maxScroll, relTop - (container.clientHeight / 2) + (btnRect.height / 2)));
+          container.scrollTop = desired;
+        };
+        // Wait for two paint frames so the modal's layout is settled, then start trying.
+        requestAnimationFrame(() => requestAnimationFrame(() => tryScroll(0)));
+        return () => { cancelled = true; };
       }, [showDayPicker]);
       const [showPrettyView, setShowPrettyView] = useState(false);
       const [reviewDayId, setReviewDayId] = useState(null);
