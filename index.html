@@ -450,7 +450,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v119';
+    const APP_VERSION = 'v120';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -15272,11 +15272,30 @@
                 })()}
               </div>
             )}
-            {item.options.map((opt, oi) => (
+            {item.options.map((opt, oi) => {
+              // Look up the linked pin's opening hours so we can flag closed options.
+              // Match item.scheduled_time when set, otherwise check "right now".
+              const optPin = opt.pin_id ? (allPins || []).find(p => p.id === opt.pin_id) : null;
+              let optClosedLabel = null;
+              if (optPin?.opening_hours && Object.keys(optPin.opening_hours).length > 0) {
+                let checkDate = new Date();
+                if (item.scheduled_time && /^\d{2}:\d{2}$/.test(item.scheduled_time)) {
+                  const [h, m] = item.scheduled_time.split(':').map(Number);
+                  checkDate.setHours(h || 12, m || 0, 0, 0);
+                }
+                const status = getOpenStatus(optPin.opening_hours, checkDate);
+                if (status.status === 'permanently_closed') optClosedLabel = 'Perm. Closed';
+                else if (status.status === 'closed') optClosedLabel = 'Closed';
+              }
+              return (
               <div key={opt.pin_id || oi} className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-800/40 cursor-pointer hover:bg-amber-50 dark:hover:bg-amber-900/20 transition"
                 onClick={() => { if (opt.pin_id && onSelectPin) onSelectPin(opt.pin_id); else if (opt.lat && opt.lng && onFlyTo) onFlyTo(opt.lat, opt.lng); }}>
                 <span className="text-sm">{opt.emoji}</span>
-                <span className="text-sm truncate flex-1 min-w-0 dark:text-white">{opt.name}</span>
+                <span className="text-sm truncate min-w-0 dark:text-white">{opt.name}</span>
+                {optClosedLabel && (
+                  <span className="text-[10px] font-medium bg-red-50 dark:bg-red-900/20 text-red-500 dark:text-red-400 px-1.5 rounded flex-shrink-0">{optClosedLabel}</span>
+                )}
+                <span className="flex-1 min-w-0" />
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -15316,7 +15335,8 @@
                   className="px-2 py-0.5 text-[10px] font-medium bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 rounded hover:bg-amber-200 dark:hover:bg-amber-800/60 transition"
                 >Pick</button>
               </div>
-            ))}
+              );
+            })}
           </div>
         );
       }
@@ -15488,10 +15508,19 @@
     };
 
     // ---- DayMiniMap (modal Leaflet map for a day's items) ----
-    const DayMiniMap = ({ points, isDarkMode, dayLabel, onClose }) => {
+    const DayMiniMap = ({ points, isDarkMode, dayLabel, onClose, onReorder }) => {
       const mapContainerRef = useRef(null);
       const mapRef = useRef(null);
+      // Track markers/polylines so we can clear them between renders without destroying the map.
+      // Destroying the map on every points change resets the user's zoom/pan — keeping it alive
+      // and only swapping its layers preserves their interactive zoom state.
+      const markersRef = useRef([]);
+      const polylineLayersRef = useRef([]);
+      const hasFitRef = useRef(false);
       const [ready, setReady] = useState(false);
+      // Reorder mode state — when active, tapping pins builds a new visit order.
+      const [reorderMode, setReorderMode] = useState(false);
+      const [clickedOrder, setClickedOrder] = useState([]); // array of item ids in click order
 
       // Wait for DOM to settle before initializing Leaflet
       useEffect(() => {
@@ -15499,13 +15528,12 @@
         return () => clearTimeout(t);
       }, []);
 
+      // Effect 1 — create the Leaflet map once. Tile layer goes here. We don't include
+      // points / reorderMode / clickedOrder in deps because we don't want to rebuild the
+      // whole map on every interaction — that's what was resetting zoom.
       useEffect(() => {
-        if (!ready || !mapContainerRef.current || !window.L || points.length === 0) return;
-        if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
-
-        // Filter out invalid points (0,0 or missing coords)
-        const validPts = points.filter(p => p.lat && p.lng && Math.abs(p.lat) > 0.1 && Math.abs(p.lng) > 0.1);
-        if (validPts.length === 0) return;
+        if (!ready || !mapContainerRef.current || !window.L) return;
+        if (mapRef.current) return;
 
         const map = window.L.map(mapContainerRef.current, {
           zoomControl: true, attributionControl: false,
@@ -15519,10 +15547,35 @@
           : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png';
         window.L.tileLayer(tileUrl, { maxZoom: 18 }).addTo(map);
 
-        const markers = [];
+        return () => {
+          if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
+          markersRef.current = [];
+          polylineLayersRef.current = [];
+          hasFitRef.current = false;
+        };
+      }, [ready, isDarkMode]);
+
+      // Effect 2 — render markers + polylines whenever points or reorder state changes.
+      // Re-uses the existing map instance so the user's zoom/pan is preserved.
+      useEffect(() => {
+        if (!ready || !mapRef.current || !window.L) return;
+        const map = mapRef.current;
+
+        // Clear previous markers and polylines from the live map (don't recreate the map)
+        markersRef.current.forEach(m => { try { map.removeLayer(m); } catch (e) {} });
+        polylineLayersRef.current.forEach(p => { try { map.removeLayer(p); } catch (e) {} });
+        markersRef.current = [];
+        polylineLayersRef.current = [];
+
+        const validPts = points.filter(p => p.lat && p.lng && Math.abs(p.lat) > 0.1 && Math.abs(p.lng) > 0.1);
+        if (validPts.length === 0) return;
+
         // Number non-hotel points sequentially; extra options get same number as their group
         let stopNum = 0;
-        const groupNumMap = {}; // optionGroupId -> stop number
+        const groupNumMap = {};
+        const clickedIdx = new Map();
+        clickedOrder.forEach((id, i) => clickedIdx.set(id, i + 1));
+
         validPts.forEach((pt) => {
           const isExtra = pt.isExtraOption;
           let num;
@@ -15531,23 +15584,48 @@
           else { num = ++stopNum; }
           if (pt.optionGroupId && !isExtra) groupNumMap[pt.optionGroupId] = num;
           const optColor = pt.optionColor || '#f59e0b';
+          const reorderable = reorderMode && !pt.isHotel && !isExtra && pt.itemId;
+          const newOrderNum = reorderable ? clickedIdx.get(pt.itemId) : null;
           const optionsBorder = pt.isOptions ? `border:2px dashed ${optColor};border-radius:50%;` : '';
-          const badgeColor = pt.isOptions ? optColor : '#3b82f6';
+          // Visual states for reorder mode:
+          //   - clicked: green badge with new sequence number, full opacity
+          //   - unclicked (clickable): muted, grey ring
+          //   - hotel/extra option: unchanged (not part of reorder)
+          let badgeColor = pt.isOptions ? optColor : '#3b82f6';
+          let badgeNum = num;
+          let extraBorder = '';
+          let opacity = '';
+          if (reorderable) {
+            if (newOrderNum) {
+              badgeColor = '#10b981'; // green-500 for clicked
+              badgeNum = newOrderNum;
+              extraBorder = 'box-shadow:0 0 0 3px rgba(16,185,129,0.45);';
+            } else {
+              opacity = 'opacity:0.55;';
+              extraBorder = 'box-shadow:0 0 0 2px rgba(148,163,184,0.55);';
+              badgeNum = '';
+            }
+          }
           const markerSize = 28;
           const fontSize = 18;
-          const opacity = '';
           const icon = window.L.divIcon({
             className: 'day-mini-marker',
-            html: `<div style="position:relative;width:${markerSize}px;height:${markerSize}px;${optionsBorder}${opacity}">
+            html: `<div style="position:relative;width:${markerSize}px;height:${markerSize}px;${optionsBorder}${extraBorder}border-radius:50%;${opacity}">
               <div style="font-size:${fontSize}px;text-align:center;line-height:${pt.isOptions ? markerSize - 4 : markerSize}px;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4))">${pt.emoji || '📌'}</div>
-              ${num ? `<div style="position:absolute;top:-6px;right:-6px;background:${badgeColor};color:white;border-radius:50%;width:16px;height:16px;font-size:9px;line-height:16px;text-align:center;font-weight:700;border:1.5px solid white">${num}</div>` : ''}
+              ${badgeNum ? `<div style="position:absolute;top:-6px;right:-6px;background:${badgeColor};color:white;border-radius:50%;width:16px;height:16px;font-size:9px;line-height:16px;text-align:center;font-weight:700;border:1.5px solid white">${badgeNum}</div>` : ''}
             </div>`,
             iconSize: [markerSize, markerSize], iconAnchor: [markerSize/2, markerSize/2],
           });
           const m = window.L.marker([pt.lat, pt.lng], { icon }).addTo(map);
+          // In reorder mode, clicking a route pin appends it to the order (or deselects if already clicked).
+          if (reorderable) {
+            m.on('click', () => {
+              setClickedOrder(prev => prev.includes(pt.itemId)
+                ? prev.filter(id => id !== pt.itemId)
+                : [...prev, pt.itemId]);
+            });
+          }
           const prefix = num ? num + '. ' : isExtra ? '↳ ' : '🏨 ';
-          // Permanent label below the pin so the spot name is always visible without clicking.
-          // Truncate long names to keep the map readable.
           const labelText = pt.name && pt.name.length > 28 ? pt.name.slice(0, 26) + '…' : (pt.name || '');
           m.bindTooltip(`${prefix}${labelText}`, {
             direction: 'bottom',
@@ -15555,114 +15633,180 @@
             permanent: true,
             className: 'day-mini-label',
           });
-          markers.push(m);
+          markersRef.current.push(m);
         });
 
-        // Draw route lines connecting non-hotel, non-extra-option points
-        const routePts = validPts.filter(p => !p.isHotel && !p.isExtraOption);
-        if (routePts.length >= 2) {
-          const lineColor = isDarkMode ? '#60a5fa' : '#3b82f6';
-
-          // First pass: draw cached polylines or dashed fallbacks
-          const segmentLayers = [];
-          for (let i = 1; i < routePts.length; i++) {
-            const pt = routePts[i];
-            const prevPt = routePts[i - 1];
-            const segColor = (pt.isOptions || prevPt.isOptions) ? (pt.optionColor || prevPt.optionColor || lineColor) : lineColor;
-            const bestMode = pt.transit_info?.mode;
-            const modeData = bestMode && pt.transit_info?.all_modes?.[bestMode];
-            const encoded = modeData?.polyline;
-            if (encoded) {
-              const decoded = decodePolyline(encoded);
-              if (decoded.length > 1) {
-                segmentLayers.push(window.L.polyline(decoded, { color: segColor, weight: 3, opacity: 0.7 }).addTo(map));
-                continue;
-              }
-            }
-            // Fallback: dashed line (will be replaced if fetch succeeds)
-            segmentLayers.push(window.L.polyline([[prevPt.lat, prevPt.lng], [pt.lat, pt.lng]], {
-              color: segColor, weight: 3, opacity: 0.5, dashArray: '8,6',
-            }).addTo(map));
-          }
-
-          // Second pass: fetch missing polylines from Routes API
-          const apiKey = getGoogleApiKey();
-          if (apiKey) {
+        // Hide route lines while reordering — they reflect the OLD order and are confusing once
+        // the user starts tapping a new sequence. Re-drawn after Done.
+        if (!reorderMode) {
+          const routePts = validPts.filter(p => !p.isHotel && !p.isExtraOption);
+          if (routePts.length >= 2) {
+            const lineColor = isDarkMode ? '#60a5fa' : '#3b82f6';
+            const segmentLayers = [];
             for (let i = 1; i < routePts.length; i++) {
               const pt = routePts[i];
-              const bestMode = pt.transit_info?.mode;
-              const modeData = bestMode && pt.transit_info?.all_modes?.[bestMode];
-              if (modeData?.polyline) continue; // Already have it
               const prevPt = routePts[i - 1];
               const segColor = (pt.isOptions || prevPt.isOptions) ? (pt.optionColor || prevPt.optionColor || lineColor) : lineColor;
-              const segIdx = i - 1;
-              (async (idx, from, to, col) => {
-                try {
-                  const resp = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': apiKey, 'X-Goog-FieldMask': 'routes.polyline.encodedPolyline' },
-                    body: JSON.stringify({
-                      origin: { location: { latLng: { latitude: from.lat, longitude: from.lng } } },
-                      destination: { location: { latLng: { latitude: to.lat, longitude: to.lng } } },
-                      travelMode: 'WALK',
-                    }),
-                  });
-                  if (!resp.ok) return;
-                  const data = await resp.json();
-                  const encoded = data.routes?.[0]?.polyline?.encodedPolyline;
-                  if (!encoded || !mapRef.current) return;
-                  const decoded = decodePolyline(encoded);
-                  if (decoded.length > 1) {
-                    // Remove dashed fallback, add real polyline
-                    if (segmentLayers[idx]) mapRef.current.removeLayer(segmentLayers[idx]);
-                    window.L.polyline(decoded, { color: col, weight: 3, opacity: 0.7 }).addTo(mapRef.current);
-                  }
-                } catch (e) { /* keep dashed fallback */ }
-              })(segIdx, prevPt, pt, segColor);
+              const bestMode = pt.transit_info?.mode;
+              const modeData = bestMode && pt.transit_info?.all_modes?.[bestMode];
+              const encoded = modeData?.polyline;
+              if (encoded) {
+                const decoded = decodePolyline(encoded);
+                if (decoded.length > 1) {
+                  const layer = window.L.polyline(decoded, { color: segColor, weight: 3, opacity: 0.7 }).addTo(map);
+                  segmentLayers.push(layer);
+                  polylineLayersRef.current.push(layer);
+                  continue;
+                }
+              }
+              const fallback = window.L.polyline([[prevPt.lat, prevPt.lng], [pt.lat, pt.lng]], {
+                color: segColor, weight: 3, opacity: 0.5, dashArray: '8,6',
+              }).addTo(map);
+              segmentLayers.push(fallback);
+              polylineLayersRef.current.push(fallback);
+            }
+
+            const apiKey = getGoogleApiKey();
+            if (apiKey) {
+              for (let i = 1; i < routePts.length; i++) {
+                const pt = routePts[i];
+                const bestMode = pt.transit_info?.mode;
+                const modeData = bestMode && pt.transit_info?.all_modes?.[bestMode];
+                if (modeData?.polyline) continue;
+                const prevPt = routePts[i - 1];
+                const segColor = (pt.isOptions || prevPt.isOptions) ? (pt.optionColor || prevPt.optionColor || lineColor) : lineColor;
+                const segIdx = i - 1;
+                (async (idx, from, to, col) => {
+                  try {
+                    const resp = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': apiKey, 'X-Goog-FieldMask': 'routes.polyline.encodedPolyline' },
+                      body: JSON.stringify({
+                        origin: { location: { latLng: { latitude: from.lat, longitude: from.lng } } },
+                        destination: { location: { latLng: { latitude: to.lat, longitude: to.lng } } },
+                        travelMode: 'WALK',
+                      }),
+                    });
+                    if (!resp.ok) return;
+                    const data = await resp.json();
+                    const encoded = data.routes?.[0]?.polyline?.encodedPolyline;
+                    if (!encoded || !mapRef.current) return;
+                    const decoded = decodePolyline(encoded);
+                    if (decoded.length > 1) {
+                      if (segmentLayers[idx]) {
+                        try { mapRef.current.removeLayer(segmentLayers[idx]); } catch (e) {}
+                        const remIdx = polylineLayersRef.current.indexOf(segmentLayers[idx]);
+                        if (remIdx >= 0) polylineLayersRef.current.splice(remIdx, 1);
+                      }
+                      const layer = window.L.polyline(decoded, { color: col, weight: 3, opacity: 0.7 }).addTo(mapRef.current);
+                      polylineLayersRef.current.push(layer);
+                    }
+                  } catch (e) { /* keep dashed fallback */ }
+                })(segIdx, prevPt, pt, segColor);
+              }
             }
           }
         }
 
-        // Fit bounds to activity pins only (exclude hotel for tighter zoom on the day's cluster)
-        const activityPts = validPts.filter(p => !p.isHotel);
-        const fitPts = activityPts.length > 0 ? activityPts : validPts;
-        const fitMarkers = fitPts.map(p => window.L.marker([p.lat, p.lng]));
-        const group = window.L.featureGroup(fitMarkers);
-        const bounds = group.getBounds();
-        if (fitPts.length === 1) {
-          map.setView([fitPts[0].lat, fitPts[0].lng], 15);
-        } else {
-          map.fitBounds(bounds.pad(0.15), { maxZoom: 16, minZoom: 12 });
-        }
-
-        // Re-fit after a moment to handle portal size detection
-        setTimeout(() => {
-          if (mapRef.current) {
-            mapRef.current.invalidateSize();
-            if (fitPts.length === 1) {
-              mapRef.current.setView([fitPts[0].lat, fitPts[0].lng], 15);
-            } else {
-              mapRef.current.fitBounds(bounds.pad(0.15), { maxZoom: 16, minZoom: 12 });
-            }
+        // Fit bounds — but only on FIRST render with points. After that, respect the user's zoom/pan.
+        if (!hasFitRef.current) {
+          hasFitRef.current = true;
+          const activityPts = validPts.filter(p => !p.isHotel);
+          const fitPts = activityPts.length > 0 ? activityPts : validPts;
+          const fitMarkers = fitPts.map(p => window.L.marker([p.lat, p.lng]));
+          const group = window.L.featureGroup(fitMarkers);
+          const bounds = group.getBounds();
+          if (fitPts.length === 1) {
+            map.setView([fitPts[0].lat, fitPts[0].lng], 15);
+          } else {
+            map.fitBounds(bounds.pad(0.15), { maxZoom: 16, minZoom: 12 });
           }
-        }, 300);
+          setTimeout(() => {
+            if (mapRef.current) {
+              mapRef.current.invalidateSize();
+              if (fitPts.length === 1) {
+                mapRef.current.setView([fitPts[0].lat, fitPts[0].lng], 15);
+              } else {
+                mapRef.current.fitBounds(bounds.pad(0.15), { maxZoom: 16, minZoom: 12 });
+              }
+            }
+          }, 300);
+        }
+      }, [ready, points, reorderMode, clickedOrder, isDarkMode]);
 
-        return () => { if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
-      }, [ready, points, isDarkMode]);
+      // Commit the user's tap-order. Items they tapped go in clicked order; items they
+      // didn't tap follow at the end in their existing order. Parent decides how to handle
+      // scheduled_time clearing.
+      const commitReorder = () => {
+        if (!onReorder) return;
+        const orderableIds = points
+          .filter(p => !p.isHotel && !p.isExtraOption && p.itemId)
+          .map(p => p.itemId);
+        const trailing = orderableIds.filter(id => !clickedOrder.includes(id));
+        const finalOrder = [...clickedOrder, ...trailing];
+        onReorder(finalOrder);
+        setReorderMode(false);
+        setClickedOrder([]);
+      };
+
+      const cancelReorder = () => {
+        setReorderMode(false);
+        setClickedOrder([]);
+      };
+
+      const reorderableCount = points.filter(p => !p.isHotel && !p.isExtraOption && p.itemId).length;
 
       return ReactDOM.createPortal(
         <div className={isDarkMode ? 'dark' : ''}>
-          <div className="fixed inset-0 bg-black bg-opacity-60" style={{ zIndex: 99998 }} onClick={onClose} />
+          <div className="fixed inset-0 bg-black bg-opacity-60" style={{ zIndex: 99998 }} onClick={reorderMode ? null : onClose} />
           <div className="fixed inset-3 md:inset-6 rounded-2xl overflow-hidden shadow-2xl flex flex-col" style={{ zIndex: 99999, background: isDarkMode ? '#1e293b' : '#f8fafc' }}>
-            <div className={`flex items-center justify-between px-4 py-2.5 border-b ${isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-gray-200'}`}>
-              <span className={`font-semibold text-sm ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>🗺️ {dayLabel}</span>
-              <div className="flex items-center gap-3">
-                <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{points.filter(p => !p.isHotel).length} stops</span>
-                <button onClick={onClose} className={`p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-700 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                  <CloseIcon />
-                </button>
+            <div className={`flex items-center justify-between px-4 py-2.5 border-b ${isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-gray-200'} gap-2`}>
+              <span className={`font-semibold text-sm truncate ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>🗺️ {dayLabel}</span>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {!reorderMode && (
+                  <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{reorderableCount} stops</span>
+                )}
+                {!reorderMode && onReorder && reorderableCount >= 2 && (
+                  <button
+                    onClick={() => setReorderMode(true)}
+                    className="text-xs px-2 py-1 rounded-md bg-blue-500 text-white hover:bg-blue-600 transition"
+                    title="Tap pins in the order you want to visit them"
+                  >
+                    ↕ Reorder
+                  </button>
+                )}
+                {reorderMode && (
+                  <>
+                    <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                      Tap pins in order ({clickedOrder.length}/{reorderableCount})
+                    </span>
+                    <button
+                      onClick={cancelReorder}
+                      className={`text-xs px-2 py-1 rounded-md ${isDarkMode ? 'bg-slate-700 text-gray-200 hover:bg-slate-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'} transition`}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={commitReorder}
+                      disabled={clickedOrder.length === 0}
+                      className={`text-xs px-2 py-1 rounded-md transition ${clickedOrder.length === 0 ? 'bg-emerald-300 text-white cursor-not-allowed' : 'bg-emerald-500 text-white hover:bg-emerald-600'}`}
+                    >
+                      Done
+                    </button>
+                  </>
+                )}
+                {!reorderMode && (
+                  <button onClick={onClose} className={`p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-slate-700 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                    <CloseIcon />
+                  </button>
+                )}
               </div>
             </div>
+            {reorderMode && (
+              <div className={`px-4 py-1.5 text-[11px] ${isDarkMode ? 'bg-slate-800/60 text-gray-400' : 'bg-amber-50 text-amber-800'} border-b ${isDarkMode ? 'border-slate-700' : 'border-amber-200'}`}>
+                Tapping a pin again removes it. Items you don't tap stay at the end in their current order. Times are cleared on reorder, except for booked reservations.
+              </div>
+            )}
             <div ref={mapContainerRef} style={{ flex: 1, minHeight: 0, width: '100%' }} />
           </div>
         </div>,
@@ -15957,15 +16101,18 @@
         }
       }
 
-      // Merge transit items and meal slots into the sorted list by time
-      // Use autoTimes as fallback for items without explicit scheduled_time
+      // Merge transit items and meal slots into the sorted list. Sort ONLY by explicit scheduled_time —
+      // items without an explicit time fall to the end (the "Unscheduled" bucket) instead of being
+      // interleaved by an auto-time computed from day.start_time. autoTimes is still kept around for
+      // internal calculations (closed-warning, anchor lookup) but is no longer used for sort order.
       const allSorted = [...allReal, ...transitItems, ...mealSlots].sort((a, b) => {
-        const ta = a.scheduled_time || autoTimes[a.id] || '';
-        const tb = b.scheduled_time || autoTimes[b.id] || '';
+        const ta = a.scheduled_time || '';
+        const tb = b.scheduled_time || '';
         if (ta && tb) return ta.localeCompare(tb);
         if (ta) return -1;
         if (tb) return 1;
-        return 0;
+        // Both unscheduled — preserve their relative drag order
+        return (a.order_in_day || 0) - (b.order_in_day || 0);
       });
 
       // Collapse redundant transit badges: if an item follows a transit doc (flight/train/transfer),
@@ -16527,50 +16674,76 @@
 
               {/* Day mini-map modal */}
               {showMiniMap && (() => {
-                // Build ordered route: items in display order (scheduled + auto-timed)
+                // Build ordered route: items in display order (scheduled + drag order)
                 const _optGroupColors = ['#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#06b6d4'];
                 let _optGroupIdx = 0;
                 const extraOptionsPts = []; // Non-routed alternative option markers
+                // Helper: detect if an item's linked pin has a fixed reservation time we should preserve.
+                const itemHasReservationTime = (i) => {
+                  const linkedPin = i.pin_id ? pins.find(p => p.id === i.pin_id) : null;
+                  const rd = linkedPin?.reservation_details;
+                  return !!(rd && (rd.time || rd.activity_time || rd.check_in_time));
+                };
                 const orderedMapItems = allSorted
                   .filter(i => !i._isMealSlot && !i._isTransitDoc)
                   .map(i => {
-                    // For unconfirmed options groups, use first option on route, show rest as extras
+                    const hasReservationTime = itemHasReservationTime(i);
                     if (i.options && i.options.length >= 2 && !i.confirmed_option) {
                       const groupColor = _optGroupColors[_optGroupIdx % _optGroupColors.length];
                       _optGroupIdx++;
                       const first = i.options[0];
-                      const groupId = i.id; // unique per options group
-                      // Add remaining options as non-routed markers with their own names
+                      const groupId = i.id;
                       i.options.slice(1).forEach(opt => {
                         if (opt.lat && opt.lng) {
                           extraOptionsPts.push({ lat: opt.lat, lng: opt.lng, name: opt.name, emoji: opt.emoji || '🍽️', isHotel: false, isOptions: true, isExtraOption: true, optionColor: groupColor, optionGroupId: groupId });
                         }
                       });
-                      return first.lat && first.lng ? { lat: first.lat, lng: first.lng, name: first.name, emoji: first.emoji || '🍽️', isHotel: false, transit_info: i.transit_info, isOptions: true, optionColor: groupColor, optionGroupId: groupId } : null;
+                      return first.lat && first.lng ? { lat: first.lat, lng: first.lng, name: first.name, emoji: first.emoji || '🍽️', isHotel: false, transit_info: i.transit_info, isOptions: true, optionColor: groupColor, optionGroupId: groupId, itemId: i.id, hasReservationTime } : null;
                     }
-                    return i.lat && i.lng ? { lat: i.lat, lng: i.lng, name: i.name, emoji: i.emoji || '📌', isHotel: false, transit_info: i.transit_info } : null;
+                    return i.lat && i.lng ? { lat: i.lat, lng: i.lng, name: i.name, emoji: i.emoji || '📌', isHotel: false, transit_info: i.transit_info, itemId: i.id, hasReservationTime } : null;
                   })
                   .filter(Boolean);
                 // Add hotel as context point (not numbered, not part of route)
                 const hotelPts = (dayDocs || []).filter(d => d._isHotelStay && !d._isCheckOut).map(d => {
-                  // Match by pin ID first, then by exact name match
                   let p = d._pinId ? pins.find(pp => pp.id === d._pinId) : null;
                   if (!p && d.title) p = pins.find(pp => pp.category === 'hotel' && pp.name && pp.name.toLowerCase() === d.title.toLowerCase());
                   return p && p.lat && p.lng ? { lat: p.lat, lng: p.lng, name: d.title || p.name, emoji: '🏨', isHotel: true } : null;
                 }).filter(Boolean);
-                // Dedupe hotel if it's already in ordered items
                 const itemCoords = new Set(orderedMapItems.map(i => `${i.lat.toFixed(4)},${i.lng.toFixed(4)}`));
                 const uniqueHotels = hotelPts.filter(h => !itemCoords.has(`${h.lat.toFixed(4)},${h.lng.toFixed(4)}`));
                 const allPts = [...orderedMapItems, ...uniqueHotels, ...extraOptionsPts];
                 if (allPts.length === 0) return null;
                 const dayNum = allDays ? allDays.findIndex(d => d.id === day.id) + 1 : '';
                 const dateLabel = day.date ? new Date(day.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
+                // Apply tap-reorder: build a new items array for this day with new order_in_day.
+                // Items the user tapped go in clicked order; others trail in their existing order.
+                // Times are cleared on every reordered item EXCEPT those tied to a reservation (rd.time etc).
+                const handleReorder = (orderedItemIds) => {
+                  const dayItems = items.filter(i => i.day_id === day.id);
+                  const idToItem = new Map(dayItems.map(it => [it.id, it]));
+                  const ordered = [];
+                  orderedItemIds.forEach((id, idx) => {
+                    const it = idToItem.get(id);
+                    if (!it) return;
+                    const keepTime = itemHasReservationTime(it);
+                    ordered.push({ ...it, order_in_day: idx, scheduled_time: keepTime ? it.scheduled_time : null });
+                  });
+                  // Items not in the click order (e.g. unscheduled trailing items) keep their existing relative order
+                  const usedIds = new Set(orderedItemIds);
+                  const trailing = dayItems.filter(i => !usedIds.has(i.id));
+                  trailing.forEach((it, i) => {
+                    const keepTime = itemHasReservationTime(it);
+                    ordered.push({ ...it, order_in_day: orderedItemIds.length + i, scheduled_time: keepTime ? it.scheduled_time : null });
+                  });
+                  if (onUpdateItems) onUpdateItems(ordered);
+                };
                 return (
                   <DayMiniMap
                     points={allPts}
                     isDarkMode={isDarkMode}
                     dayLabel={`Day ${dayNum} · ${dateLabel}${day.location ? ' · ' + day.location : ''}`}
                     onClose={() => setShowMiniMap(false)}
+                    onReorder={handleReorder}
                   />
                 );
               })()}
