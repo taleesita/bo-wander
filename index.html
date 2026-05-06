@@ -450,7 +450,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v120';
+    const APP_VERSION = 'v122';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -5269,34 +5269,51 @@
         const visualLang = /\b(entryway|storefront|facade|interior|exterior|signage|sign outside|pour over|pouring|barista|shelves?|counter|seating|view of|pictured|shown above|shown below|sitting at|holding|posing|wearing|standing at|leaning|pictured here|in the photo)\b/i;
 
         // Strategy 1: numbered list ("1. Name", "1) Name", "1 - Name")
+        // Supports two layouts:
+        //   (a) "1. Name" on its own line, description on following lines
+        //   (b) "1. Name — description on the same line" (em/en dash or hyphen splits name from description)
         const numbered = [];
         const usedIdx = new Set();
         for (let i = 0; i < lines.length; i++) {
-          const m = lines[i].match(/^\d{1,2}[\.\)\-–—:]\s+(.{3,80}?)\s*$/);
+          // Loosen the upper-length cap to 600 so layouts with "1. Name — long description" parse;
+          // we extract the name from before the dash separator below.
+          const m = lines[i].match(/^\d{1,2}[\.\)\-–—:]\s+(.{3,600}?)\s*$/);
           if (!m) continue;
-          let name = m[1].trim().replace(/[.,:;]$/, '').trim();
-          if (name.length < 3 || name.length > 60) continue;
+          let raw = m[1].trim();
+          // Try to split "Name — description" / "Name – description" / "Name - description" (with surrounding spaces).
+          // Hyphen requires spaces on both sides so we don't break legitimate hyphenated names like "Saint-Louis".
+          let inlineDesc = '';
+          let name = raw;
+          const dashSplit = raw.match(/^(.+?)\s+(?:[—–]|-)\s+(.+)$/);
+          if (dashSplit && dashSplit[1].trim().length >= 3 && dashSplit[1].trim().length <= 80) {
+            name = dashSplit[1].trim();
+            inlineDesc = dashSplit[2].trim();
+          }
+          name = name.replace(/[.,:;]$/, '').trim();
+          if (name.length < 3 || name.length > 80) continue;
           if (skipPatterns.test(name)) continue;
           if (junkContent.test(name)) continue;
           if (articleTitleLike.test(name)) continue;
           if (name.includes('?')) continue;
           if (!isLikelyPlaceName(name)) continue;
-          // Description: next non-empty line(s) until next numbered item or blank gap
-          // Prefer sentence-like paragraphs; skip image alt text.
-          let desc = '';
-          for (let j = i + 1; j < lines.length && j < i + 40; j++) {
-            if (lines[j].match(/^\d{1,2}[\.\)\-–—:]\s+/)) break;
-            if (captionIdx.has(j)) continue;
-            if (lines[j].length > 30 && !junkContent.test(lines[j]) && !altTextLike(lines[j]) && !visualLang.test(lines[j])) {
-              desc = lines[j].substring(0, 300);
-              break;
+          // Description: prefer the inline description (after the dash); else look at following lines.
+          let desc = inlineDesc.substring(0, 300);
+          if (!desc) {
+            for (let j = i + 1; j < lines.length && j < i + 40; j++) {
+              if (lines[j].match(/^\d{1,2}[\.\)\-–—:]\s+/)) break;
+              if (captionIdx.has(j)) continue;
+              if (lines[j].length > 30 && !junkContent.test(lines[j]) && !altTextLike(lines[j]) && !visualLang.test(lines[j])) {
+                desc = lines[j].substring(0, 300);
+                break;
+              }
             }
           }
           numbered.push({ name, description: desc, checked: true, loading: false, placeData: null });
           usedIdx.add(i);
         }
-        if (numbered.length >= 3) {
-          // Dedupe by name
+        if (numbered.length >= 2) {
+          // Dedupe by name. Lowered threshold from 3 to 2 — short numbered lists
+          // ("1. Kinatei — …  2. Azekuraya — …") were falling through to other strategies and failing.
           const seen = new Set();
           return numbered.filter(p => {
             const key = p.name.toLowerCase();
@@ -14128,7 +14145,17 @@
                 </div>
               ) : (
                 <div className={`grid gap-6 ${isMobile ? 'grid-cols-1' : 'grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}`}>
-                  {collections.map((col, idx) => {
+                  {/* Favorited maps surface to the top — useful when you're traveling and using one
+                      collection daily. Order is otherwise preserved (stable sort within each group). */}
+                  {[...collections]
+                    .map((c, originalIdx) => ({ c, originalIdx }))
+                    .sort((a, b) => {
+                      const aFav = a.c.is_favorite ? 1 : 0;
+                      const bFav = b.c.is_favorite ? 1 : 0;
+                      if (aFav !== bFav) return bFav - aFav;
+                      return a.originalIdx - b.originalIdx;
+                    })
+                    .map(({ c: col, originalIdx: idx }) => {
                     const stats = getCollectionStats(col.id);
                     const gradient = CARD_GRADIENTS[idx % CARD_GRADIENTS.length];
                     const collectionPins = pins.filter(p => p.collection_id === col.id);
@@ -14137,6 +14164,20 @@
                     const hasMultipleCovers = !col.cover_image && getCoversForName(col.name).length > 1;
                     return (
                       <div key={col.id} className="group relative rounded-xl overflow-hidden shadow-lg hover:shadow-xl transition transform hover:-translate-y-1">
+                        {/* Favorite toggle — top-left, always visible (mobile + desktop) so it's tappable on touch */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onCreateCollection({ id: col.id, is_favorite: !col.is_favorite, _update: true });
+                          }}
+                          className={`absolute top-2 left-2 p-1.5 rounded-full transition ${col.is_favorite ? 'bg-yellow-400 text-white shadow-md' : 'bg-black bg-opacity-40 hover:bg-opacity-70 text-white'}`}
+                          title={col.is_favorite ? 'Unfavorite — won\'t pin to top' : 'Favorite — pins to top of home screen'}
+                          style={{ zIndex: 2 }}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill={col.is_favorite ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+                            <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                          </svg>
+                        </button>
                         <button
                           onClick={() => onSelectCollection(col.id)}
                           className="w-full text-left cursor-pointer"
@@ -14598,7 +14639,11 @@
 
       let filteredPins;
       if (pinSearch) {
-        filteredPins = pins.filter(p => p.name.toLowerCase().includes(pinSearch.toLowerCase()));
+        // Diacritic-insensitive match: NFD-decompose then strip combining marks so
+        // "todai" matches "Tōdai-ji", "okonomiyaki" matches "Ōkonomiyaki", etc.
+        const stripDiacritics = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+        const q = stripDiacritics(pinSearch);
+        filteredPins = pins.filter(p => stripDiacritics(p.name).includes(q));
       } else if (mealMode && mealMode.length > 0) {
         // Filter to food-relevant categories or pins with matching meal tags
         const foodCats = new Set([...mealMode, 'restaurant', 'cafe', 'treats', 'bar']);
@@ -14908,24 +14953,49 @@
                               <button key={i}
                                 disabled={alreadyAdded}
                                 onClick={() => {
+                                  // One-click full add: create the pin on the map (or reuse an
+                                  // existing same-place pin), then commit the day item right away.
+                                  // Previously this only filled the form fields and left it to the
+                                  // user to scroll down and tap Save — which felt like nothing happened.
                                   if (alreadyAdded) return;
                                   const cat = typeof guessEmojiAndCategory === 'function' ? guessEmojiAndCategory(place.displayName, place.type) : { emoji: '📍', category: 'spot' };
-                                  // Create pin on the map and select it
-                                  const newPinId = Date.now().toString();
+                                  const fallbackPinId = Date.now().toString();
+                                  let pinIdToUse = fallbackPinId;
                                   if (onCreatePin) {
-                                    onCreatePin({
-                                      id: newPinId, name: place.displayName, address: place.address,
+                                    const returned = onCreatePin({
+                                      id: fallbackPinId, name: place.displayName, address: place.address,
                                       emoji: cat.emoji, category: cat.category,
                                       lat: place.lat, lng: place.lng, description: '', photos: [],
                                     });
+                                    if (returned) pinIdToUse = returned;
                                   }
-                                  setSelectedPinId(newPinId);
-                                  setName(place.displayName);
-                                  setEmoji(cat.emoji);
-                                  setFormLat(place.lat);
-                                  setFormLng(place.lng);
                                   setAddedSearchPlaces(prev => new Set(prev).add(placeKey));
-                                  // Don't clear search — keep results visible with "Added" badge
+                                  // Mirror what handleSave would do for a regular pin item, then close the form
+                                  const base = { ...(item || {}) };
+                                  delete base.__mealCategories;
+                                  delete base.__mealType;
+                                  delete base.__mealTime;
+                                  delete base.__dayDate;
+                                  delete base.__anchorLat;
+                                  delete base.__anchorLng;
+                                  delete base._autoTime;
+                                  delete base.__mealPreset;
+                                  onSave({
+                                    ...base,
+                                    id: item?.id || generateId(),
+                                    type: 'pin',
+                                    pin_id: pinIdToUse,
+                                    name: place.displayName,
+                                    emoji: cat.emoji,
+                                    scheduled_time: scheduledTime,
+                                    estimated_duration_minutes: duration === '' ? 0 : (parseInt(duration) || 0),
+                                    description: description || '',
+                                    lat: place.lat,
+                                    lng: place.lng,
+                                    options: null,
+                                    confirmed_option: null,
+                                  });
+                                  onClose();
                                 }}
                                 className={`w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 ${alreadyAdded ? 'opacity-40 cursor-not-allowed' : 'hover:bg-green-100 dark:hover:bg-green-900/30'}`}
                               >
@@ -17589,6 +17659,19 @@
       const [newStartDate, setNewStartDate] = useState('');
       const [newEndDate, setNewEndDate] = useState('');
       const [showDayPicker, setShowDayPicker] = useState(null); // pin object to add via day picker
+      // Ref to the day button that should scroll into view when the picker opens
+      // (today's day if the trip covers today, otherwise the next upcoming day so the user
+      // doesn't have to scroll past D1, D2, D3… to reach a future day on a long trip).
+      const dayPickerTargetRef = useRef(null);
+      useEffect(() => {
+        if (!showDayPicker) return;
+        const t = setTimeout(() => {
+          if (dayPickerTargetRef.current) {
+            try { dayPickerTargetRef.current.scrollIntoView({ block: 'center', behavior: 'auto' }); } catch (e) {}
+          }
+        }, 60);
+        return () => clearTimeout(t);
+      }, [showDayPicker]);
       const [showPrettyView, setShowPrettyView] = useState(false);
       const [reviewDayId, setReviewDayId] = useState(null);
       const [weatherData, setWeatherData] = useState({});
@@ -18777,11 +18860,27 @@
               onClose={() => { setEditingItem(null); setAddingToDay(null); }}
               isDarkMode={isDarkMode}
               onCreatePin={(pinData) => {
+                // Returns the id of the pin to use — either an existing same-place pin's id
+                // (so the user doesn't end up with a duplicate) or the freshly-created pin's id.
                 const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
+                // Diacritic-insensitive name normalisation so "Kasugataisha" and "Kasuga-taisha"
+                // (or "Tōdai-ji" vs "Todai-ji") collapse to the same key.
+                const norm = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+                  .replace(/[^a-z0-9 ]/gi, ' ').replace(/\s+/g, ' ').toLowerCase().trim();
+                const target = norm(pinData.name);
+                const candidate = pins.find(p =>
+                  p.collection_id === defaultCollection &&
+                  (norm(p.name) === target || (typeof isSamePlacePin === 'function' && isSamePlacePin(p, pinData)))
+                );
+                if (candidate) {
+                  // Reuse the existing pin — no new doc, no duplicate
+                  return candidate.id;
+                }
                 const newPin = { ...pinData, collection_id: defaultCollection, created_at: new Date().toISOString() };
                 MockFirebase.savePin(newPin);
                 setPins(prev => [...prev, newPin]);
                 setTimeout(() => fetchRatingsForPin(newPin), 200);
+                return newPin.id;
               }}
             />
           )}
@@ -19160,13 +19259,21 @@
                     );
                   })()}
                   <div className="max-h-60 overflow-y-auto space-y-1">
-                    {days.map(day => {
+                    {(() => {
+                      // Compute scroll target: today's row if the trip covers today, otherwise the
+                      // first upcoming day. Falls back to D1 if neither applies.
                       const todayStr = new Date().toLocaleDateString('en-CA');
+                      const todayIdx = days.findIndex(d => d.date === todayStr);
+                      const upcomingIdx = todayIdx >= 0 ? todayIdx : days.findIndex(d => d.date && d.date >= todayStr);
+                      const scrollTargetIdx = upcomingIdx >= 0 ? upcomingIdx : 0;
+                      return days.map((day, dayIdx) => {
                       const isToday = day.date === todayStr;
                       const dayItems = items.filter(i => i.day_id === day.id);
+                      const isScrollTarget = dayIdx === scrollTargetIdx;
                       return (
                         <button
                           key={day.id}
+                          ref={isScrollTarget ? dayPickerTargetRef : null}
                           onClick={() => handleQuickAddToDay(day.id, showDayPicker)}
                           className={`w-full text-left px-3 py-2.5 rounded-lg text-sm flex items-center justify-between transition ${isToday ? 'bg-blue-50 dark:bg-blue-900/20 ring-1 ring-blue-300 dark:ring-blue-700 hover:bg-blue-100 dark:hover:bg-blue-900/30' : 'hover:bg-gray-100 dark:hover:bg-slate-700'}`}
                         >
@@ -19185,7 +19292,8 @@
                           <span className="text-xs text-gray-400">{dayItems.length} item{dayItems.length !== 1 ? 's' : ''}</span>
                         </button>
                       );
-                    })}
+                      });
+                    })()}
                   </div>
                 </div>
               </div>
