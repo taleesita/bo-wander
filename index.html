@@ -450,7 +450,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v124';
+    const APP_VERSION = 'v125';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -17666,17 +17666,39 @@
       const [newStartDate, setNewStartDate] = useState('');
       const [newEndDate, setNewEndDate] = useState('');
       const [showDayPicker, setShowDayPicker] = useState(null); // pin object to add via day picker
-      // Ref to the day button that should scroll into view when the picker opens
+      // Ref to the day button that should be centered when the picker opens
       // (today's day if the trip covers today, otherwise the next upcoming day so the user
       // doesn't have to scroll past D1, D2, D3… to reach a future day on a long trip).
       const dayPickerTargetRef = useRef(null);
       useEffect(() => {
         if (!showDayPicker) return;
+        // Use manual scrollTop calculation rather than scrollIntoView. scrollIntoView was
+        // sometimes scrolling the wrong ancestor (or no-op'ing entirely) inside the modal —
+        // manually setting the scrollable parent's scrollTop is reliable across browsers.
         const t = setTimeout(() => {
-          if (dayPickerTargetRef.current) {
-            try { dayPickerTargetRef.current.scrollIntoView({ block: 'center', behavior: 'auto' }); } catch (e) {}
+          const btn = dayPickerTargetRef.current;
+          if (!btn) return;
+          // Walk up from the button to the nearest element that actually scrolls.
+          let container = btn.parentElement;
+          while (container) {
+            const overflowY = window.getComputedStyle(container).overflowY;
+            if ((overflowY === 'auto' || overflowY === 'scroll') && container.scrollHeight > container.clientHeight) break;
+            container = container.parentElement;
           }
-        }, 60);
+          if (!container) return;
+          // offsetTop is relative to offsetParent — fall back to a measured rect difference
+          // when offsetParent isn't the scroll container.
+          let targetTop;
+          if (btn.offsetParent === container) {
+            targetTop = btn.offsetTop;
+          } else {
+            const cRect = container.getBoundingClientRect();
+            const bRect = btn.getBoundingClientRect();
+            targetTop = container.scrollTop + (bRect.top - cRect.top);
+          }
+          const desired = targetTop - (container.clientHeight / 2) + (btn.offsetHeight / 2);
+          container.scrollTop = Math.max(0, desired);
+        }, 80);
         return () => clearTimeout(t);
       }, [showDayPicker]);
       const [showPrettyView, setShowPrettyView] = useState(false);
