@@ -450,7 +450,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v122';
+    const APP_VERSION = 'v123';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -20909,16 +20909,53 @@
                 // pins added earlier in this same bulk (not just existing state).
                 let workingPins = [...pins];
                 const findDuplicate = (data) => {
-                  const nameKey = (data.name || '').trim().toLowerCase();
+                  // Loosened match — strict name+exact-coords was missing same-place duplicates like
+                  // "Kasuga-taisha" (search-add) vs "Kasugataisha Shrine" (paste-import) because:
+                  //   • the names differ slightly (hyphen, "Shrine" suffix, diacritics)
+                  //   • two API lookups return lat/lng that disagree at the 4th decimal (~10m off)
+                  // Now we normalize both names (strip diacritics + punctuation + common place-type
+                  // suffixes like "shrine"/"temple"/"restaurant") and accept proximity within ~120m.
+                  const noiseWords = /\b(shrine|temple|jinja|jingu|taisha|cafe|restaurant|bar|hotel|museum|park|garden|market|the)\b/g;
+                  const norm = (s) => (s || '')
+                    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+                    .toLowerCase()
+                    .replace(/[^a-z0-9 ]/g, ' ')
+                    .replace(noiseWords, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                  const nameKey = norm(data.name);
+                  const rawNameKey = (data.name || '').trim().toLowerCase();
                   const lat = parseFloat(data.lat);
                   const lng = parseFloat(data.lng);
                   const hasCoords = !isNaN(lat) && !isNaN(lng) && (lat !== 0 || lng !== 0);
-                  const latKey = hasCoords ? lat.toFixed(4) : null;
-                  const lngKey = hasCoords ? lng.toFixed(4) : null;
+                  const distKm = (a, b) => {
+                    const dLat = (a.lat - b.lat) * Math.PI / 180;
+                    const dLng = (a.lng - b.lng) * Math.PI / 180;
+                    const lat1 = a.lat * Math.PI / 180;
+                    const lat2 = b.lat * Math.PI / 180;
+                    const x = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+                    return 2 * 6371 * Math.asin(Math.sqrt(x));
+                  };
                   return workingPins.find(p => {
-                    if (nameKey && p.name && p.name.trim().toLowerCase() === nameKey) return true;
+                    if (!p || !p.name) return false;
+                    // Always allow exact raw-name match (cheap, preserves prior behavior)
+                    if (rawNameKey && p.name.trim().toLowerCase() === rawNameKey) return true;
+                    const pKey = norm(p.name);
+                    // Normalized name exact match (after stripping diacritics + suffixes like "Shrine")
+                    if (nameKey && pKey && nameKey === pKey) return true;
+                    // One normalized name contains the other (e.g. "kasugataisha" inside "kasugataisha")
+                    if (nameKey && pKey && nameKey.length >= 5 && pKey.length >= 5 &&
+                        (pKey.includes(nameKey) || nameKey.includes(pKey))) return true;
+                    // Coordinate proximity: same place if within ~120m
                     if (hasCoords && p.lat != null && p.lng != null) {
-                      if (parseFloat(p.lat).toFixed(4) === latKey && parseFloat(p.lng).toFixed(4) === lngKey) return true;
+                      const pLat = parseFloat(p.lat), pLng = parseFloat(p.lng);
+                      if (!isNaN(pLat) && !isNaN(pLng) && (pLat !== 0 || pLng !== 0)) {
+                        if (distKm({ lat, lng }, { lat: pLat, lng: pLng }) < 0.12) return true;
+                      }
+                    }
+                    // Final fallback to the same-place helper used elsewhere in the app
+                    if (typeof isSamePlacePin === 'function') {
+                      try { if (isSamePlacePin(p, { id: 'tmp', ...data })) return true; } catch (e) {}
                     }
                     return false;
                   });
@@ -21039,15 +21076,43 @@
                 let addedCount = 0, mergedCount = 0;
                 let workingPins = [...pins];
                 const findDuplicate = (data) => {
-                  const nameKey = (data.name || '').trim().toLowerCase();
+                  // Same loosened match as the AddFromLink path — accepts diacritic / suffix /
+                  // hyphen variations and ~120m proximity so re-pasting an article doesn't dupe pins.
+                  const noiseWords = /\b(shrine|temple|jinja|jingu|taisha|cafe|restaurant|bar|hotel|museum|park|garden|market|the)\b/g;
+                  const norm = (s) => (s || '')
+                    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+                    .toLowerCase()
+                    .replace(/[^a-z0-9 ]/g, ' ')
+                    .replace(noiseWords, ' ')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                  const nameKey = norm(data.name);
+                  const rawNameKey = (data.name || '').trim().toLowerCase();
                   const lat = parseFloat(data.lat); const lng = parseFloat(data.lng);
                   const hasCoords = !isNaN(lat) && !isNaN(lng) && (lat !== 0 || lng !== 0);
-                  const latKey = hasCoords ? lat.toFixed(4) : null;
-                  const lngKey = hasCoords ? lng.toFixed(4) : null;
+                  const distKm = (a, b) => {
+                    const dLat = (a.lat - b.lat) * Math.PI / 180;
+                    const dLng = (a.lng - b.lng) * Math.PI / 180;
+                    const lat1 = a.lat * Math.PI / 180;
+                    const lat2 = b.lat * Math.PI / 180;
+                    const x = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+                    return 2 * 6371 * Math.asin(Math.sqrt(x));
+                  };
                   return workingPins.find(p => {
-                    if (nameKey && p.name && p.name.trim().toLowerCase() === nameKey) return true;
+                    if (!p || !p.name) return false;
+                    if (rawNameKey && p.name.trim().toLowerCase() === rawNameKey) return true;
+                    const pKey = norm(p.name);
+                    if (nameKey && pKey && nameKey === pKey) return true;
+                    if (nameKey && pKey && nameKey.length >= 5 && pKey.length >= 5 &&
+                        (pKey.includes(nameKey) || nameKey.includes(pKey))) return true;
                     if (hasCoords && p.lat != null && p.lng != null) {
-                      if (parseFloat(p.lat).toFixed(4) === latKey && parseFloat(p.lng).toFixed(4) === lngKey) return true;
+                      const pLat = parseFloat(p.lat), pLng = parseFloat(p.lng);
+                      if (!isNaN(pLat) && !isNaN(pLng) && (pLat !== 0 || pLng !== 0)) {
+                        if (distKm({ lat, lng }, { lat: pLat, lng: pLng }) < 0.12) return true;
+                      }
+                    }
+                    if (typeof isSamePlacePin === 'function') {
+                      try { if (isSamePlacePin(p, { id: 'tmp', ...data })) return true; } catch (e) {}
                     }
                     return false;
                   });
