@@ -450,7 +450,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v125';
+    const APP_VERSION = 'v127';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -2358,7 +2358,15 @@
       const closedBadge = openStatus && openStatus.status === 'permanently_closed'
         ? `<div style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);background:#ef4444;color:#fff;font-size:6px;font-weight:800;line-height:1;padding:1px 3px;border-radius:2px;white-space:nowrap;pointer-events:none;z-index:2;letter-spacing:0.3px;">CLOSED</div>`
         : '';
-      const needsWrapper = dateBadge || closedBadge;
+      // Veg-friendly badge — small green check on top-right of restaurant/cafe pins flagged is_vegetarian.
+      // Sized at ~22% of the 36px pin so it's a subtle visual cue, not a competing element.
+      const isVegFood = pin.is_vegetarian && (pin.category === 'restaurant' || pin.category === 'cafe');
+      const vegBadge = isVegFood
+        ? `<div style="position:absolute;top:-2px;right:-2px;width:14px;height:14px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.35);pointer-events:none;z-index:2;">
+             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+           </div>`
+        : '';
+      const needsWrapper = dateBadge || closedBadge || vegBadge;
       const wrapStyle = needsWrapper ? 'position:relative;' : wrapper;
       if (isCustomIcon(pin.emoji)) {
         return `<div style="${wrapStyle}"><div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};${closedBadge ? 'opacity:0.5;' : ''}"><img src="${pin.emoji}" style="width:20px;height:20px;border-radius:50%;object-fit:cover;" /></div>${dateBadge}${closedBadge}${groupBadge}</div>`;
@@ -4643,10 +4651,24 @@
                   {onFromPhoto && (
                     <button
                       onClick={() => { onFromPhoto(); setIsFocused(false); setQuery(''); }}
-                      className={`px-2.5 py-2.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm ${onFetchTabelog ? 'border-r dark:border-slate-600' : (showDropdown ? '' : 'rounded-r-full')}`}
+                      className="px-2.5 py-2.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm border-r dark:border-slate-600"
                       title="Add from photo"
                     >
                       📸
+                    </button>
+                  )}
+                  {onShareMap && (
+                    <button
+                      onClick={() => { onShareMap(); setIsFocused(false); setQuery(''); }}
+                      className={`px-2.5 py-2.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition flex items-center justify-center ${onFetchTabelog ? 'border-r dark:border-slate-600' : (showDropdown ? '' : 'rounded-r-full')}`}
+                      title="Share this map (copies link to clipboard)"
+                      aria-label="Share map"
+                    >
+                      {/* Paper-plane "send" icon — replaces the 📤 emoji which felt like an inbox */}
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                      </svg>
                     </button>
                   )}
                   {onFetchTabelog && (
@@ -4717,7 +4739,11 @@
                           className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-slate-700 transition border-t dark:border-slate-700"
                           onClick={() => { onShareMap(); setShowMoreMenu(false); setIsFocused(false); setQuery(''); }}
                         >
-                          <span className="text-base">📤</span>
+                          {/* Paper-plane icon (matching the desktop search bar's share button) */}
+                          <svg className="text-blue-500" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                          </svg>
                           <span>Share map</span>
                         </button>
                       )}
