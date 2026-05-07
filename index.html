@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v147';
+    const APP_VERSION = 'v148';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -14089,7 +14089,33 @@
           {sharedViewMode === 'trip' && sharedData.itinerary && (() => {
             const days = (sharedData.days || []).slice().sort((a, b) => (a.day_number || 0) - (b.day_number || 0));
             const items = sharedData.items || [];
-            const pinsById = new Map((sharedData.pins || []).map(p => [p.id, p]));
+            const allPins = sharedData.pins || [];
+            const pinsById = new Map(allPins.map(p => [p.id, p]));
+            // Look up the review for an item, falling back across same-place duplicates.
+            // Reservations and spots can both exist for the same place — the item is linked
+            // to one of them, but the review may live on the other. Pick whichever pin has a
+            // non-empty review so users don't see blanks for places they actually rated.
+            const findReviewForItem = (item) => {
+              // Item-level review wins outright if it has anything
+              if (item.personal_rating || item.personal_notes) {
+                return { rating: item.personal_rating || 0, notes: item.personal_notes || '' };
+              }
+              const directPin = item.pin_id ? pinsById.get(item.pin_id) : null;
+              const candidates = [];
+              if (directPin) {
+                candidates.push(directPin);
+                // Find any same-place pins (reservation/spot duplicates of the linked one)
+                allPins.forEach(p => {
+                  if (p.id !== directPin.id && isSamePlacePin(directPin, p)) candidates.push(p);
+                });
+              }
+              for (const c of candidates) {
+                if (c.personal_rating || c.personal_notes) {
+                  return { rating: c.personal_rating || 0, notes: c.personal_notes || '' };
+                }
+              }
+              return { rating: 0, notes: '' };
+            };
             const fmtDayDate = (iso) => {
               if (!iso) return '';
               try {
@@ -14144,12 +14170,11 @@
                       .filter(i => i.day_id === day.id)
                       // Skip unconfirmed options groups — recap only shows what was actually done
                       .filter(i => !(i.options && i.options.length >= 2 && !i.confirmed_option))
-                      // Apply star-rating filter (compares item rating OR linked pin rating)
+                      // Apply star-rating filter (uses cross-pin lookup so reservation/spot
+                      // duplicates resolve to the right rating no matter which one the item links)
                       .filter(i => {
                         if (!sharedTripMinStars) return true;
-                        const pin = i.pin_id ? pinsById.get(i.pin_id) : null;
-                        const r = i.personal_rating || pin?.personal_rating || 0;
-                        return r >= sharedTripMinStars;
+                        return findReviewForItem(i).rating >= sharedTripMinStars;
                       })
                       .sort((a, b) => {
                         const ta = a.scheduled_time || '';
@@ -14175,8 +14200,7 @@
                         <div className="divide-y dark:divide-slate-700">
                           {dayItems.map((item) => {
                             const pin = item.pin_id ? pinsById.get(item.pin_id) : null;
-                            const rating = item.personal_rating || pin?.personal_rating || 0;
-                            const notes = item.personal_notes || pin?.personal_notes || '';
+                            const { rating, notes } = findReviewForItem(item);
                             return (
                               <div key={item.id} className="px-5 py-3">
                                 <div className="flex items-start gap-3">
@@ -16808,16 +16832,28 @@
       if (!item) return null;
 
       const pin = item.pin_id ? pins.find(p => p.id === item.pin_id) : null;
+      // If the directly-linked pin has no review, fall back to a same-place duplicate
+      // (e.g. the spot pin when the item links the reservation pin, or vice-versa). This
+      // way the user doesn't see an empty rating UI for a place they already reviewed elsewhere.
+      const fallbackPin = (pin && !(pin.personal_rating || pin.personal_notes))
+        ? pins.find(p => p.id !== pin.id && isSamePlacePin(pin, p) && (p.personal_rating || p.personal_notes))
+        : null;
 
-      // Get current rating/notes — item-level overrides pin-level
-      const currentRating = reviews[item.id]?.rating ?? item.personal_rating ?? pin?.personal_rating ?? 0;
-      const currentNotes = reviews[item.id]?.notes ?? item.personal_notes ?? pin?.personal_notes ?? '';
+      // Get current rating/notes — item-level overrides pin-level, then duplicate
+      const currentRating = reviews[item.id]?.rating ?? item.personal_rating ?? pin?.personal_rating ?? fallbackPin?.personal_rating ?? 0;
+      const currentNotes = reviews[item.id]?.notes ?? item.personal_notes ?? pin?.personal_notes ?? fallbackPin?.personal_notes ?? '';
 
       const saveReview = (rating, notes) => {
         setReviews(prev => ({ ...prev, [item.id]: { rating, notes } }));
         // Save to pin if pin-linked, otherwise save to item
         if (pin) {
           onSavePinReview({ ...pin, personal_rating: rating, personal_notes: notes });
+          // Mirror to same-place duplicates (reservation/spot) so reviews stay unified.
+          pins.forEach(p => {
+            if (p.id !== pin.id && isSamePlacePin(pin, p)) {
+              onSavePinReview({ ...p, personal_rating: rating, personal_notes: notes });
+            }
+          });
         }
         // Always save to item too (for pinless items AND for recap export)
         onSaveItemReview({ ...item, personal_rating: rating, personal_notes: notes });
@@ -17219,9 +17255,19 @@
         });
         const lines = sortedItems.map(item => {
           const pin = item.pin_id ? pins.find(p => p.id === item.pin_id) : null;
+          // Walk same-place pins so reservation/spot duplicates resolve to the right review
+          let mergedRating = item.personal_rating || pin?.personal_rating || 0;
+          let mergedNotes = item.personal_notes || pin?.personal_notes || '';
+          if (pin && (!mergedRating && !mergedNotes)) {
+            const dupe = pins.find(p => p.id !== pin.id && isSamePlacePin(pin, p) && (p.personal_rating || p.personal_notes));
+            if (dupe) {
+              mergedRating = dupe.personal_rating || 0;
+              mergedNotes = dupe.personal_notes || '';
+            }
+          }
           let line = `- ${item.emoji} ${item.name}`;
-          const effectiveRating = item.personal_rating || pin?.personal_rating || 0;
-          const effectiveNotes = item.personal_notes || pin?.personal_notes || item.description || '';
+          const effectiveRating = mergedRating;
+          const effectiveNotes = mergedNotes || item.description || '';
           const notes = effectiveNotes;
           const rating = effectiveRating ? '⭐'.repeat(Math.floor(effectiveRating)) + (effectiveRating % 1 >= 0.5 ? '✨' : '') : '';
           if (rating || notes) {
@@ -21030,7 +21076,24 @@
         const lat = parseFloat(updatedPin.lat);
         const lng = parseFloat(updatedPin.lng);
         updatedPin = { ...updatedPin, lat: isNaN(lat) ? 0 : lat, lng: isNaN(lng) ? 0 : lng };
+        // Detect whether this save changed personal_rating or personal_notes — if so, we
+        // mirror those values to same-place duplicates (reservation↔spot pairs) so they
+        // can't drift apart again. Only fields that actually changed propagate, so saving
+        // an unrelated field (like notes-untouched-but-photos-edited) won't overwrite.
+        const prevPin = pins.find(p => p.id === updatedPin.id);
+        const ratingChanged = prevPin && prevPin.personal_rating !== updatedPin.personal_rating;
+        const notesChanged = prevPin && (prevPin.personal_notes || '') !== (updatedPin.personal_notes || '');
         MockFirebase.savePin(updatedPin);
+        if (ratingChanged || notesChanged) {
+          pins.forEach(p => {
+            if (p.id !== updatedPin.id && isSamePlacePin(updatedPin, p)) {
+              const synced = { ...p };
+              if (ratingChanged) synced.personal_rating = updatedPin.personal_rating;
+              if (notesChanged) synced.personal_notes = updatedPin.personal_notes;
+              MockFirebase.savePin(synced);
+            }
+          });
+        }
         setPins(prev => {
           const idx = prev.findIndex(p => p.id === updatedPin.id);
           if (idx > -1) return [...prev.slice(0, idx), updatedPin, ...prev.slice(idx + 1)];
