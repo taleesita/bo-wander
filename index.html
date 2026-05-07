@@ -104,18 +104,20 @@
     }
 
     @keyframes selected-pin-pulse {
-      0% { box-shadow: 0 0 0 4px rgba(59,130,246,0.7), 0 3px 10px rgba(0,0,0,0.4); }
-      50% { box-shadow: 0 0 0 12px rgba(59,130,246,0.2), 0 3px 10px rgba(0,0,0,0.4); }
-      100% { box-shadow: 0 0 0 4px rgba(59,130,246,0.7), 0 3px 10px rgba(0,0,0,0.4); }
+      /* Larger, more saturated pulsing ring so the selected pin stands out in a dense
+         cluster — previous 4-12px ring was too subtle to spot when many pins overlap. */
+      0%   { box-shadow: 0 0 0 5px rgba(37, 99, 235, 0.9), 0 0 0 10px rgba(37, 99, 235, 0.35), 0 4px 14px rgba(0,0,0,0.5); }
+      50%  { box-shadow: 0 0 0 8px rgba(37, 99, 235, 0.55), 0 0 0 22px rgba(37, 99, 235, 0.0), 0 4px 14px rgba(0,0,0,0.5); }
+      100% { box-shadow: 0 0 0 5px rgba(37, 99, 235, 0.9), 0 0 0 10px rgba(37, 99, 235, 0.35), 0 4px 14px rgba(0,0,0,0.5); }
     }
 
     .category-pin-selected {
-      width: 44px;
-      height: 44px;
-      font-size: 22px;
+      width: 48px;
+      height: 48px;
+      font-size: 24px;
       border: 3px solid white;
-      box-shadow: 0 0 0 4px rgba(59,130,246,0.7), 0 3px 10px rgba(0,0,0,0.4);
-      animation: selected-pin-pulse 1.5s ease-in-out infinite;
+      box-shadow: 0 0 0 5px rgba(37, 99, 235, 0.9), 0 0 0 10px rgba(37, 99, 235, 0.35), 0 4px 14px rgba(0,0,0,0.5);
+      animation: selected-pin-pulse 1.4s ease-in-out infinite;
       z-index: 9999 !important;
     }
 
@@ -450,7 +452,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v129';
+    const APP_VERSION = 'v131';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -2368,10 +2370,12 @@
         : '';
       const needsWrapper = dateBadge || closedBadge || vegBadge;
       const wrapStyle = needsWrapper ? 'position:relative;' : wrapper;
+      // BUG FIX: previously the returned HTML was missing `${vegBadge}` — the variable was
+      // computed but never interpolated, so the badge was being calculated and silently dropped.
       if (isCustomIcon(pin.emoji)) {
-        return `<div style="${wrapStyle}"><div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};${closedBadge ? 'opacity:0.5;' : ''}"><img src="${pin.emoji}" style="width:20px;height:20px;border-radius:50%;object-fit:cover;" /></div>${dateBadge}${closedBadge}${groupBadge}</div>`;
+        return `<div style="${wrapStyle}"><div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};${closedBadge ? 'opacity:0.5;' : ''}"><img src="${pin.emoji}" style="width:20px;height:20px;border-radius:50%;object-fit:cover;" /></div>${dateBadge}${closedBadge}${groupBadge}${vegBadge}</div>`;
       }
-      return `<div style="${wrapStyle}"><div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};${closedBadge ? 'opacity:0.5;' : ''}">${pin.emoji}</div>${dateBadge}${closedBadge}${groupBadge}</div>`;
+      return `<div style="${wrapStyle}"><div class="category-pin ${colorClass}" style="background-color: ${categoryData.color};${closedBadge ? 'opacity:0.5;' : ''}">${pin.emoji}</div>${dateBadge}${closedBadge}${groupBadge}${vegBadge}</div>`;
     };
 
     const dayName = (key) => {
@@ -12182,8 +12186,8 @@
           const colorClass = isSelected ? 'category-pin-selected' : '';
           const icon = L.divIcon({
             html: renderPinHtml(pin, categoryData, colorClass, group, travelDocs),
-            iconSize: [isSelected ? 44 : 36, isSelected ? 44 : 36],
-            iconAnchor: [isSelected ? 22 : 18, isSelected ? 22 : 18],
+            iconSize: [isSelected ? 48 : 36, isSelected ? 48 : 36],
+            iconAnchor: [isSelected ? 24 : 18, isSelected ? 24 : 18],
             className: 'category-marker'
           });
           try {
@@ -12324,8 +12328,8 @@
           const colorClass = isSelected ? 'category-pin-selected' : '';
           const icon = L.divIcon({
             html: renderPinHtml(pin, categoryData, colorClass, null, travelDocs),
-            iconSize: [isSelected ? 44 : 36, isSelected ? 44 : 36],
-            iconAnchor: [isSelected ? 22 : 18, isSelected ? 22 : 18],
+            iconSize: [isSelected ? 48 : 36, isSelected ? 48 : 36],
+            iconAnchor: [isSelected ? 24 : 18, isSelected ? 24 : 18],
             className: 'category-marker'
           });
           marker.setIcon(icon);
@@ -15837,17 +15841,13 @@
         }
       }, [ready, points, reorderMode, clickedOrder, isDarkMode]);
 
-      // Commit the user's tap-order. Items they tapped go in clicked order; items they
-      // didn't tap follow at the end in their existing order. Parent decides how to handle
-      // scheduled_time clearing.
+      // Commit the user's tap-order. We pass ONLY the explicitly-tapped IDs to the parent —
+      // items the user didn't tap aren't part of the reorder and shouldn't have their state
+      // touched. Parent's handleReorder reorders these and clears their times; untapped
+      // items keep both their scheduled_time and their relative position.
       const commitReorder = () => {
         if (!onReorder) return;
-        const orderableIds = points
-          .filter(p => !p.isHotel && !p.isExtraOption && p.itemId)
-          .map(p => p.itemId);
-        const trailing = orderableIds.filter(id => !clickedOrder.includes(id));
-        const finalOrder = [...clickedOrder, ...trailing];
-        onReorder(finalOrder);
+        onReorder(clickedOrder);
         setReorderMode(false);
         setClickedOrder([]);
       };
@@ -15922,6 +15922,15 @@
       const [idx, setIdx] = useState(0);
       const [reviews, setReviews] = useState({});
       const touchStart = useRef(null);
+      // Local time formatter — was previously referencing a `formatTime` defined inside
+      // ItineraryItemRow's scope, which crashed the rating flow with "Can't find variable: formatTime".
+      const formatTime = (t) => {
+        if (!t) return '';
+        const [h, m] = t.split(':');
+        const hr = parseInt(h);
+        const ampm = hr >= 12 ? 'PM' : 'AM';
+        return `${hr % 12 || 12}:${m} ${ampm}`;
+      };
 
       // Filter to real items only (no transit docs, no meal slots)
       const reviewable = items.filter(i => !i._isTransitDoc && !i._isMealSlot && !String(i.id).startsWith('transit-') && !String(i.id).startsWith('meal-slot-'));
@@ -16818,27 +16827,30 @@
                 if (allPts.length === 0) return null;
                 const dayNum = allDays ? allDays.findIndex(d => d.id === day.id) + 1 : '';
                 const dateLabel = day.date ? new Date(day.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : '';
-                // Apply tap-reorder: build a new items array for this day with new order_in_day.
-                // Items the user tapped go in clicked order; others trail in their existing order.
-                // Times are cleared on every reordered item EXCEPT those tied to a reservation (rd.time etc).
+                // Apply tap-reorder: ONLY items the user explicitly tapped are reordered.
+                // Their times are cleared (unless tied to a reservation). Items the user did
+                // NOT tap keep their existing scheduled_time AND their relative order — they
+                // weren't part of the reorder, so they shouldn't be touched.
                 const handleReorder = (orderedItemIds) => {
                   const dayItems = items.filter(i => i.day_id === day.id);
-                  const idToItem = new Map(dayItems.map(it => [it.id, it]));
-                  const ordered = [];
+                  const tappedSet = new Set(orderedItemIds);
+                  const result = [];
+                  // 1) Tapped items, in tap order, with time cleared (unless reservation)
                   orderedItemIds.forEach((id, idx) => {
-                    const it = idToItem.get(id);
+                    const it = dayItems.find(d => d.id === id);
                     if (!it) return;
                     const keepTime = itemHasReservationTime(it);
-                    ordered.push({ ...it, order_in_day: idx, scheduled_time: keepTime ? it.scheduled_time : null });
+                    result.push({ ...it, order_in_day: idx, scheduled_time: keepTime ? it.scheduled_time : null });
                   });
-                  // Items not in the click order (e.g. unscheduled trailing items) keep their existing relative order
-                  const usedIds = new Set(orderedItemIds);
-                  const trailing = dayItems.filter(i => !usedIds.has(i.id));
-                  trailing.forEach((it, i) => {
-                    const keepTime = itemHasReservationTime(it);
-                    ordered.push({ ...it, order_in_day: orderedItemIds.length + i, scheduled_time: keepTime ? it.scheduled_time : null });
+                  // 2) Untapped items: keep their scheduled_time and their relative order
+                  const untapped = dayItems
+                    .filter(i => !tappedSet.has(i.id))
+                    .sort((a, b) => (a.order_in_day || 0) - (b.order_in_day || 0));
+                  untapped.forEach((it, i) => {
+                    // Bump order_in_day so the slot is unique, but leave scheduled_time alone
+                    result.push({ ...it, order_in_day: orderedItemIds.length + i });
                   });
-                  if (onUpdateItems) onUpdateItems(ordered);
+                  if (onUpdateItems) onUpdateItems(result);
                 };
                 return (
                   <DayMiniMap
@@ -19608,46 +19620,57 @@
       useEffect(() => {
         let unsubPins = null;
         let unsubCollections = null;
+        let authorizedNow = false;
+
+        // The pins/collections snapshot handlers — extracted so we can re-attach them
+        // when the app comes back from background. iOS Safari (and some Android browsers)
+        // suspend JS while a tab is backgrounded, which can stall the WebSocket/long-poll
+        // that Firestore uses for snapshots — meaning real-time updates from another
+        // user (e.g. Doug saving a pin while we're in the background) silently never arrive.
+        const handlePinsSnapshot = (firestorePins) => {
+          const filtered = firestorePins.filter(p => !pendingDeletesRef.current.has(p.id));
+          registerMissingCategories(filtered);
+          const STALE_EMOJI_MAP = { '🧁': { category: 'treats', newEmoji: '🥐' } };
+          const toResave = [];
+          const fixed = filtered.map(pin => {
+            const rule = STALE_EMOJI_MAP[pin.emoji];
+            if (rule && pin.category === rule.category) {
+              const updated = { ...pin, emoji: rule.newEmoji };
+              toResave.push(updated);
+              return updated;
+            }
+            return pin;
+          });
+          const vegRe = /\b(vegetarian|vegan|plant[-\s]?based|meatless)\b/i;
+          fixed.forEach(pin => {
+            if (!pin.is_vegetarian && pin.description && vegRe.test(pin.description)) {
+              pin.is_vegetarian = true;
+              toResave.push(pin);
+            }
+          });
+          if (toResave.length > 0) {
+            toResave.forEach(p => { try { MockFirebase.savePin(p); } catch {} });
+          }
+          setPins(fixed);
+        };
+        const handleCollectionsSnapshot = (firestoreCols) => setCollections(firestoreCols);
+
+        const subscribe = () => {
+          if (!authorizedNow) return;
+          // Drop any existing subscriptions first so we don't end up with multiple listeners
+          if (unsubPins) { try { unsubPins(); } catch (e) {} }
+          if (unsubCollections) { try { unsubCollections(); } catch (e) {} }
+          unsubPins = MockFirebase.onPinsSnapshot(handlePinsSnapshot);
+          unsubCollections = MockFirebase.onCollectionsSnapshot(handleCollectionsSnapshot);
+        };
 
         MockFirebase.init().then(() => {
           const currentUser = MockFirebase.currentUser;
           setUser(currentUser);
           if (currentUser && ALLOWED_EMAILS.includes(currentUser.email)) {
             setAuthorized(true);
-            // Subscribe to real-time Firestore updates (pins sync between devices)
-            unsubPins = MockFirebase.onPinsSnapshot(firestorePins => {
-              // Filter out any pins that are pending deletion (prevents re-add flicker)
-              const filtered = firestorePins.filter(p => !pendingDeletesRef.current.has(p.id));
-              // Auto-register any categories from pins that aren't in the dropdown yet
-              registerMissingCategories(filtered);
-              // Fix stale emojis: if a pin's emoji doesn't match its category's current icon, update it
-              const STALE_EMOJI_MAP = { '🧁': { category: 'treats', newEmoji: '🥐' } };
-              const toResave = [];
-              const fixed = filtered.map(pin => {
-                const rule = STALE_EMOJI_MAP[pin.emoji];
-                if (rule && pin.category === rule.category) {
-                  const updated = { ...pin, emoji: rule.newEmoji };
-                  toResave.push(updated);
-                  return updated;
-                }
-                return pin;
-              });
-              // Auto-flag vegetarian/vegan from descriptions (one-time scan)
-              const vegRe = /\b(vegetarian|vegan|plant[-\s]?based|meatless)\b/i;
-              fixed.forEach(pin => {
-                if (!pin.is_vegetarian && pin.description && vegRe.test(pin.description)) {
-                  pin.is_vegetarian = true;
-                  toResave.push(pin);
-                }
-              });
-              if (toResave.length > 0) {
-                toResave.forEach(p => { try { MockFirebase.savePin(p); } catch {} });
-              }
-              setPins(fixed);
-            });
-            unsubCollections = MockFirebase.onCollectionsSnapshot(firestoreCols => {
-              setCollections(firestoreCols);
-            });
+            authorizedNow = true;
+            subscribe();
             // First-run seed: if Firestore has no collections, push the samples
             MockFirebase.loadCollections().then(cols => {
               if (cols === SAMPLE_COLLECTIONS || cols.length === 0) {
@@ -19657,6 +19680,16 @@
           }
           setLoading(false);
         });
+
+        // Re-subscribe whenever we come back to the foreground so we catch up on any
+        // updates we missed while suspended.
+        const onVisibleOrFocus = () => {
+          if (document.visibilityState === 'visible') subscribe();
+        };
+        document.addEventListener('visibilitychange', onVisibleOrFocus);
+        window.addEventListener('focus', onVisibleOrFocus);
+        // Also re-subscribe when the network reconnects after being offline.
+        window.addEventListener('online', subscribe);
 
         const darkMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
         const handleChange = (e) => setDarkMode(e.matches);
@@ -19668,6 +19701,9 @@
         return () => {
           darkMediaQuery.removeEventListener('change', handleChange);
           window.removeEventListener('resize', handleResize);
+          document.removeEventListener('visibilitychange', onVisibleOrFocus);
+          window.removeEventListener('focus', onVisibleOrFocus);
+          window.removeEventListener('online', subscribe);
           if (unsubPins) unsubPins();
           if (unsubCollections) unsubCollections();
         };
