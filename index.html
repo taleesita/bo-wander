@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v134';
+    const APP_VERSION = 'v139';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -1645,7 +1645,7 @@
       },
 
       // ---- Sharing ----
-      async shareCollection(collectionId, collectionData, pins) {
+      async shareCollection(collectionId, collectionData, pins, itineraryBundle) {
         // Create/update a shared snapshot — strip large data (photos, base64) for size
         // Strip undefined values — Firestore rejects them
         const clean = (obj) => JSON.parse(JSON.stringify(obj));
@@ -1671,6 +1671,30 @@
           updated_at: new Date().toISOString(),
           created_at: new Date().toISOString(),
         };
+        // Optional itinerary bundle — when provided, the share view can render a "trip recap"
+        // tab with days/items, ratings, and personal notes.
+        if (itineraryBundle && itineraryBundle.itinerary) {
+          shareDoc.itinerary = clean({
+            id: itineraryBundle.itinerary.id || '',
+            name: itineraryBundle.itinerary.name || '',
+            start_date: itineraryBundle.itinerary.start_date || '',
+            end_date: itineraryBundle.itinerary.end_date || '',
+          });
+          shareDoc.days = (itineraryBundle.days || []).map(d => clean({
+            id: d.id || '', day_number: d.day_number || 0, date: d.date || '',
+            location: d.location || '', start_time: d.start_time || '', notes: d.notes || '',
+          }));
+          shareDoc.items = (itineraryBundle.items || []).map(i => clean({
+            id: i.id || '', day_id: i.day_id || '', order_in_day: i.order_in_day || 0,
+            type: i.type || 'pin', pin_id: i.pin_id || '',
+            name: i.name || '', emoji: i.emoji || '📍',
+            scheduled_time: i.scheduled_time || '',
+            estimated_duration_minutes: i.estimated_duration_minutes || null,
+            description: i.description || '',
+            options: i.options || null, confirmed_option: i.confirmed_option || null,
+            personal_rating: i.personal_rating || null, personal_notes: i.personal_notes || '',
+          }));
+        }
         // Use collection ID as the share doc ID for simplicity
         await db.collection('shared_maps').doc(collectionId).set(shareDoc, { merge: true });
         return collectionId;
@@ -12076,12 +12100,18 @@
         };
       }, []);
 
-      // Pan/fly to a location when requested externally (e.g. from place search)
+      // Pan/fly to a location when requested externally (e.g. from place search).
+      // BUG FIX: this used to default to zoom 15 when the caller didn't specify a zoom,
+      // which silently zoomed the user OUT if they were zoomed in further (e.g. street level
+      // 17 → forced back to 15). Many callers fire setMapPanTarget without an explicit zoom
+      // (search-add, KML import, fly-from-itinerary, etc.) — those should pan ONLY and leave
+      // the user's current zoom alone. We only override zoom when the caller explicitly asked.
       useEffect(() => {
         const map = mapInstanceRef.current;
-        console.log('[BoWander Map] panTo effect:', panTo, 'map exists:', !!map);
         if (!map || !panTo) return;
-        safeFlyTo(map, [panTo.lat, panTo.lng], panTo.zoom || 15, { duration: 0.8 });
+        const currentZoom = map.getZoom();
+        const targetZoom = panTo.zoom != null ? panTo.zoom : currentZoom;
+        safeFlyTo(map, [panTo.lat, panTo.lng], targetZoom, { duration: 0.8 });
       }, [panTo]);
 
       // Show/hide preview pin (temporary marker while adding a place)
@@ -13226,6 +13256,13 @@
                 onClick={() => setSharedViewMode('list')}
                 className={`px-3 py-1 rounded text-xs font-medium transition ${sharedViewMode === 'list' ? 'bg-white dark:bg-slate-600 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}
               >List</button>
+              {/* Trip recap tab — only when the share doc actually carries an itinerary */}
+              {sharedData.itinerary && Array.isArray(sharedData.days) && sharedData.days.length > 0 && (
+                <button
+                  onClick={() => setSharedViewMode('trip')}
+                  className={`px-3 py-1 rounded text-xs font-medium transition ${sharedViewMode === 'trip' ? 'bg-white dark:bg-slate-600 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}
+                >Trip</button>
+              )}
             </div>
           </div>
 
@@ -13680,6 +13717,111 @@
               )}
             </div>
           )}
+
+          {/* TRIP RECAP VIEW — pretty card-based day-by-day breakdown */}
+          {sharedViewMode === 'trip' && sharedData.itinerary && (() => {
+            const days = (sharedData.days || []).slice().sort((a, b) => (a.day_number || 0) - (b.day_number || 0));
+            const items = sharedData.items || [];
+            const pinsById = new Map((sharedData.pins || []).map(p => [p.id, p]));
+            const fmtDayDate = (iso) => {
+              if (!iso) return '';
+              try {
+                const d = new Date(iso + 'T12:00:00');
+                return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+              } catch (e) { return iso; }
+            };
+            const fmtT = (t) => {
+              if (!t) return '';
+              const [h, m] = t.split(':');
+              const hr = parseInt(h);
+              return `${hr % 12 || 12}:${m} ${hr >= 12 ? 'PM' : 'AM'}`;
+            };
+            const ratingStars = (r) => {
+              if (!r) return null;
+              const full = Math.floor(r);
+              const half = r % 1 >= 0.5 ? 1 : 0;
+              return '★'.repeat(full) + (half ? '½' : '');
+            };
+            return (
+              <div className="flex-1 overflow-y-auto p-4 md:p-6" style={{ minHeight: 0 }}>
+                <div className="max-w-2xl mx-auto space-y-6">
+                  {/* Trip header */}
+                  <div className="text-center pb-2">
+                    <div className="text-3xl mb-1">{sharedData.collection_emoji || '🗺️'}</div>
+                    <h2 className="text-2xl font-bold dark:text-white">{sharedData.collection_name}</h2>
+                    {sharedData.itinerary?.start_date && sharedData.itinerary?.end_date && (
+                      <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                        {fmtDayDate(sharedData.itinerary.start_date)} → {fmtDayDate(sharedData.itinerary.end_date)}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Day cards — minimal recap: emoji, name, rating, notes. No times,
+                      no addresses, options groups skipped (only the picks/single items render). */}
+                  {days.map((day, di) => {
+                    const dayItems = items
+                      .filter(i => i.day_id === day.id)
+                      // Skip unconfirmed options groups — recap only shows what was actually done
+                      .filter(i => !(i.options && i.options.length >= 2 && !i.confirmed_option))
+                      .sort((a, b) => {
+                        const ta = a.scheduled_time || '';
+                        const tb = b.scheduled_time || '';
+                        if (ta && tb) return ta.localeCompare(tb);
+                        if (ta) return -1;
+                        if (tb) return 1;
+                        return (a.order_in_day || 0) - (b.order_in_day || 0);
+                      });
+                    if (dayItems.length === 0) return null;
+                    return (
+                      <div key={day.id} className="bg-white dark:bg-slate-800 rounded-2xl shadow-md overflow-hidden border dark:border-slate-700">
+                        {/* Day header */}
+                        <div className="px-5 py-3 bg-gradient-to-r from-blue-500 to-purple-500 text-white">
+                          <div className="flex items-baseline justify-between">
+                            <span className="text-xs font-semibold tracking-wider uppercase opacity-80">Day {day.day_number || (di + 1)}</span>
+                            <span className="text-xs opacity-80">{dayItems.length} stop{dayItems.length === 1 ? '' : 's'}</span>
+                          </div>
+                          <h3 className="text-lg font-bold">{fmtDayDate(day.date)}</h3>
+                          {day.location && <p className="text-sm opacity-90">{day.location}</p>}
+                        </div>
+                        {/* Items list — name + rating + notes only */}
+                        <div className="divide-y dark:divide-slate-700">
+                          {dayItems.map((item) => {
+                            const pin = item.pin_id ? pinsById.get(item.pin_id) : null;
+                            const rating = item.personal_rating || pin?.personal_rating || 0;
+                            const notes = item.personal_notes || pin?.personal_notes || '';
+                            return (
+                              <div key={item.id} className="px-5 py-3">
+                                <div className="flex items-start gap-3">
+                                  <div className="text-2xl flex-shrink-0 leading-none mt-0.5">{item.emoji || pin?.emoji || '📌'}</div>
+                                  <div className="flex-1 min-w-0">
+                                    <h4 className="font-semibold dark:text-white">{item.name || pin?.name || 'Untitled'}</h4>
+                                    {rating > 0 && (
+                                      <div className="text-xs mt-0.5 text-purple-600 dark:text-purple-400 font-medium">
+                                        {ratingStars(rating)}
+                                      </div>
+                                    )}
+                                    {notes && (
+                                      <p className="text-sm text-gray-600 dark:text-gray-300 mt-1 italic leading-snug">"{notes}"</p>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {days.filter(d => items.some(i => i.day_id === d.id)).length === 0 && (
+                    <div className="text-center py-12 text-gray-400 dark:text-gray-500">
+                      <p className="text-sm">This trip's itinerary hasn't been built out yet.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       );
     };
@@ -14600,7 +14742,7 @@
     };
 
     // ---- ItineraryItemForm (add/edit modal) ----
-    const ItineraryItemForm = ({ item, pins, onSave, onClose, isDarkMode, onCreatePin }) => {
+    const ItineraryItemForm = ({ item, pins, onSave, onClose, isDarkMode, onCreatePin, days, onMoveToDay }) => {
       const [type, setType] = useState(item?.type || 'pin');
       const [selectedPinId, setSelectedPinId] = useState(item?.pin_id || '');
       const [name, setName] = useState(item?.name || '');
@@ -14690,11 +14832,55 @@
 
       let filteredPins;
       if (pinSearch) {
-        // Diacritic-insensitive match: NFD-decompose then strip combining marks so
-        // "todai" matches "Tōdai-ji", "okonomiyaki" matches "Ōkonomiyaki", etc.
+        // Diacritic-insensitive match plus a typo-tolerant fallback. Without fuzz, "ashimiji"
+        // wouldn't find "Ashijima" (one swapped letter); now we accept either an exact
+        // normalized substring hit OR an approximate contiguous match (roughly Levenshtein <=2
+        // for short queries, scaled with length).
         const stripDiacritics = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-        const q = stripDiacritics(pinSearch);
-        filteredPins = pins.filter(p => stripDiacritics(p.name).includes(q));
+        const q = stripDiacritics(pinSearch).trim();
+        if (q.length === 0) {
+          filteredPins = pins;
+        } else {
+          // Cheap Levenshtein for short strings (<= 30 chars). Used for fuzzy fallback only,
+          // so we don't blow up on long names. Returns Infinity if either side too long.
+          const lev = (a, b) => {
+            if (a.length > 30 || b.length > 30) return Infinity;
+            if (a === b) return 0;
+            const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+            for (let j = 1; j <= b.length; j++) dp[0][j] = j;
+            for (let i = 1; i <= a.length; i++) {
+              for (let j = 1; j <= b.length; j++) {
+                dp[i][j] = Math.min(
+                  dp[i - 1][j] + 1,
+                  dp[i][j - 1] + 1,
+                  dp[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)
+                );
+              }
+            }
+            return dp[a.length][b.length];
+          };
+          // Allow ~1 typo per 4 query chars, capped at 3 for longer queries
+          const tolerance = q.length <= 4 ? 1 : Math.min(3, Math.floor(q.length / 4));
+          filteredPins = pins.filter(p => {
+            const name = stripDiacritics(p.name);
+            if (name.includes(q)) return true;
+            // Fuzzy fallback: slide q-length window across the name and check edit distance
+            if (q.length < 3) return false;
+            const wlen = q.length;
+            for (let i = 0; i + wlen <= name.length; i++) {
+              if (lev(q, name.substring(i, i + wlen)) <= tolerance) return true;
+            }
+            // Also try slightly longer/shorter windows for transposed-letter typos
+            for (const dw of [-1, 1]) {
+              const w = wlen + dw;
+              if (w < 2) continue;
+              for (let i = 0; i + w <= name.length; i++) {
+                if (lev(q, name.substring(i, i + w)) <= tolerance) return true;
+              }
+            }
+            return false;
+          });
+        }
       } else if (mealMode && mealMode.length > 0) {
         // Filter to food-relevant categories or pins with matching meal tags
         const foodCats = new Set([...mealMode, 'restaurant', 'cafe', 'treats', 'bar']);
@@ -15195,6 +15381,25 @@
                 </div>
               )}
 
+              {/* Move to day — only when editing an existing item that's already attached to a day. */}
+              {item && item.id && item.day_id && Array.isArray(days) && days.length > 1 && onMoveToDay && (
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Day</label>
+                  <select
+                    value={item.day_id}
+                    onChange={e => { if (e.target.value !== item.day_id) onMoveToDay(item, e.target.value); }}
+                    className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
+                  >
+                    {days.map((d, i) => (
+                      <option key={d.id} value={d.id}>
+                        D{i + 1} · {d.date ? new Date(d.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : `Day ${i + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">Picking a different day moves this item there immediately.</p>
+                </div>
+              )}
+
               {/* Time + Duration */}
               <div className="grid grid-cols-2 gap-3">
                 <div style={{ minWidth: 0 }}>
@@ -15232,7 +15437,7 @@
     };
 
     // ---- Single Itinerary Item Row ----
-    const ItineraryItemRow = ({ item, index, isDarkMode, onEdit, onDelete, onDragStart, onDragOver, onDrop, isDragTarget, transitInfo, onFlyTo, autoTime, onMoveUp, onMoveDown, isFirst, isLast, onAddMeal, matchedDoc, onViewDoc, onSelectPin, closedWarning, allPins }) => {
+    const ItineraryItemRow = ({ item, index, isDarkMode, onEdit, onDelete, onDragStart, onDragOver, onDrop, isDragTarget, transitInfo, onFlyTo, autoTime, onMoveUp, onMoveDown, isFirst, isLast, onAddMeal, matchedDoc, onViewDoc, onSelectPin, closedWarning, allPins, dayDate }) => {
       const [confirmDelete, setConfirmDelete] = useState(false);
       const [editingOptionsGroup, setEditingOptionsGroup] = useState(null);
       const [optionsGroupSearch, setOptionsGroupSearch] = useState('');
@@ -15349,7 +15554,18 @@
             {editingOptionsGroup === item.id && (
               <div className="mt-1 mb-1 space-y-1.5">
                 <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">Time</label>
+                  <label className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0 w-10">Name</label>
+                  <input
+                    type="text"
+                    value={item.name || ''}
+                    onChange={(e) => onEdit({ ...item, name: e.target.value, _skipForm: true })}
+                    placeholder="e.g. Dinner, Coffee stops"
+                    className="flex-1 min-w-0 px-2 py-1 text-sm rounded border border-amber-300 dark:border-amber-700 bg-white dark:bg-slate-800 dark:text-white focus:outline-none focus:ring-1 focus:ring-amber-400"
+                    style={{ minHeight: 34 }}
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0 w-10">Time</label>
                   <input
                     type="time"
                     value={item.scheduled_time || ''}
@@ -15395,11 +15611,14 @@
             )}
             {item.options.map((opt, oi) => {
               // Look up the linked pin's opening hours so we can flag closed options.
-              // Match item.scheduled_time when set, otherwise check "right now".
+              // Use the ITEM'S DAY (dayDate) — was incorrectly using "today", which made
+              // tomorrow's items show "Closed" if the place was closed today but open tomorrow.
               const optPin = opt.pin_id ? (allPins || []).find(p => p.id === opt.pin_id) : null;
               let optClosedLabel = null;
               if (optPin?.opening_hours && Object.keys(optPin.opening_hours).length > 0) {
-                let checkDate = new Date();
+                // Anchor to the item's day at noon, then override the hours with the item's
+                // scheduled_time. Falls back to today if dayDate isn't available.
+                let checkDate = dayDate ? new Date(dayDate + 'T12:00:00') : new Date();
                 if (item.scheduled_time && /^\d{2}:\d{2}$/.test(item.scheduled_time)) {
                   const [h, m] = item.scheduled_time.split(':').map(Number);
                   checkDate.setHours(h || 12, m || 0, 0, 0);
@@ -15632,7 +15851,9 @@
     // - onPinClick(pinId): tap a pin (route or off-itinerary) to open its detail sheet
     // - offItineraryPins: pins from the same collection that aren't on this day —
     //   shown as faded dots when the user toggles "Show other pins" in the header.
-    const DayMiniMap = ({ points, isDarkMode, dayLabel, onClose, onReorder, onPinClick, offItineraryPins }) => {
+    // - userLocation: { lat, lng } supplied from App-level state so we don't re-prompt
+    //   for geolocation permission the user already granted to the main map.
+    const DayMiniMap = ({ points, isDarkMode, dayLabel, onClose, onReorder, onPinClick, offItineraryPins, userLocation }) => {
       const mapContainerRef = useRef(null);
       const mapRef = useRef(null);
       // Track markers/polylines so we can clear them between renders without destroying the map.
@@ -15647,6 +15868,12 @@
       const [clickedOrder, setClickedOrder] = useState([]); // array of item ids in click order
       // When on, render the rest of the collection's pins as faded markers (clickable, no labels).
       const [showOffItinerary, setShowOffItinerary] = useState(false);
+      // Sub-toggle: when "Show others" is on, optionally hide ones that aren't currently open.
+      const [othersOpenNowOnly, setOthersOpenNowOnly] = useState(false);
+      // GPS location for the "you are here" dot. Sourced from the App-level watcher so we
+      // don't re-prompt for permission when the user already granted it for the main map.
+      const userPos = userLocation;
+      const userMarkerRef = useRef(null);
 
       // Wait for DOM to settle before initializing Leaflet
       useEffect(() => {
@@ -15771,7 +15998,17 @@
         // Render off-itinerary pins (collection pins NOT linked to today's items) when toggled on.
         // These are deliberately small, faded, no name labels (the map is busy enough). Tap opens detail.
         if (showOffItinerary && !reorderMode && Array.isArray(offItineraryPins)) {
-          offItineraryPins.forEach((p) => {
+          // Sub-toggle: hide pins that aren't currently open. Hotels/activities are exempt
+          // (always shown — their hours don't drive the "useful right now" decision).
+          const filteredOthers = othersOpenNowOnly
+            ? offItineraryPins.filter(p => {
+                if (p.category === 'hotel' || p.category === 'activity') return true;
+                if (!p.opening_hours || Object.keys(p.opening_hours).length === 0) return true;
+                const status = (typeof getOpenStatus === 'function') ? getOpenStatus(p.opening_hours) : { status: 'open' };
+                return status.status === 'open';
+              })
+            : offItineraryPins;
+          filteredOthers.forEach((p) => {
             if (!p.lat || !p.lng) return;
             const offSize = 18;
             const offIcon = window.L.divIcon({
@@ -15883,7 +16120,29 @@
             }
           }, 300);
         }
-      }, [ready, points, reorderMode, clickedOrder, isDarkMode, showOffItinerary, offItineraryPins]);
+      }, [ready, points, reorderMode, clickedOrder, isDarkMode, showOffItinerary, offItineraryPins, othersOpenNowOnly]);
+
+      // Effect 3 — keep the "you are here" blue dot in sync. Separate from the markers
+      // effect so frequent GPS updates don't churn the route markers/polylines.
+      useEffect(() => {
+        if (!ready || !mapRef.current || !window.L) return;
+        const map = mapRef.current;
+        if (!userPos || !isFinite(userPos.lat) || !isFinite(userPos.lng)) {
+          if (userMarkerRef.current) { try { map.removeLayer(userMarkerRef.current); } catch (e) {} userMarkerRef.current = null; }
+          return;
+        }
+        // Reuses the existing `location-pulse` keyframe defined at the top of the stylesheet.
+        const html = `<div style="position:relative;width:18px;height:18px;">
+          <div style="position:absolute;inset:2px;border-radius:50%;background:rgba(66,133,244,0.55);animation:location-pulse 2s ease-out infinite;"></div>
+          <div style="position:absolute;inset:3px;border-radius:50%;background:#4285F4;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.45);"></div>
+        </div>`;
+        const icon = window.L.divIcon({ className: 'bw-userdot', html, iconSize: [18, 18], iconAnchor: [9, 9] });
+        if (userMarkerRef.current) {
+          try { userMarkerRef.current.setLatLng([userPos.lat, userPos.lng]); userMarkerRef.current.setIcon(icon); } catch (e) {}
+        } else {
+          userMarkerRef.current = window.L.marker([userPos.lat, userPos.lng], { icon, zIndexOffset: 5000, interactive: false }).addTo(map);
+        }
+      }, [ready, userPos]);
 
       // Commit the user's tap-order. We pass ONLY the explicitly-tapped IDs to the parent —
       // items the user didn't tap aren't part of the reorder and shouldn't have their state
@@ -15920,6 +16179,15 @@
                     title={showOffItinerary ? 'Hide other pins' : 'Show other pins from this map'}
                   >
                     {showOffItinerary ? '○ Hide others' : '○ Show others'}
+                  </button>
+                )}
+                {!reorderMode && showOffItinerary && (
+                  <button
+                    onClick={() => setOthersOpenNowOnly(v => !v)}
+                    className={`text-xs px-2 py-1 rounded-md transition ${othersOpenNowOnly ? 'bg-green-500 text-white hover:bg-green-600' : (isDarkMode ? 'bg-slate-700 text-gray-200 hover:bg-slate-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300')}`}
+                    title={othersOpenNowOnly ? 'Showing only open-now pins — tap to show all' : 'Filter others to currently open'}
+                  >
+                    {othersOpenNowOnly ? '🟢 Open now' : '⚪ All hours'}
                   </button>
                 )}
                 {!reorderMode && onReorder && reorderableCount >= 2 && (
@@ -16107,7 +16375,7 @@
     // "show off-itinerary pins" toggle inside the day map).
     // onSelectPinFromMap fires when the user taps a pin inside the day map — bubbles up
     // to App so it can open the pin detail sheet and remember which day map to return to.
-    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, onSelectPin, transitError, onRecalcTransit, weather, weatherCodeMap, weatherLocation, onWeatherLocationChange, allHotels, dayDocs, allDays, onSwapDays, onMoveAllToDay, onReviewDay, showMiniMap, setShowMiniMap, collectionPins, onSelectPinFromMap }) => {
+    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, onSelectPin, transitError, onRecalcTransit, weather, weatherCodeMap, weatherLocation, onWeatherLocationChange, allHotels, dayDocs, allDays, onSwapDays, onMoveAllToDay, onReviewDay, showMiniMap, setShowMiniMap, collectionPins, onSelectPinFromMap, userLocation }) => {
       const [dragItemId, setDragItemId] = useState(null);
       const [dragOverIndex, setDragOverIndex] = useState(null);
       const [showStartPicker, setShowStartPicker] = useState(false);
@@ -16736,6 +17004,7 @@
                   onMoveUp={() => { if (idx > 0) handleDrop(idx - 1, item.id, idx); }}
                   onMoveDown={() => { if (idx < allSorted.length - 1) handleDrop(idx + 1, item.id, idx); }}
                   allPins={pins}
+                  dayDate={day.date}
                   onAddMeal={item._isMealSlot ? (meal) => {
                     // Find anchor location near the meal time
                     // Include transit docs — for trains/flights, use destination pin's location
@@ -16929,6 +17198,7 @@
                       if (onSelectPinFromMap) onSelectPinFromMap(pinId);
                     }}
                     offItineraryPins={offItineraryPins}
+                    userLocation={userLocation}
                   />
                 );
               })()}
@@ -17758,11 +18028,18 @@
     };
 
 
-        const ItineraryPlanner = ({ pins, collections, activeCollection, isDarkMode, isMobile, onFlyTo, onClose, pendingAddPin, onClearPendingAdd, onSelectPinFromItinerary, onSelectPinFromDayMap, pendingDayMapId, onConsumePendingDayMap }) => {
+        const ItineraryPlanner = ({ pins, collections, activeCollection, isDarkMode, isMobile, onFlyTo, onClose, pendingAddPin, onClearPendingAdd, onSelectPinFromItinerary, onSelectPinFromDayMap, pendingDayMapId, onConsumePendingDayMap, userLocation, onItineraryChanged }) => {
       const [itineraries, setItineraries] = useState([]);
       const [activeItinerary, setActiveItinerary] = useState(null);
       const [days, setDays] = useState([]);
       const [items, setItems] = useState([]);
+      // Ping the App whenever items or days change so it can debounce-refresh shared maps.
+      // Skips the initial load so we don't trigger a refresh just for opening the planner.
+      const itinFirstRenderRef = React.useRef(true);
+      useEffect(() => {
+        if (itinFirstRenderRef.current) { itinFirstRenderRef.current = false; return; }
+        if (typeof onItineraryChanged === 'function') onItineraryChanged();
+      }, [items, days]);
       const [loading, setLoading] = useState(true);
       const [expandedDays, setExpandedDays] = useState({});
       const todayDayRef = React.useRef(null);
@@ -17815,9 +18092,11 @@
           }
           const cRect = container.getBoundingClientRect();
           const relTop = container.scrollTop + (btnRect.top - cRect.top);
-          // Center target in container, clamped to the actual scrollable range.
+          // Put today's row near the TOP of the visible area (not centered) — the user wants
+          // today to be the first thing they see, with future days easy to access below it.
+          // Tiny 4px breathing room above so it's not flush against the container edge.
           const maxScroll = container.scrollHeight - container.clientHeight;
-          const desired = Math.max(0, Math.min(maxScroll, relTop - (container.clientHeight / 2) + (btnRect.height / 2)));
+          const desired = Math.max(0, Math.min(maxScroll, relTop - 4));
           container.scrollTop = desired;
         };
         // Wait for two paint frames so the modal's layout is settled, then start trying.
@@ -18995,6 +19274,7 @@
                   onSelectPinFromMap={(pinId) => {
                     if (onSelectPinFromDayMap) onSelectPinFromDayMap(pinId, day.id);
                   }}
+                  userLocation={userLocation}
                 />
                 </div>
               );})}
@@ -19015,6 +19295,15 @@
               item={editingItem.id || editingItem.__mealCategories ? editingItem : null}
               pins={collectionPins}
               onSave={handleSaveItem}
+              days={days}
+              onMoveToDay={(item, newDayId) => {
+                if (!item || !item.id || !newDayId || newDayId === item.day_id) return;
+                const newOrder = items.filter(i => i.day_id === newDayId).length;
+                const moved = { ...item, day_id: newDayId, order_in_day: newOrder };
+                setItems(prev => prev.map(i => i.id === item.id ? moved : i));
+                MockFirebase.saveItems([moved]);
+                setEditingItem(null); setAddingToDay(null);
+              }}
               onClose={() => { setEditingItem(null); setAddingToDay(null); }}
               isDarkMode={isDarkMode}
               onCreatePin={(pinData) => {
@@ -19681,6 +19970,70 @@
       // One-shot signal to the ItineraryPlanner: "open this day's mini map on next render"
       // (used when the user taps Back to map view).
       const [pendingDayMapId, setPendingDayMapId] = useState(null);
+      // Track which collections the user has shared so we can auto-refresh the share doc
+      // when pins/itinerary change. Persisted in localStorage so the auto-refresh survives
+      // reloads. Add on share, remove on unshare.
+      const sharedColIdsRef = useRef(new Set());
+      useEffect(() => {
+        try {
+          const saved = JSON.parse(localStorage.getItem('boWanderSharedCols') || '[]');
+          sharedColIdsRef.current = new Set(saved);
+        } catch (e) {}
+      }, []);
+      const persistSharedCols = () => {
+        try { localStorage.setItem('boWanderSharedCols', JSON.stringify([...sharedColIdsRef.current])); } catch (e) {}
+      };
+      // A monotonic counter ItineraryPlanner can bump whenever it writes days/items so the
+      // auto-refresh effect picks it up without needing to lift items/days into App state.
+      const [itinChangeRev, setItinChangeRev] = useState(0);
+      // Single source of truth for the user's GPS position. Shared across MapView and the
+      // day mini map so we don't re-prompt for permission per component.
+      const [userLocation, setUserLocation] = useState(null); // { lat, lng, accuracy }
+      useEffect(() => {
+        if (typeof navigator === 'undefined' || !navigator.geolocation) return;
+        let watchId = null;
+        try {
+          watchId = navigator.geolocation.watchPosition(
+            (pos) => setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy }),
+            () => { /* permission denied / unavailable — silently leave userLocation null */ },
+            { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
+          );
+        } catch (e) { /* ignore */ }
+        return () => { if (watchId != null) try { navigator.geolocation.clearWatch(watchId); } catch (e) {} };
+      }, []);
+
+      // Auto-refresh shared map(s) when pins or itinerary content change. Without this,
+      // a deleted pin would still show on the public share link until the user manually
+      // re-tapped Share.
+      const refreshOneShare = async (colId) => {
+        const col = collections.find(c => c.id === colId);
+        if (!col) return;
+        const colPins = pins.filter(p => p.collection_id === colId);
+        let itineraryBundle = null;
+        try {
+          const itins = await MockFirebase.loadItineraries(colId);
+          const activeItin = (itins || []).find(i => i.is_active) || (itins || [])[0];
+          if (activeItin) {
+            const [_days, _items] = await Promise.all([
+              MockFirebase.loadDays(activeItin.id),
+              MockFirebase.loadItems(activeItin.id),
+            ]);
+            itineraryBundle = { itinerary: activeItin, days: _days || [], items: _items || [] };
+          }
+        } catch (e) {}
+        try { await MockFirebase.shareCollection(colId, col, colPins, itineraryBundle); }
+        catch (e) { console.warn('Auto-refresh share failed for', colId, e); }
+      };
+      const refreshSharesTimerRef = useRef(null);
+      useEffect(() => {
+        if (sharedColIdsRef.current.size === 0) return;
+        if (refreshSharesTimerRef.current) clearTimeout(refreshSharesTimerRef.current);
+        // Debounce so rapid edits don't hammer Firestore
+        refreshSharesTimerRef.current = setTimeout(() => {
+          sharedColIdsRef.current.forEach(colId => { refreshOneShare(colId); });
+        }, 3000);
+        return () => { if (refreshSharesTimerRef.current) clearTimeout(refreshSharesTimerRef.current); };
+      }, [pins, collections, itinChangeRev]);
       // Helper: select a pin and auto-detect its same-place group
       const selectPinWithGroup = (pin, group) => {
         if (group && group.length > 1) {
@@ -20812,7 +21165,23 @@
                 const colPins = pins.filter(p => p.collection_id === activeCollection);
                 const url = `${window.location.origin}${window.location.pathname}#shared/${activeCollection}`;
                 try {
-                  await MockFirebase.shareCollection(activeCollection, col, colPins);
+                  // Bundle the active itinerary so the share view can render the trip recap.
+                  let itineraryBundle = null;
+                  try {
+                    const itins = await MockFirebase.loadItineraries(activeCollection);
+                    const activeItin = (itins || []).find(i => i.is_active) || (itins || [])[0];
+                    if (activeItin) {
+                      const [_days, _items] = await Promise.all([
+                        MockFirebase.loadDays(activeItin.id),
+                        MockFirebase.loadItems(activeItin.id),
+                      ]);
+                      itineraryBundle = { itinerary: activeItin, days: _days || [], items: _items || [] };
+                    }
+                  } catch (e) { console.warn('Itinerary bundle for share failed:', e); }
+                  await MockFirebase.shareCollection(activeCollection, col, colPins, itineraryBundle);
+                  // Remember this collection is shared so future edits auto-refresh the share doc.
+                  sharedColIdsRef.current.add(activeCollection);
+                  persistSharedCols();
                 } catch (e) {
                   console.error('Share write failed:', e);
                   showToast('Failed to save share data: ' + (e.message || e), 'error');
@@ -20914,7 +21283,23 @@
                     if (!col) return;
                     const colPins = pins.filter(p => p.collection_id === activeCollection);
                     try {
-                      await MockFirebase.shareCollection(activeCollection, col, colPins);
+                      // Bundle the active itinerary so the share view can render the trip recap.
+                  let itineraryBundle = null;
+                  try {
+                    const itins = await MockFirebase.loadItineraries(activeCollection);
+                    const activeItin = (itins || []).find(i => i.is_active) || (itins || [])[0];
+                    if (activeItin) {
+                      const [_days, _items] = await Promise.all([
+                        MockFirebase.loadDays(activeItin.id),
+                        MockFirebase.loadItems(activeItin.id),
+                      ]);
+                      itineraryBundle = { itinerary: activeItin, days: _days || [], items: _items || [] };
+                    }
+                  } catch (e) { console.warn('Itinerary bundle for share failed:', e); }
+                  await MockFirebase.shareCollection(activeCollection, col, colPins, itineraryBundle);
+                  // Remember this collection is shared so future edits auto-refresh the share doc.
+                  sharedColIdsRef.current.add(activeCollection);
+                  persistSharedCols();
                       const url = `${window.location.origin}${window.location.pathname}#shared/${activeCollection}`;
                       await navigator.clipboard.writeText(url);
                       showToast('Share link copied to clipboard!');
@@ -21312,17 +21697,35 @@
                   };
                   return workingPins.find(p => {
                     if (!p || !p.name) return false;
+                    // 1) Exact raw name match (case+trim) — same place, no question
                     if (rawNameKey && p.name.trim().toLowerCase() === rawNameKey) return true;
                     const pKey = norm(p.name);
+                    // 2) Normalized name exact match (after stripping diacritics + suffixes) — same place
                     if (nameKey && pKey && nameKey === pKey) return true;
-                    if (nameKey && pKey && nameKey.length >= 5 && pKey.length >= 5 &&
-                        (pKey.includes(nameKey) || nameKey.includes(pKey))) return true;
-                    if (hasCoords && p.lat != null && p.lng != null) {
-                      const pLat = parseFloat(p.lat), pLng = parseFloat(p.lng);
-                      if (!isNaN(pLat) && !isNaN(pLng) && (pLat !== 0 || pLng !== 0)) {
-                        if (distKm({ lat, lng }, { lat: pLat, lng: pLng }) < 0.12) return true;
-                      }
+                    // 3) Substring containment — only if also within ~300m. Without proximity guard,
+                    //    two unrelated places sharing a noise-stripped substring (e.g. two
+                    //    "Kawamichiya" restaurants) were getting falsely merged across town.
+                    let pLat, pLng, pHasCoords = false;
+                    if (p.lat != null && p.lng != null) {
+                      pLat = parseFloat(p.lat); pLng = parseFloat(p.lng);
+                      pHasCoords = !isNaN(pLat) && !isNaN(pLng) && (pLat !== 0 || pLng !== 0);
                     }
+                    if (nameKey && pKey && nameKey.length >= 5 && pKey.length >= 5 &&
+                        (pKey.includes(nameKey) || nameKey.includes(pKey)) &&
+                        hasCoords && pHasCoords && distKm({ lat, lng }, { lat: pLat, lng: pLng }) < 0.3) {
+                      return true;
+                    }
+                    // 4) Tight coordinate match (~30m) AND at least some name overlap (one shared
+                    //    significant token of length 4+) — catches re-imports of the same place
+                    //    where the API returned slightly different lat/lng but the same address.
+                    if (hasCoords && pHasCoords && distKm({ lat, lng }, { lat: pLat, lng: pLng }) < 0.03) {
+                      const tokensA = new Set(nameKey.split(' ').filter(t => t.length >= 4));
+                      const tokensB = new Set(pKey.split(' ').filter(t => t.length >= 4));
+                      let shared = false;
+                      tokensA.forEach(t => { if (tokensB.has(t)) shared = true; });
+                      if (shared) return true;
+                    }
+                    // 5) Same-place helper — handles the spot+booking pair pattern explicitly
                     if (typeof isSamePlacePin === 'function') {
                       try { if (isSamePlacePin(p, { id: 'tmp', ...data })) return true; } catch (e) {}
                     }
@@ -21511,6 +21914,8 @@
               }}
               pendingDayMapId={pendingDayMapId}
               onConsumePendingDayMap={() => setPendingDayMapId(null)}
+              userLocation={userLocation}
+              onItineraryChanged={() => setItinChangeRev(r => r + 1)}
             />
           )}
 
@@ -21642,7 +22047,23 @@
                   if (!col) return;
                   const colPins = pins.filter(p => p.collection_id === activeCollection);
                   try {
-                    await MockFirebase.shareCollection(activeCollection, col, colPins);
+                    // Bundle the active itinerary so the share view can render the trip recap.
+                  let itineraryBundle = null;
+                  try {
+                    const itins = await MockFirebase.loadItineraries(activeCollection);
+                    const activeItin = (itins || []).find(i => i.is_active) || (itins || [])[0];
+                    if (activeItin) {
+                      const [_days, _items] = await Promise.all([
+                        MockFirebase.loadDays(activeItin.id),
+                        MockFirebase.loadItems(activeItin.id),
+                      ]);
+                      itineraryBundle = { itinerary: activeItin, days: _days || [], items: _items || [] };
+                    }
+                  } catch (e) { console.warn('Itinerary bundle for share failed:', e); }
+                  await MockFirebase.shareCollection(activeCollection, col, colPins, itineraryBundle);
+                  // Remember this collection is shared so future edits auto-refresh the share doc.
+                  sharedColIdsRef.current.add(activeCollection);
+                  persistSharedCols();
                     const url = `${window.location.origin}${window.location.pathname}#shared/${activeCollection}`;
                     if (navigator.share) {
                       await navigator.share({ title: `Bo Wander - ${col.name}`, text: `Check out my ${col.name} map on Bo Wander`, url });
