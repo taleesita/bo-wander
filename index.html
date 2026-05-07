@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v139';
+    const APP_VERSION = 'v140';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -1716,6 +1716,34 @@
           console.warn('Shared map load failed:', e);
         }
         return null;
+      },
+
+      // ===== WALKING PATHS CRUD =====
+      // User-drawn freehand paths on a collection's map. Each path is a sequence of
+      // {lat, lng} waypoints; we cache OSRM-fetched polyline segments alongside so we
+      // don't re-fetch on every render.
+      async saveWalkingPath(path) {
+        const data = { ...path, updated_at: new Date().toISOString() };
+        if (!data.created_at) data.created_at = data.updated_at;
+        if (!data.id) data.id = Date.now().toString();
+        try { await db.collection('walking_paths').doc(data.id).set(data, { merge: true }); }
+        catch (e) { console.warn('[walking_paths] save failed:', e); }
+        return data;
+      },
+      async deleteWalkingPath(pathId) {
+        try { await db.collection('walking_paths').doc(pathId).delete(); }
+        catch (e) { console.warn('[walking_paths] delete failed:', e); }
+      },
+      onWalkingPathsSnapshot(collectionId, callback) {
+        try {
+          return db.collection('walking_paths')
+            .where('collection_id', '==', collectionId)
+            .onSnapshot(snap => {
+              const paths = [];
+              snap.forEach(d => paths.push({ id: d.id, ...d.data() }));
+              callback(paths);
+            }, err => console.warn('[walking_paths] snapshot error:', err));
+        } catch (e) { console.warn('[walking_paths] subscribe failed:', e); return () => {}; }
       },
 
       // ===== TRAVEL DOCS CRUD =====
@@ -11939,7 +11967,7 @@
       );
     };
 
-    const MapView = ({ pins, selectedPin, onSelectPin, isDarkMode, onNavigate, sidebarWidth = 0, collectionName, onMapCenterChange, panTo, previewPin, travelDocs = [], openNowFilter, onToggleOpenNow }) => {
+    const MapView = ({ pins, selectedPin, onSelectPin, isDarkMode, onNavigate, sidebarWidth = 0, collectionName, onMapCenterChange, panTo, previewPin, travelDocs = [], openNowFilter, onToggleOpenNow, walkingPaths = [], pathDraft, onAddWaypoint }) => {
       const mapRef = useRef(null);
       const mapInstanceRef = useRef(null);
       const tileLayerRef = useRef(null);
@@ -12099,6 +12127,79 @@
           mapInstanceRef.current = null;
         };
       }, []);
+
+      // ===== Walking-path drawing mode =====
+      // While pathDraft is non-null, every map click adds a waypoint via onAddWaypoint.
+      // The click handler is detached when drawing mode ends so it doesn't intercept normal taps.
+      useEffect(() => {
+        const map = mapInstanceRef.current;
+        if (!map) return;
+        if (!pathDraft || typeof onAddWaypoint !== 'function') return;
+        const onMapClick = (e) => {
+          const lat = e.latlng?.lat, lng = e.latlng?.lng;
+          if (typeof lat !== 'number' || typeof lng !== 'number') return;
+          onAddWaypoint(lat, lng);
+        };
+        map.on('click', onMapClick);
+        // Crosshair cursor signals draw mode without us building a custom one
+        try { map.getContainer().style.cursor = 'crosshair'; } catch (e) {}
+        return () => {
+          try { map.off('click', onMapClick); } catch (e) {}
+          try { map.getContainer().style.cursor = ''; } catch (e) {}
+        };
+      }, [pathDraft, onAddWaypoint]);
+
+      // ===== Render walking paths (saved + in-progress draft) =====
+      const pathLayersRef = useRef([]);
+      useEffect(() => {
+        const map = mapInstanceRef.current;
+        if (!map || !window.L) return;
+        // Wipe previous path layers
+        pathLayersRef.current.forEach(layer => { try { map.removeLayer(layer); } catch (e) {} });
+        pathLayersRef.current = [];
+
+        const drawPath = (pathObj, opts = {}) => {
+          const wps = (pathObj && pathObj.waypoints) || [];
+          if (wps.length < 1) return;
+          const color = pathObj.color || '#8b5cf6';
+          // Cached polylines (one per segment) — if missing or insufficient, fall back to straight lines
+          const segs = Array.isArray(pathObj.polyline_segments) ? pathObj.polyline_segments : [];
+          for (let i = 1; i < wps.length; i++) {
+            const enc = segs[i - 1];
+            let coords = null;
+            if (enc) {
+              try { coords = decodePolyline(enc); } catch (e) {}
+            }
+            if (!coords || coords.length < 2) {
+              coords = [[wps[i - 1].lat, wps[i - 1].lng], [wps[i].lat, wps[i].lng]];
+            }
+            const layer = window.L.polyline(coords, {
+              color, weight: opts.draft ? 4 : 4.5, opacity: opts.draft ? 0.55 : 0.85,
+              dashArray: enc ? null : '6,5', // dashed when we couldn't fetch a routed polyline
+              lineCap: 'round', lineJoin: 'round', interactive: false,
+            }).addTo(map);
+            pathLayersRef.current.push(layer);
+          }
+          // Small dot for each waypoint (helps see what you've placed in draft mode)
+          wps.forEach((wp, i) => {
+            const isFirst = i === 0;
+            const isLast = i === wps.length - 1;
+            const dotSize = opts.draft ? 12 : 8;
+            const dot = window.L.circleMarker([wp.lat, wp.lng], {
+              radius: opts.draft ? 6 : 4,
+              color: '#fff',
+              weight: 2,
+              fillColor: color,
+              fillOpacity: 1,
+              interactive: false,
+            }).addTo(map);
+            pathLayersRef.current.push(dot);
+          });
+        };
+
+        (walkingPaths || []).forEach(p => drawPath(p, { draft: false }));
+        if (pathDraft) drawPath(pathDraft, { draft: true });
+      }, [walkingPaths, pathDraft]);
 
       // Pan/fly to a location when requested externally (e.g. from place search).
       // BUG FIX: this used to default to zoom 15 when the caller didn't specify a zoom,
@@ -12484,7 +12585,7 @@
       );
     };
 
-    const ListView = ({ pins, collections, onSelectPin, isDarkMode, onEdit, onDelete, filters: filtersProp, setFilters: setFiltersProp }) => {
+    const ListView = ({ pins, collections, onSelectPin, isDarkMode, onEdit, onDelete, filters: filtersProp, setFilters: setFiltersProp, walkingPaths, onStartPathDraw, onDeleteWalkingPath, onFlyToPath }) => {
       const [sortBy, setSortBy] = useState('name');
       const [expandedCategories, setExpandedCategories] = useState({});
       // Allow filters to be controlled from parent (so the map can use the same filter set)
@@ -12831,6 +12932,54 @@
               )}
             </div>
           </div>
+
+          {/* Walking Paths section — appears above categories so the entry point is obvious */}
+          {(onStartPathDraw || (Array.isArray(walkingPaths) && walkingPaths.length > 0)) && (
+            <div className="border-b dark:border-slate-700">
+              <div className={`px-4 py-2 flex items-center justify-between ${isDarkMode ? 'bg-slate-800' : 'bg-gray-50'}`}>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm">🚶</span>
+                  <div className="text-xs font-semibold dark:text-white">
+                    Walking paths
+                    {Array.isArray(walkingPaths) && walkingPaths.length > 0 && (
+                      <span className="text-gray-500 dark:text-gray-400 font-normal"> ({walkingPaths.length})</span>
+                    )}
+                  </div>
+                </div>
+                {onStartPathDraw && (
+                  <button
+                    onClick={onStartPathDraw}
+                    className="text-[11px] px-2 py-0.5 rounded-full bg-purple-500 text-white hover:bg-purple-600 transition font-medium"
+                  >+ New</button>
+                )}
+              </div>
+              {Array.isArray(walkingPaths) && walkingPaths.length > 0 && (
+                <div className="divide-y dark:divide-slate-700">
+                  {walkingPaths.map(p => (
+                    <div key={p.id} className="px-4 py-2 flex items-center gap-3 hover:bg-gray-50 dark:hover:bg-slate-800 transition">
+                      <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ background: p.color || '#8b5cf6' }} />
+                      <button
+                        onClick={() => onFlyToPath && onFlyToPath(p)}
+                        className="flex-1 min-w-0 text-left"
+                      >
+                        <div className="text-sm font-medium dark:text-white truncate">{p.name || 'Untitled path'}</div>
+                        <div className="text-[10px] text-gray-500 dark:text-gray-400">{(p.waypoints || []).length} pts</div>
+                      </button>
+                      {onDeleteWalkingPath && (
+                        <button
+                          onClick={() => onDeleteWalkingPath(p.id)}
+                          className="p-1.5 hover:bg-red-100 dark:hover:bg-red-900/30 rounded text-gray-400 hover:text-red-500 transition"
+                          title="Delete path"
+                        >
+                          <TrashIcon />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Grouped List */}
           {categories.length === 0 ? (
@@ -19989,6 +20138,14 @@
       // Single source of truth for the user's GPS position. Shared across MapView and the
       // day mini map so we don't re-prompt for permission per component.
       const [userLocation, setUserLocation] = useState(null); // { lat, lng, accuracy }
+      // ===== Walking paths =====
+      // Persistent drawn paths for the active collection. Subscribed via Firestore so edits sync.
+      const [walkingPaths, setWalkingPaths] = useState([]);
+      // When non-null, the App is in tap-to-draw mode and the map intercepts clicks to
+      // append waypoints. Holds an in-progress draft: { name, color, waypoints: [...] }
+      const [pathDraft, setPathDraft] = useState(null);
+      // Auto-assigned color palette for new paths (cycles by current count).
+      const PATH_COLORS = ['#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#22c55e', '#eab308', '#ef4444'];
       useEffect(() => {
         if (typeof navigator === 'undefined' || !navigator.geolocation) return;
         let watchId = null;
@@ -20158,6 +20315,13 @@
       useEffect(() => {
         if (!activeCollection || activeCollection === 'all') { setTravelDocs([]); return; }
         const unsub = MockFirebase.onTravelDocsSnapshot?.(activeCollection, docs => setTravelDocs(docs || []));
+        return () => { if (unsub) unsub(); };
+      }, [activeCollection]);
+
+      // Subscribe to walking paths for the active collection.
+      useEffect(() => {
+        if (!activeCollection || activeCollection === 'all') { setWalkingPaths([]); return; }
+        const unsub = MockFirebase.onWalkingPathsSnapshot?.(activeCollection, paths => setWalkingPaths(paths || []));
         return () => { if (unsub) unsub(); };
       }, [activeCollection]);
 
@@ -21332,6 +21496,26 @@
                     onDelete={handleDeletePin}
                     filters={listFilters}
                     setFilters={setListFilters}
+                    walkingPaths={walkingPaths}
+                    onStartPathDraw={() => {
+                      // Enter tap-to-draw mode with an empty draft. Auto-pick the next color.
+                      const color = PATH_COLORS[walkingPaths.length % PATH_COLORS.length];
+                      const name = `Walking path ${walkingPaths.length + 1}`;
+                      setPathDraft({ name, color, waypoints: [] });
+                      setShowList(false); // close list overlay so the map is tappable
+                    }}
+                    onDeleteWalkingPath={async (id) => {
+                      if (!confirm('Delete this walking path?')) return;
+                      try { await MockFirebase.deleteWalkingPath(id); }
+                      catch (e) { showToast('Delete failed', 'error'); }
+                    }}
+                    onFlyToPath={(p) => {
+                      const wps = p.waypoints || [];
+                      if (wps.length === 0) return;
+                      const lat = wps.reduce((s, w) => s + w.lat, 0) / wps.length;
+                      const lng = wps.reduce((s, w) => s + w.lng, 0) / wps.length;
+                      setMapPanTarget({ lat, lng, zoom: 16, _t: Date.now() });
+                    }}
                   />
                 </div>
               )}
@@ -21352,6 +21536,9 @@
                   travelDocs={travelDocs}
                   openNowFilter={listFilters.openNow}
                   onToggleOpenNow={() => setListFilters(f => ({ ...f, openNow: !f.openNow, openAt: f.openNow ? f.openAt : null }))}
+                  walkingPaths={walkingPaths}
+                  pathDraft={pathDraft}
+                  onAddWaypoint={(lat, lng) => setPathDraft(d => d ? { ...d, waypoints: [...(d.waypoints || []), { lat, lng }] } : d)}
                 />
               </div>
 
@@ -21788,6 +21975,78 @@
               onClose={() => setShowPasteText(false)}
               isDarkMode={darkMode}
             />
+          )}
+
+          {/* Walking-path drawing panel — floats above the map while in tap-to-draw mode */}
+          {pathDraft && (
+            <div className="fixed left-1/2 -translate-x-1/2 bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border dark:border-slate-700 p-3 flex items-center gap-2 flex-wrap"
+                 style={{ zIndex: 9990, top: 80, maxWidth: 'calc(100vw - 24px)' }}>
+              <div className="flex items-center gap-2 flex-1 min-w-0">
+                <span className="text-lg">🚶</span>
+                <input
+                  type="text"
+                  value={pathDraft.name}
+                  onChange={e => setPathDraft(d => ({ ...d, name: e.target.value }))}
+                  placeholder="Walking path name"
+                  className="flex-1 min-w-0 px-2 py-1 text-sm border rounded dark:bg-slate-700 dark:border-slate-600 dark:text-white focus:outline-none focus:ring-1 focus:ring-purple-400"
+                  style={{ minWidth: 120 }}
+                />
+                <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                  {pathDraft.waypoints.length} pt{pathDraft.waypoints.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <button
+                  onClick={() => setPathDraft(d => d && d.waypoints.length > 0 ? { ...d, waypoints: d.waypoints.slice(0, -1) } : d)}
+                  disabled={pathDraft.waypoints.length === 0}
+                  className={`text-xs px-2 py-1.5 rounded transition ${pathDraft.waypoints.length === 0 ? 'opacity-40 cursor-not-allowed' : 'bg-gray-100 dark:bg-slate-700 hover:bg-gray-200 dark:hover:bg-slate-600 text-gray-700 dark:text-gray-200'}`}
+                  title="Remove last point"
+                >↶ Undo</button>
+                <button
+                  onClick={() => setPathDraft(null)}
+                  className="text-xs px-2 py-1.5 rounded bg-gray-100 dark:bg-slate-700 hover:bg-gray-200 dark:hover:bg-slate-600 text-gray-700 dark:text-gray-200 transition"
+                >Cancel</button>
+                <button
+                  onClick={async () => {
+                    if (!pathDraft || pathDraft.waypoints.length < 2) {
+                      showToast('Add at least 2 points to save a path', 'error');
+                      return;
+                    }
+                    const draft = pathDraft;
+                    setPathDraft(null);
+                    showToast('Saving walking path…');
+                    // Fetch routed polylines (OSRM, free, no API key) for each segment.
+                    // Falls back to straight lines if OSRM is unreachable.
+                    const segs = [];
+                    for (let i = 1; i < draft.waypoints.length; i++) {
+                      const a = draft.waypoints[i - 1], b = draft.waypoints[i];
+                      try {
+                        const url = `https://router.project-osrm.org/route/v1/foot/${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=polyline`;
+                        const resp = await fetch(url);
+                        if (resp.ok) {
+                          const data = await resp.json();
+                          const poly = data.routes?.[0]?.geometry || '';
+                          segs.push(poly);
+                          continue;
+                        }
+                      } catch (e) { /* fall through to empty segment */ }
+                      segs.push(''); // empty = renderer will draw a dashed straight line
+                    }
+                    const saved = {
+                      id: Date.now().toString(),
+                      collection_id: activeCollection,
+                      name: (draft.name || '').trim() || `Walking path ${walkingPaths.length + 1}`,
+                      color: draft.color || PATH_COLORS[walkingPaths.length % PATH_COLORS.length],
+                      waypoints: draft.waypoints,
+                      polyline_segments: segs,
+                    };
+                    try { await MockFirebase.saveWalkingPath(saved); showToast('Walking path saved'); }
+                    catch (e) { showToast('Save failed: ' + (e.message || e), 'error'); }
+                  }}
+                  className="text-xs px-3 py-1.5 rounded bg-purple-500 text-white hover:bg-purple-600 transition font-medium"
+                >Save</button>
+              </div>
+            </div>
           )}
 
           {/* Toast Notification */}
