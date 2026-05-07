@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v144';
+    const APP_VERSION = 'v145';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -21704,7 +21704,7 @@
                   travelDocs={travelDocs}
                   openNowFilter={listFilters.openNow}
                   onToggleOpenNow={() => setListFilters(f => ({ ...f, openNow: !f.openNow, openAt: f.openNow ? f.openAt : null }))}
-                  walkingPaths={pathDraft?.editingId ? walkingPaths.filter(p => p.id !== pathDraft.editingId) : walkingPaths}
+                  walkingPaths={walkingPaths}
                   pathDraft={pathDraft}
                   onAddWaypoint={(lat, lng) => setPathDraft(d => d ? { ...d, waypoints: [...(d.waypoints || []), { lat, lng }] } : d)}
                 />
