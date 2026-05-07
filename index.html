@@ -104,20 +104,21 @@
     }
 
     @keyframes selected-pin-pulse {
-      /* Larger, more saturated pulsing ring so the selected pin stands out in a dense
-         cluster — previous 4-12px ring was too subtle to spot when many pins overlap. */
-      0%   { box-shadow: 0 0 0 5px rgba(37, 99, 235, 0.9), 0 0 0 10px rgba(37, 99, 235, 0.35), 0 4px 14px rgba(0,0,0,0.5); }
-      50%  { box-shadow: 0 0 0 8px rgba(37, 99, 235, 0.55), 0 0 0 22px rgba(37, 99, 235, 0.0), 0 4px 14px rgba(0,0,0,0.5); }
-      100% { box-shadow: 0 0 0 5px rgba(37, 99, 235, 0.9), 0 0 0 10px rgba(37, 99, 235, 0.35), 0 4px 14px rgba(0,0,0,0.5); }
+      /* Two-ring pulse: a tight bright inner ring + a wider faded halo that breathes outward.
+         The big halo (up to 28px) makes the selected pin clearly the focal point even in a
+         packed cluster — previously a smaller ring was getting lost in the overlap. */
+      0%   { box-shadow: 0 0 0 6px rgba(37, 99, 235, 1), 0 0 0 12px rgba(37, 99, 235, 0.45), 0 4px 16px rgba(0,0,0,0.55); }
+      50%  { box-shadow: 0 0 0 9px rgba(37, 99, 235, 0.7), 0 0 0 28px rgba(37, 99, 235, 0.0), 0 4px 16px rgba(0,0,0,0.55); }
+      100% { box-shadow: 0 0 0 6px rgba(37, 99, 235, 1), 0 0 0 12px rgba(37, 99, 235, 0.45), 0 4px 16px rgba(0,0,0,0.55); }
     }
 
     .category-pin-selected {
-      width: 48px;
-      height: 48px;
-      font-size: 24px;
+      width: 52px;
+      height: 52px;
+      font-size: 26px;
       border: 3px solid white;
-      box-shadow: 0 0 0 5px rgba(37, 99, 235, 0.9), 0 0 0 10px rgba(37, 99, 235, 0.35), 0 4px 14px rgba(0,0,0,0.5);
-      animation: selected-pin-pulse 1.4s ease-in-out infinite;
+      box-shadow: 0 0 0 6px rgba(37, 99, 235, 1), 0 0 0 12px rgba(37, 99, 235, 0.45), 0 4px 16px rgba(0,0,0,0.55);
+      animation: selected-pin-pulse 1.3s ease-in-out infinite;
       z-index: 9999 !important;
     }
 
@@ -452,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v132';
+    const APP_VERSION = 'v134';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -2360,12 +2361,14 @@
       const closedBadge = openStatus && openStatus.status === 'permanently_closed'
         ? `<div style="position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);background:#ef4444;color:#fff;font-size:6px;font-weight:800;line-height:1;padding:1px 3px;border-radius:2px;white-space:nowrap;pointer-events:none;z-index:2;letter-spacing:0.3px;">CLOSED</div>`
         : '';
-      // Veg-friendly badge — small green check on top-right of restaurant/cafe pins flagged is_vegetarian.
-      // Sized at ~22% of the 36px pin so it's a subtle visual cue, not a competing element.
+      // Veg-friendly badge — leafy green V/check on top-right of restaurant/cafe pins flagged is_vegetarian.
+      // Transparent background (no enclosing circle), small drop shadow so it reads on light AND dark map tiles.
       const isVegFood = pin.is_vegetarian && (pin.category === 'restaurant' || pin.category === 'cafe');
       const vegBadge = isVegFood
-        ? `<div style="position:absolute;top:-2px;right:-2px;width:14px;height:14px;background:#10b981;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.35);pointer-events:none;z-index:2;">
-             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        ? `<div style="position:absolute;top:-3px;right:-4px;width:16px;height:16px;pointer-events:none;z-index:2;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,0.45));">
+             <svg viewBox="0 0 24 24" width="16" height="16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+               <path d="M3 11 C5.5 14.5, 8 18, 11.5 22 C 13.5 17, 16.5 11, 22 2 C 17 8.5, 14 13, 11.5 17 C 9 14, 6 12, 3 11 Z" fill="#22c55e" stroke="#14532d" stroke-width="0.4" stroke-linejoin="round"/>
+             </svg>
            </div>`
         : '';
       const needsWrapper = dateBadge || closedBadge || vegBadge;
@@ -12195,8 +12198,8 @@
           const colorClass = isSelected ? 'category-pin-selected' : '';
           const icon = L.divIcon({
             html: renderPinHtml(pin, categoryData, colorClass, group, travelDocs),
-            iconSize: [isSelected ? 48 : 36, isSelected ? 48 : 36],
-            iconAnchor: [isSelected ? 24 : 18, isSelected ? 24 : 18],
+            iconSize: [isSelected ? 52 : 36, isSelected ? 52 : 36],
+            iconAnchor: [isSelected ? 26 : 18, isSelected ? 26 : 18],
             className: 'category-marker'
           });
           try {
@@ -12337,8 +12340,8 @@
           const colorClass = isSelected ? 'category-pin-selected' : '';
           const icon = L.divIcon({
             html: renderPinHtml(pin, categoryData, colorClass, null, travelDocs),
-            iconSize: [isSelected ? 48 : 36, isSelected ? 48 : 36],
-            iconAnchor: [isSelected ? 24 : 18, isSelected ? 24 : 18],
+            iconSize: [isSelected ? 52 : 36, isSelected ? 52 : 36],
+            iconAnchor: [isSelected ? 26 : 18, isSelected ? 26 : 18],
             className: 'category-marker'
           });
           marker.setIcon(icon);
@@ -12353,7 +12356,9 @@
             const sLat = parseFloat(selectedPin.lat);
             const sLng = parseFloat(selectedPin.lng);
             // Offset the center so the pin appears in the visible map area (left of sidebar)
-            const targetZoom = Math.max(map.getZoom(), 14);
+            // Zoom in to street level (16) when selecting a pin so it's clearly the
+            // focal pin. Was 14 before — that left the pin lost in dense clusters.
+            const targetZoom = Math.max(map.getZoom(), 16);
             if (sidebarWidth > 0) {
               try {
                 const size = map.getSize();
