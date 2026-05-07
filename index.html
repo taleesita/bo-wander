@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v146';
+    const APP_VERSION = 'v147';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -15446,7 +15446,12 @@
         let lat = formLat || item?.lat || 0, lng = formLng || item?.lng || 0;
         let finalName = name;
         let finalEmoji = emoji;
-        if (type === 'pin' && selectedPinId) {
+        // A walking-path selection (from the dedicated Path tab OR from a path match in the
+        // Pin-tab search results) overrides everything: the saved item is type='walking_path'
+        // even if the active tab is still 'pin'. This keeps Pin-tab search results "just work"
+        // without forcing the tab to jump under the user.
+        const effectiveType = (selectedPathId && (type === 'walking_path' || type === 'pin')) ? 'walking_path' : type;
+        if (effectiveType === 'pin' && selectedPinId) {
           const pin = pins.find(p => p.id === selectedPinId);
           if (pin) {
             lat = pin.lat || lat; lng = pin.lng || lng;
@@ -15454,7 +15459,7 @@
             finalEmoji = pin.emoji || finalEmoji;
           }
         }
-        if (type === 'walking_path') {
+        if (effectiveType === 'walking_path') {
           if (!selectedPathId) return; // must pick a path
           const path = walkingPaths.find(p => p.id === selectedPathId);
           if (path) {
@@ -15472,9 +15477,9 @@
         onSave({
           ...base,
           id: item?.id || generateId(),
-          type,
-          pin_id: type === 'pin' ? selectedPinId : null,
-          walking_path_id: type === 'walking_path' ? selectedPathId : null,
+          type: effectiveType,
+          pin_id: effectiveType === 'pin' ? selectedPinId : null,
+          walking_path_id: effectiveType === 'walking_path' ? selectedPathId : null,
           name: finalName.trim(), emoji: finalEmoji,
           scheduled_time: scheduledTime,
           estimated_duration_minutes: duration === '' ? 0 : (parseInt(duration) || 0),
@@ -15570,6 +15575,43 @@
                     </div>
                   )}
                   <div className="max-h-56 overflow-y-auto space-y-1 border rounded-lg dark:border-slate-700 p-1">
+                    {/* Walking-path matches — surfaced inline so users don't need to switch tabs.
+                        Hidden in meal mode (food-only context). Match against name + description. */}
+                    {!mealMode && pinSearch.trim() && (() => {
+                      const stripD = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+                      const q = stripD(pinSearch).trim();
+                      if (!q) return null;
+                      const matches = (walkingPaths || []).filter(p => {
+                        const hay = stripD(`${p.name || ''} ${p.description || ''}`);
+                        return hay.includes(q);
+                      });
+                      if (matches.length === 0) return null;
+                      return matches.map(p => (
+                        <button key={`path-${p.id}`}
+                          onClick={() => {
+                            // Keep the Pin tab active visually — selectedPathId is the signal
+                            // that handleSave should route through the walking-path branch
+                            // (so the user doesn't get jolted to a different tab).
+                            setSelectedPathId(p.id);
+                            setSelectedPinId('');
+                            setName(p.name || 'Walking path');
+                            setEmoji('🚶');
+                            setDescription(prev => prev || p.description || '');
+                            const wps = p.waypoints || [];
+                            if (wps.length > 0) {
+                              const lat = wps.reduce((s, w) => s + w.lat, 0) / wps.length;
+                              const lng = wps.reduce((s, w) => s + w.lng, 0) / wps.length;
+                              setFormLat(lat); setFormLng(lng);
+                            }
+                          }}
+                          className={`w-full text-left px-2 py-1.5 rounded text-sm flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-slate-700 ${selectedPathId === p.id ? 'bg-purple-50 dark:bg-purple-900/30 ring-1 ring-purple-400' : ''}`}>
+                          <span className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: p.color || '#8b5cf6' }} />
+                          <span>🚶</span>
+                          <span className="truncate dark:text-white flex-1 min-w-0">{p.name || 'Walking path'}</span>
+                          <span className="text-[10px] text-purple-500 dark:text-purple-400 font-medium flex-shrink-0">PATH · {(p.waypoints || []).length} pts</span>
+                        </button>
+                      ));
+                    })()}
                     {filteredPins.length === 0 && (
                       <p className="text-xs text-gray-400 text-center py-3">
                         {mealMode ? 'No food pins yet — add some restaurants to your map first.' : pinSearch ? 'No pins found' : 'Type to search your saved pins'}
@@ -15581,6 +15623,8 @@
                         <button key={pin.id}
                           onClick={() => {
                             if (longPressTriggered.current) { longPressTriggered.current = false; return; }
+                            // Clear any previously-selected walking path so this becomes a pin item
+                            setSelectedPathId('');
                             setSelectedPinId(pin.id); setName(pin.name); setEmoji(pin.emoji || '📌');
                             setFormLat(pin.lat || 0); setFormLng(pin.lng || 0);
                             // If already shortlisted, remove from shortlist on tap
