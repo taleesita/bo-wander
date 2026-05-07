@@ -452,7 +452,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v131';
+    const APP_VERSION = 'v132';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -3224,7 +3224,7 @@
       );
     };
 
-    const PinDetailSheet = ({ pin, onClose, onEdit, onInlineUpdate, isDarkMode, isDesktop, onDelete, onNavigate, collections, allPins, fetchingRatings, onRetryRatings, ratingFetchStatus, customIcons, onUploadIcon, onDeleteIcon, onAddToItinerary, coLocatedPins = [], onSwitchPin, onBackToItinerary }) => {
+    const PinDetailSheet = ({ pin, onClose, onEdit, onInlineUpdate, isDarkMode, isDesktop, onDelete, onNavigate, collections, allPins, fetchingRatings, onRetryRatings, ratingFetchStatus, customIcons, onUploadIcon, onDeleteIcon, onAddToItinerary, coLocatedPins = [], onSwitchPin, onBackToItinerary, onBackToMap }) => {
       const [translated, setTranslated] = useState(null);
       const [translating, setTranslating] = useState(false);
       const [editing, setEditing] = useState(false);
@@ -3378,6 +3378,15 @@
                 className="flex items-center gap-1 text-sm text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 -mt-1 mb-1"
               >
                 <span>&#8592;</span> Back to Itinerary
+              </button>
+            )}
+            {/* Back to map view — only when navigated from a day mini-map */}
+            {onBackToMap && (
+              <button
+                onClick={onBackToMap}
+                className="flex items-center gap-1 text-sm text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 -mt-1 mb-1"
+              >
+                <span>&#8592;</span> Back to map view
               </button>
             )}
             {/* Header: Emoji + Name */}
@@ -15615,7 +15624,10 @@
     };
 
     // ---- DayMiniMap (modal Leaflet map for a day's items) ----
-    const DayMiniMap = ({ points, isDarkMode, dayLabel, onClose, onReorder }) => {
+    // - onPinClick(pinId): tap a pin (route or off-itinerary) to open its detail sheet
+    // - offItineraryPins: pins from the same collection that aren't on this day —
+    //   shown as faded dots when the user toggles "Show other pins" in the header.
+    const DayMiniMap = ({ points, isDarkMode, dayLabel, onClose, onReorder, onPinClick, offItineraryPins }) => {
       const mapContainerRef = useRef(null);
       const mapRef = useRef(null);
       // Track markers/polylines so we can clear them between renders without destroying the map.
@@ -15628,6 +15640,8 @@
       // Reorder mode state — when active, tapping pins builds a new visit order.
       const [reorderMode, setReorderMode] = useState(false);
       const [clickedOrder, setClickedOrder] = useState([]); // array of item ids in click order
+      // When on, render the rest of the collection's pins as faded markers (clickable, no labels).
+      const [showOffItinerary, setShowOffItinerary] = useState(false);
 
       // Wait for DOM to settle before initializing Leaflet
       useEffect(() => {
@@ -15724,13 +15738,19 @@
             iconSize: [markerSize, markerSize], iconAnchor: [markerSize/2, markerSize/2],
           });
           const m = window.L.marker([pt.lat, pt.lng], { icon }).addTo(map);
-          // In reorder mode, clicking a route pin appends it to the order (or deselects if already clicked).
+          // Click semantics:
+          //   • In reorder mode: tapping a route pin builds the new visit order
+          //   • Otherwise: tapping a route pin opens its detail sheet (via onPinClick)
+          //   • Hotel and extra-option pins ignore taps (they aren't reorderable; their
+          //     identity isn't tracked as a single saved pin id)
           if (reorderable) {
             m.on('click', () => {
               setClickedOrder(prev => prev.includes(pt.itemId)
                 ? prev.filter(id => id !== pt.itemId)
                 : [...prev, pt.itemId]);
             });
+          } else if (!reorderMode && onPinClick && pt.pinId && !pt.isHotel) {
+            m.on('click', () => onPinClick(pt.pinId));
           }
           const prefix = num ? num + '. ' : isExtra ? '↳ ' : '🏨 ';
           const labelText = pt.name && pt.name.length > 28 ? pt.name.slice(0, 26) + '…' : (pt.name || '');
@@ -15742,6 +15762,25 @@
           });
           markersRef.current.push(m);
         });
+
+        // Render off-itinerary pins (collection pins NOT linked to today's items) when toggled on.
+        // These are deliberately small, faded, no name labels (the map is busy enough). Tap opens detail.
+        if (showOffItinerary && !reorderMode && Array.isArray(offItineraryPins)) {
+          offItineraryPins.forEach((p) => {
+            if (!p.lat || !p.lng) return;
+            const offSize = 18;
+            const offIcon = window.L.divIcon({
+              className: 'day-mini-marker',
+              html: `<div style="width:${offSize}px;height:${offSize}px;border-radius:50%;background:rgba(255,255,255,0.85);border:1.5px solid rgba(100,116,139,0.65);display:flex;align-items:center;justify-content:center;font-size:11px;opacity:0.7;box-shadow:0 1px 2px rgba(0,0,0,0.2);pointer-events:auto">${p.emoji || '📍'}</div>`,
+              iconSize: [offSize, offSize], iconAnchor: [offSize/2, offSize/2],
+            });
+            const om = window.L.marker([p.lat, p.lng], { icon: offIcon, opacity: 0.85, zIndexOffset: -100 }).addTo(map);
+            if (onPinClick) om.on('click', () => onPinClick(p.id));
+            // Hover tooltip (NOT permanent) so the name is available without crowding
+            om.bindTooltip(p.name || '', { direction: 'top', offset: [0, -offSize/2], opacity: 0.9 });
+            markersRef.current.push(om);
+          });
+        }
 
         // Hide route lines while reordering — they reflect the OLD order and are confusing once
         // the user starts tapping a new sequence. Re-drawn after Done.
@@ -15839,7 +15878,7 @@
             }
           }, 300);
         }
-      }, [ready, points, reorderMode, clickedOrder, isDarkMode]);
+      }, [ready, points, reorderMode, clickedOrder, isDarkMode, showOffItinerary, offItineraryPins]);
 
       // Commit the user's tap-order. We pass ONLY the explicitly-tapped IDs to the parent —
       // items the user didn't tap aren't part of the reorder and shouldn't have their state
@@ -15868,6 +15907,15 @@
               <div className="flex items-center gap-2 flex-shrink-0">
                 {!reorderMode && (
                   <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{reorderableCount} stops</span>
+                )}
+                {!reorderMode && Array.isArray(offItineraryPins) && offItineraryPins.length > 0 && (
+                  <button
+                    onClick={() => setShowOffItinerary(v => !v)}
+                    className={`text-xs px-2 py-1 rounded-md transition ${showOffItinerary ? 'bg-purple-500 text-white hover:bg-purple-600' : (isDarkMode ? 'bg-slate-700 text-gray-200 hover:bg-slate-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300')}`}
+                    title={showOffItinerary ? 'Hide other pins' : 'Show other pins from this map'}
+                  >
+                    {showOffItinerary ? '○ Hide others' : '○ Show others'}
+                  </button>
                 )}
                 {!reorderMode && onReorder && reorderableCount >= 2 && (
                   <button
@@ -16048,14 +16096,19 @@
     };
 
     // ---- DayView (single day card) ----
-    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, onSelectPin, transitError, onRecalcTransit, weather, weatherCodeMap, weatherLocation, onWeatherLocationChange, allHotels, dayDocs, allDays, onSwapDays, onMoveAllToDay, onReviewDay }) => {
+    // showMiniMap/setShowMiniMap are now PROPS (lifted to ItineraryPlanner) so the App
+    // can re-open this day's map after a "Back to map view" tap from the pin detail sheet.
+    // collectionPins is the full pin list for the active collection (used for the
+    // "show off-itinerary pins" toggle inside the day map).
+    // onSelectPinFromMap fires when the user taps a pin inside the day map — bubbles up
+    // to App so it can open the pin detail sheet and remember which day map to return to.
+    const DayView = ({ day, items, pins, isDarkMode, onUpdateItems, onDeleteItem, onAddItem, onEditItem, onSetStartingPoint, onSetStartTime, onDeleteDay, isExpanded, onToggle, onFlyTo, onSelectPin, transitError, onRecalcTransit, weather, weatherCodeMap, weatherLocation, onWeatherLocationChange, allHotels, dayDocs, allDays, onSwapDays, onMoveAllToDay, onReviewDay, showMiniMap, setShowMiniMap, collectionPins, onSelectPinFromMap }) => {
       const [dragItemId, setDragItemId] = useState(null);
       const [dragOverIndex, setDragOverIndex] = useState(null);
       const [showStartPicker, setShowStartPicker] = useState(false);
       const [confirmDeleteDay, setConfirmDeleteDay] = useState(false);
       const [editingStartTime, setEditingStartTime] = useState(false);
       const [startTimeDraft, setStartTimeDraft] = useState(day.start_time || '');
-      const [showMiniMap, setShowMiniMap] = useState(false);
       const [showSwapPicker, setShowSwapPicker] = useState(null); // null | 'swap' | 'move'
       const [exportCopied, setExportCopied] = useState(false);
       const miniMapRef = useRef(null);
@@ -16807,12 +16860,14 @@
                       const groupId = i.id;
                       i.options.slice(1).forEach(opt => {
                         if (opt.lat && opt.lng) {
-                          extraOptionsPts.push({ lat: opt.lat, lng: opt.lng, name: opt.name, emoji: opt.emoji || '🍽️', isHotel: false, isOptions: true, isExtraOption: true, optionColor: groupColor, optionGroupId: groupId });
+                          // pinId on extras lets users tap a non-routed option to open its detail too
+                          extraOptionsPts.push({ lat: opt.lat, lng: opt.lng, name: opt.name, emoji: opt.emoji || '🍽️', isHotel: false, isOptions: true, isExtraOption: true, optionColor: groupColor, optionGroupId: groupId, pinId: opt.pin_id });
                         }
                       });
-                      return first.lat && first.lng ? { lat: first.lat, lng: first.lng, name: first.name, emoji: first.emoji || '🍽️', isHotel: false, transit_info: i.transit_info, isOptions: true, optionColor: groupColor, optionGroupId: groupId, itemId: i.id, hasReservationTime } : null;
+                      // For options groups, the "first option" is what's on the route — link its pinId so a tap opens that option's detail
+                      return first.lat && first.lng ? { lat: first.lat, lng: first.lng, name: first.name, emoji: first.emoji || '🍽️', isHotel: false, transit_info: i.transit_info, isOptions: true, optionColor: groupColor, optionGroupId: groupId, itemId: i.id, pinId: first.pin_id, hasReservationTime } : null;
                     }
-                    return i.lat && i.lng ? { lat: i.lat, lng: i.lng, name: i.name, emoji: i.emoji || '📌', isHotel: false, transit_info: i.transit_info, itemId: i.id, hasReservationTime } : null;
+                    return i.lat && i.lng ? { lat: i.lat, lng: i.lng, name: i.name, emoji: i.emoji || '📌', isHotel: false, transit_info: i.transit_info, itemId: i.id, pinId: i.pin_id, hasReservationTime } : null;
                   })
                   .filter(Boolean);
                 // Add hotel as context point (not numbered, not part of route)
@@ -16852,6 +16907,12 @@
                   });
                   if (onUpdateItems) onUpdateItems(result);
                 };
+                // Off-itinerary pins: collection pins NOT linked to any item on this day,
+                // shown as faded markers when the user toggles "Show other pins" in the header.
+                const onDayPinIds = new Set(items.filter(i => i.day_id === day.id && i.pin_id).map(i => i.pin_id));
+                const offItineraryPins = (collectionPins || pins || [])
+                  .filter(p => p.lat && p.lng && Math.abs(p.lat) > 0.1 && Math.abs(p.lng) > 0.1)
+                  .filter(p => !onDayPinIds.has(p.id));
                 return (
                   <DayMiniMap
                     points={allPts}
@@ -16859,6 +16920,10 @@
                     dayLabel={`Day ${dayNum} · ${dateLabel}${day.location ? ' · ' + day.location : ''}`}
                     onClose={() => setShowMiniMap(false)}
                     onReorder={handleReorder}
+                    onPinClick={(pinId) => {
+                      if (onSelectPinFromMap) onSelectPinFromMap(pinId);
+                    }}
+                    offItineraryPins={offItineraryPins}
                   />
                 );
               })()}
@@ -17688,7 +17753,7 @@
     };
 
 
-        const ItineraryPlanner = ({ pins, collections, activeCollection, isDarkMode, isMobile, onFlyTo, onClose, pendingAddPin, onClearPendingAdd, onSelectPinFromItinerary }) => {
+        const ItineraryPlanner = ({ pins, collections, activeCollection, isDarkMode, isMobile, onFlyTo, onClose, pendingAddPin, onClearPendingAdd, onSelectPinFromItinerary, onSelectPinFromDayMap, pendingDayMapId, onConsumePendingDayMap }) => {
       const [itineraries, setItineraries] = useState([]);
       const [activeItinerary, setActiveItinerary] = useState(null);
       const [days, setDays] = useState([]);
@@ -17699,6 +17764,16 @@
       const [editingItem, setEditingItem] = useState(null);  // null = closed, {} = new item for a day
       const [addingToDay, setAddingToDay] = useState(null);  // day_id we're adding to
       const [showNewItinerary, setShowNewItinerary] = useState(false);
+      // Lifted from DayView so the App can re-open a specific day's mini map after the
+      // user taps "Back to map view" inside the pin detail sheet.
+      const [openMiniMapDayId, setOpenMiniMapDayId] = useState(null);
+      // When the parent wants us to open a specific day's mini map, it sets pendingDayMapId.
+      // We honor it by setting openMiniMapDayId, then call onConsumePendingDayMap to clear it.
+      useEffect(() => {
+        if (!pendingDayMapId) return;
+        setOpenMiniMapDayId(pendingDayMapId);
+        onConsumePendingDayMap?.();
+      }, [pendingDayMapId, onConsumePendingDayMap]);
       const collectionName = collections.find(c => c.id === activeCollection)?.name || '';
       const [newName, setNewName] = useState(collectionName);
       const [newStartDate, setNewStartDate] = useState('');
@@ -18909,6 +18984,12 @@
                   onSwapDays={handleSwapDays}
                   onMoveAllToDay={handleMoveAllToDay}
                   onReviewDay={(dayId) => setReviewDayId(dayId)}
+                  showMiniMap={openMiniMapDayId === day.id}
+                  setShowMiniMap={(v) => setOpenMiniMapDayId(v ? day.id : null)}
+                  collectionPins={collectionPins}
+                  onSelectPinFromMap={(pinId) => {
+                    if (onSelectPinFromDayMap) onSelectPinFromDayMap(pinId, day.id);
+                  }}
                 />
                 </div>
               );})}
@@ -19589,6 +19670,12 @@
       const [pendingItineraryPin, setPendingItineraryPin] = useState(null);
       const [coLocatedPins, setCoLocatedPins] = useState([]);
       const [cameFromItinerary, setCameFromItinerary] = useState(false);
+      // When the user taps a pin inside a day mini map, we remember which day they
+      // came from so the pin detail sheet can offer a "Back to map view" button.
+      const [cameFromDayMapId, setCameFromDayMapId] = useState(null);
+      // One-shot signal to the ItineraryPlanner: "open this day's mini map on next render"
+      // (used when the user taps Back to map view).
+      const [pendingDayMapId, setPendingDayMapId] = useState(null);
       // Helper: select a pin and auto-detect its same-place group
       const selectPinWithGroup = (pin, group) => {
         if (group && group.length > 1) {
@@ -20902,7 +20989,7 @@
               pin={selectedPin}
               coLocatedPins={coLocatedPins}
               onSwitchPin={(pin) => { setSelectedPin(pin); }}
-              onClose={() => { setSelectedPin(null); setCoLocatedPins([]); setCameFromItinerary(false); }}
+              onClose={() => { setSelectedPin(null); setCoLocatedPins([]); setCameFromItinerary(false); setCameFromDayMapId(null); }}
               onEdit={(pin) => setEditingPin(pin)}
               onInlineUpdate={handleInlineUpdate}
               isDarkMode={darkMode}
@@ -20919,6 +21006,12 @@
               onDeleteIcon={handleDeleteIcon}
               onAddToItinerary={handleAddToItinerary}
               onBackToItinerary={cameFromItinerary ? () => { setSelectedPin(null); setCoLocatedPins([]); setCameFromItinerary(false); setShowItinerary(true); } : null}
+              onBackToMap={cameFromDayMapId ? () => {
+                const dayId = cameFromDayMapId;
+                setSelectedPin(null); setCoLocatedPins([]); setCameFromDayMapId(null);
+                setShowItinerary(true);
+                setPendingDayMapId(dayId);
+              } : null}
             />
           )}
 
@@ -20927,7 +21020,7 @@
               pin={selectedPin}
               coLocatedPins={coLocatedPins}
               onSwitchPin={(pin) => { setSelectedPin(pin); }}
-              onClose={() => { setSelectedPin(null); setCoLocatedPins([]); setCameFromItinerary(false); }}
+              onClose={() => { setSelectedPin(null); setCoLocatedPins([]); setCameFromItinerary(false); setCameFromDayMapId(null); }}
               onEdit={(pin) => setEditingPin(pin)}
               onInlineUpdate={handleInlineUpdate}
               isDarkMode={darkMode}
@@ -20944,6 +21037,12 @@
               onDeleteIcon={handleDeleteIcon}
               onAddToItinerary={handleAddToItinerary}
               onBackToItinerary={cameFromItinerary ? () => { setSelectedPin(null); setCoLocatedPins([]); setCameFromItinerary(false); setShowItinerary(true); } : null}
+              onBackToMap={cameFromDayMapId ? () => {
+                const dayId = cameFromDayMapId;
+                setSelectedPin(null); setCoLocatedPins([]); setCameFromDayMapId(null);
+                setShowItinerary(true);
+                setPendingDayMapId(dayId);
+              } : null}
             />
           )}
 
@@ -21398,6 +21497,15 @@
                   // which triggers the marker effect that flies to pin WITH mobile offset
                 }, 150);
               }}
+              onSelectPinFromDayMap={(pinId, dayId) => {
+                const pin = pins.find(p => p.id === pinId);
+                if (!pin) return;
+                setShowItinerary(false);
+                setCameFromDayMapId(dayId);
+                setTimeout(() => selectPinWithGroup(pin), 150);
+              }}
+              pendingDayMapId={pendingDayMapId}
+              onConsumePendingDayMap={() => setPendingDayMapId(null)}
             />
           )}
 
