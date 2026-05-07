@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v143';
+    const APP_VERSION = 'v144';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -619,17 +619,33 @@
     const ALLOWED_EMAILS = ['taly.matiteyahu@gmail.com', 'doug.pickard@gmail.com'];
 
     // Map tile language preference. localStorage so it persists across reloads + sessions.
-    // 'en'    = Esri World Topo (English labels for most international locations) — default
-    // 'local' = Carto Voyager (native script — Japanese in Japan, etc.)
-    const getMapLang = () => { try { return localStorage.getItem('boWanderMapLang') || 'en'; } catch (e) { return 'en'; } };
+    // 'local' = Carto Voyager (native script — Japanese in Japan, etc.) — default
+    // 'en'    = English labels everywhere
+    //           - With a MapTiler API key: MapTiler Streets (clean Carto-like style, English labels)
+    //           - Without a key: Esri World Topo Map fallback (more topo-styled, less flat)
+    const getMapLang = () => { try { return localStorage.getItem('boWanderMapLang') || 'local'; } catch (e) { return 'local'; } };
     const setMapLang = (lang) => { try { localStorage.setItem('boWanderMapLang', lang); } catch (e) {} };
+    // MapTiler API key — optional. When set + lang='en', map uses MapTiler tiles with
+    // proper English labels (lang=en) which look much more like Carto Voyager than the
+    // Esri Topo fallback. Free tier: 100k tiles/month, no credit card required.
+    const getMapTilerKey = () => { try { return localStorage.getItem('boWanderMapTilerKey') || ''; } catch (e) { return ''; } };
+    const setMapTilerKey = (key) => { try { localStorage.setItem('boWanderMapTilerKey', key || ''); } catch (e) {} };
     // Returns { url, attribution, opts } for the active tile provider.
     const getTileLayerConfig = (isDark) => {
       const lang = getMapLang();
       if (lang === 'en') {
-        // Esri World Topo Map: free, no API key, English labels for Japan and most non-Latin countries.
-        // Caveat: stylistically different from Carto (more topo, less flat). Trade-off accepted in
-        // exchange for readable street names.
+        const mtKey = getMapTilerKey();
+        if (mtKey) {
+          // MapTiler Streets — clean style similar to Carto, with English labels everywhere
+          // via &language=en. Dark variant uses the streets-dark style.
+          const styleId = isDark ? 'streets-v2-dark' : 'streets-v2';
+          return {
+            url: `https://api.maptiler.com/maps/${styleId}/{z}/{x}/{y}.png?key=${encodeURIComponent(mtKey)}&language=en`,
+            attribution: '© MapTiler © OpenStreetMap',
+            opts: { maxZoom: 20, tileSize: 512, zoomOffset: -1 },
+          };
+        }
+        // Fallback when no MapTiler key: Esri World Topo (free, no key, English labels)
         return {
           url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
           attribution: 'Tiles © Esri',
@@ -12580,7 +12596,8 @@
               </svg>
             </button>
           )}
-          {/* Language toggle — switches map tiles between local script (Carto) and English (Esri) */}
+          {/* Language toggle — switches map tiles between local script (Carto Voyager) and
+              English (MapTiler if a key is set in Settings, else Esri Topo fallback) */}
           <button
             onClick={() => {
               const next = getMapLang() === 'en' ? 'local' : 'en';
@@ -12626,7 +12643,7 @@
       );
     };
 
-    const ListView = ({ pins, collections, onSelectPin, isDarkMode, onEdit, onDelete, filters: filtersProp, setFilters: setFiltersProp, walkingPaths, onStartPathDraw, onDeleteWalkingPath, onFlyToPath }) => {
+    const ListView = ({ pins, collections, onSelectPin, isDarkMode, onEdit, onDelete, filters: filtersProp, setFilters: setFiltersProp, walkingPaths, onStartPathDraw, onDeleteWalkingPath, onFlyToPath, onEditWalkingPath }) => {
       const [sortBy, setSortBy] = useState('name');
       const [expandedCategories, setExpandedCategories] = useState({});
       // Allow filters to be controlled from parent (so the map can use the same filter set)
@@ -13006,6 +13023,15 @@
                         <div className="text-sm font-medium dark:text-white truncate">{p.name || 'Untitled path'}</div>
                         <div className="text-[10px] text-gray-500 dark:text-gray-400">{(p.waypoints || []).length} pts</div>
                       </button>
+                      {onEditWalkingPath && (
+                        <button
+                          onClick={() => onEditWalkingPath(p)}
+                          className="p-1.5 hover:bg-blue-100 dark:hover:bg-blue-900/30 rounded text-gray-400 hover:text-blue-500 transition text-base"
+                          title="Edit path — add or remove points"
+                        >
+                          ✏️
+                        </button>
+                      )}
                       {onDeleteWalkingPath && (
                         <button
                           onClick={() => onDeleteWalkingPath(p.id)}
@@ -14119,6 +14145,8 @@
       const [newCollectionName, setNewCollectionName] = useState('');
       const [showSettings, setShowSettings] = useState(false);
       const [apiKeyInput, setApiKeyInput] = useState(getGoogleApiKey());
+      const [mapTilerKeyInput, setMapTilerKeyInput] = useState(getMapTilerKey());
+      const [mapTilerSaved, setMapTilerSaved] = useState(false);
       const [confirmDelete, setConfirmDelete] = useState(null); // collection id to confirm delete
       const [editingCover, setEditingCover] = useState(null); // { id, name } of collection being edited
       const [coverUrl, setCoverUrl] = useState('');
@@ -14472,6 +14500,43 @@
                       </div>
                       <p className="text-xs text-gray-400 mt-1">
                         Free tier: ~10k lookups/month. Get a key at <a href="https://console.cloud.google.com/apis/credentials" target="_blank" className="underline text-blue-500">console.cloud.google.com</a> — enable "Places API (New)".
+                      </p>
+                    </div>
+                  </details>
+
+                  <details className="group">
+                    <summary className="flex items-center justify-between cursor-pointer py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400">
+                      <span>🗺️ MapTiler API Key (English map labels)</span>
+                      <span className="text-xs text-gray-400 group-open:rotate-90 transition-transform">▶</span>
+                    </summary>
+                    <div className="pt-2 pb-3 pl-2">
+                      <div className="flex gap-2">
+                        <input
+                          type="password"
+                          value={mapTilerKeyInput}
+                          onChange={(e) => { setMapTilerKeyInput(e.target.value); setMapTilerSaved(false); }}
+                          placeholder="paste MapTiler key…"
+                          className="flex-1 px-3 py-1.5 text-sm border rounded-lg bg-white dark:bg-slate-700 dark:border-slate-600 dark:text-white"
+                        />
+                        <button
+                          onClick={() => { setMapTilerKey(mapTilerKeyInput.trim()); setMapTilerSaved(true); }}
+                          className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition"
+                        >
+                          Save
+                        </button>
+                      </div>
+                      {mapTilerSaved && (
+                        <p className="text-xs text-green-600 dark:text-green-400 mt-1">
+                          ✓ Saved. Tap the <span className="font-semibold">EN</span> button on the map to switch to English labels.
+                        </p>
+                      )}
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">
+                        Without a key, the EN toggle falls back to Esri World Topo (free, looks more topographic). With a MapTiler key, English labels appear on a clean Carto-style basemap.
+                      </p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        Free tier: 100k tiles/month, no credit card. Sign up at{' '}
+                        <a href="https://www.maptiler.com/cloud/" target="_blank" rel="noopener noreferrer" className="underline text-blue-500">maptiler.com/cloud</a>{' '}
+                        → copy the default API key from your dashboard → paste above.
                       </p>
                     </div>
                   </details>
@@ -21586,8 +21651,26 @@
                       // Enter tap-to-draw mode with an empty draft. Auto-pick the next color.
                       const color = PATH_COLORS[walkingPaths.length % PATH_COLORS.length];
                       const name = `Walking path ${walkingPaths.length + 1}`;
-                      setPathDraft({ name, color, waypoints: [] });
+                      setPathDraft({ name, color, waypoints: [], editingId: null });
                       setShowList(false); // close list overlay so the map is tappable
+                    }}
+                    onEditWalkingPath={(p) => {
+                      // Re-open drawing UI seeded with this path's waypoints. editingId
+                      // tells the save handler to overwrite the existing record.
+                      setPathDraft({
+                        name: p.name || '',
+                        color: p.color || '#8b5cf6',
+                        waypoints: Array.isArray(p.waypoints) ? [...p.waypoints] : [],
+                        editingId: p.id,
+                      });
+                      // Pan to the path so it's visible immediately
+                      const wps = p.waypoints || [];
+                      if (wps.length > 0) {
+                        const lat = wps.reduce((s, w) => s + w.lat, 0) / wps.length;
+                        const lng = wps.reduce((s, w) => s + w.lng, 0) / wps.length;
+                        setMapPanTarget({ lat, lng, _t: Date.now() });
+                      }
+                      setShowList(false);
                     }}
                     onDeleteWalkingPath={async (id) => {
                       if (!confirm('Delete this walking path?')) return;
@@ -21621,7 +21704,7 @@
                   travelDocs={travelDocs}
                   openNowFilter={listFilters.openNow}
                   onToggleOpenNow={() => setListFilters(f => ({ ...f, openNow: !f.openNow, openAt: f.openNow ? f.openAt : null }))}
-                  walkingPaths={walkingPaths}
+                  walkingPaths={pathDraft?.editingId ? walkingPaths.filter(p => p.id !== pathDraft.editingId) : walkingPaths}
                   pathDraft={pathDraft}
                   onAddWaypoint={(lat, lng) => setPathDraft(d => d ? { ...d, waypoints: [...(d.waypoints || []), { lat, lng }] } : d)}
                 />
@@ -21639,6 +21722,41 @@
                     onDelete={handleDeletePin}
                     filters={listFilters}
                     setFilters={setListFilters}
+                    walkingPaths={walkingPaths}
+                    onStartPathDraw={() => {
+                      const color = PATH_COLORS[walkingPaths.length % PATH_COLORS.length];
+                      const name = `Walking path ${walkingPaths.length + 1}`;
+                      setPathDraft({ name, color, waypoints: [], editingId: null });
+                      setShowList(false);
+                    }}
+                    onEditWalkingPath={(p) => {
+                      setPathDraft({
+                        name: p.name || '',
+                        color: p.color || '#8b5cf6',
+                        waypoints: Array.isArray(p.waypoints) ? [...p.waypoints] : [],
+                        editingId: p.id,
+                      });
+                      const wps = p.waypoints || [];
+                      if (wps.length > 0) {
+                        const lat = wps.reduce((s, w) => s + w.lat, 0) / wps.length;
+                        const lng = wps.reduce((s, w) => s + w.lng, 0) / wps.length;
+                        setMapPanTarget({ lat, lng, _t: Date.now() });
+                      }
+                      setShowList(false);
+                    }}
+                    onDeleteWalkingPath={async (id) => {
+                      if (!confirm('Delete this walking path?')) return;
+                      try { await MockFirebase.deleteWalkingPath(id); }
+                      catch (e) { showToast('Delete failed', 'error'); }
+                    }}
+                    onFlyToPath={(p) => {
+                      const wps = p.waypoints || [];
+                      if (wps.length === 0) return;
+                      const lat = wps.reduce((s, w) => s + w.lat, 0) / wps.length;
+                      const lng = wps.reduce((s, w) => s + w.lng, 0) / wps.length;
+                      setMapPanTarget({ lat, lng, zoom: 16, _t: Date.now() });
+                      setShowList(false);
+                    }}
                   />
                 </div>
               )}
@@ -22067,7 +22185,7 @@
             <div className="fixed left-1/2 -translate-x-1/2 bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border dark:border-slate-700 p-3 flex items-center gap-2 flex-wrap"
                  style={{ zIndex: 9990, top: 80, maxWidth: 'calc(100vw - 24px)' }}>
               <div className="flex items-center gap-2 flex-1 min-w-0">
-                <span className="text-lg">🚶</span>
+                <span className="text-lg">{pathDraft.editingId ? '✏️' : '🚶'}</span>
                 <input
                   type="text"
                   value={pathDraft.name}
@@ -22103,19 +22221,24 @@
                     // tapped waypoints. (Earlier we routed each segment through OSRM, which
                     // re-routed straight strokes along actual streets and produced a wildly
                     // different shape from what the user drew. The user just wants the line.)
+                    // If editingId is set, reuse the same id so saveWalkingPath overwrites
+                    // the existing record (merge:true) instead of creating a duplicate.
                     const saved = {
-                      id: Date.now().toString(),
+                      id: draft.editingId || Date.now().toString(),
                       collection_id: activeCollection,
                       name: (draft.name || '').trim() || `Walking path ${walkingPaths.length + 1}`,
                       color: draft.color || PATH_COLORS[walkingPaths.length % PATH_COLORS.length],
                       waypoints: draft.waypoints,
                       // No polyline_segments — renderer draws straight lines between waypoints.
                     };
-                    try { await MockFirebase.saveWalkingPath(saved); showToast('Walking path saved'); }
+                    try {
+                      await MockFirebase.saveWalkingPath(saved);
+                      showToast(draft.editingId ? 'Walking path updated' : 'Walking path saved');
+                    }
                     catch (e) { showToast('Save failed: ' + (e.message || e), 'error'); }
                   }}
                   className="text-xs px-3 py-1.5 rounded bg-purple-500 text-white hover:bg-purple-600 transition font-medium"
-                >Save</button>
+                >{pathDraft.editingId ? 'Update' : 'Save'}</button>
               </div>
             </div>
           )}
