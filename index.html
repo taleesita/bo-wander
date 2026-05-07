@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v140';
+    const APP_VERSION = 'v143';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -617,6 +617,33 @@
     }
 
     const ALLOWED_EMAILS = ['taly.matiteyahu@gmail.com', 'doug.pickard@gmail.com'];
+
+    // Map tile language preference. localStorage so it persists across reloads + sessions.
+    // 'en'    = Esri World Topo (English labels for most international locations) — default
+    // 'local' = Carto Voyager (native script — Japanese in Japan, etc.)
+    const getMapLang = () => { try { return localStorage.getItem('boWanderMapLang') || 'en'; } catch (e) { return 'en'; } };
+    const setMapLang = (lang) => { try { localStorage.setItem('boWanderMapLang', lang); } catch (e) {} };
+    // Returns { url, attribution, opts } for the active tile provider.
+    const getTileLayerConfig = (isDark) => {
+      const lang = getMapLang();
+      if (lang === 'en') {
+        // Esri World Topo Map: free, no API key, English labels for Japan and most non-Latin countries.
+        // Caveat: stylistically different from Carto (more topo, less flat). Trade-off accepted in
+        // exchange for readable street names.
+        return {
+          url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+          attribution: 'Tiles © Esri',
+          opts: { maxZoom: 19 },
+        };
+      }
+      return {
+        url: isDark
+          ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'
+          : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
+        attribution: '© OpenStreetMap © CARTO',
+        opts: { maxZoom: 20 },
+      };
+    };
     const FIREBASE_CONFIG = {
       apiKey: "AIzaSyDbS4hXieTfEc6IfSb1CntkDJdrEjxoNGA",
       authDomain: "bo-wander.firebaseapp.com",
@@ -12109,13 +12136,11 @@
         };
         window.addEventListener('resize', handleResize);
 
-        const tileUrl = isDarkMode
-          ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'
-          : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png';
-        tileLayerRef.current = L.tileLayer(tileUrl, {
-          attribution: '\u00a9 <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> \u00a9 <a href="https://carto.com/">CARTO</a>',
+        const tileCfg = getTileLayerConfig(isDarkMode);
+        tileLayerRef.current = L.tileLayer(tileCfg.url, {
+          attribution: tileCfg.attribution,
           subdomains: 'abcd',
-          maxZoom: 20
+          ...tileCfg.opts,
         }).addTo(map);
 
         return () => {
@@ -12162,7 +12187,9 @@
           const wps = (pathObj && pathObj.waypoints) || [];
           if (wps.length < 1) return;
           const color = pathObj.color || '#8b5cf6';
-          // Cached polylines (one per segment) — if missing or insufficient, fall back to straight lines
+          // We render the path EXACTLY as drawn — straight segments between waypoints.
+          // (Older paths might still carry polyline_segments from when we re-routed via OSRM;
+          //  honor those too so they don't visually break, but new paths render straight.)
           const segs = Array.isArray(pathObj.polyline_segments) ? pathObj.polyline_segments : [];
           for (let i = 1; i < wps.length; i++) {
             const enc = segs[i - 1];
@@ -12175,7 +12202,7 @@
             }
             const layer = window.L.polyline(coords, {
               color, weight: opts.draft ? 4 : 4.5, opacity: opts.draft ? 0.55 : 0.85,
-              dashArray: enc ? null : '6,5', // dashed when we couldn't fetch a routed polyline
+              // Solid line for both saved and draft — this matches the "line I drew" expectation.
               lineCap: 'round', lineJoin: 'round', interactive: false,
             }).addTo(map);
             pathLayersRef.current.push(layer);
@@ -12253,13 +12280,11 @@
         const map = mapInstanceRef.current;
         if (!map) return;
         if (tileLayerRef.current) map.removeLayer(tileLayerRef.current);
-        const tileUrl = isDarkMode
-          ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'
-          : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png';
-        tileLayerRef.current = L.tileLayer(tileUrl, {
-          attribution: '\u00a9 <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> \u00a9 <a href="https://carto.com/">CARTO</a>',
+        const tileCfg = getTileLayerConfig(isDarkMode);
+        tileLayerRef.current = L.tileLayer(tileCfg.url, {
+          attribution: tileCfg.attribution,
           subdomains: 'abcd',
-          maxZoom: 20
+          ...tileCfg.opts,
         }).addTo(map);
       }, [isDarkMode]);
 
@@ -12555,6 +12580,22 @@
               </svg>
             </button>
           )}
+          {/* Language toggle — switches map tiles between local script (Carto) and English (Esri) */}
+          <button
+            onClick={() => {
+              const next = getMapLang() === 'en' ? 'local' : 'en';
+              setMapLang(next);
+              // Hard-reload so every open map (main, day, share) picks up the new tile layer cleanly.
+              try { window.location.reload(); } catch (e) {}
+            }}
+            className="absolute rounded-md shadow-lg flex items-center justify-center transition-all bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700"
+            style={{ right: 10, bottom: 235, zIndex: 1000, width: 34, height: 34 }}
+            title={getMapLang() === 'en' ? 'English labels — tap for local language' : 'Local language — tap for English labels'}
+          >
+            <span className="text-[10px] font-bold text-gray-700 dark:text-gray-200 leading-none">
+              {getMapLang() === 'en' ? 'EN' : '文'}
+            </span>
+          </button>
           {/* Locate me button — above Leaflet zoom controls */}
           <button
             onClick={() => {
@@ -13081,13 +13122,11 @@
         const map = L.map(mapRef.current).setView([pin.lat, pin.lng], 14);
         mapInstanceRef.current = map;
 
-        const tileUrl = isDarkMode
-          ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'
-          : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png';
-        L.tileLayer(tileUrl, {
-          attribution: '\u00a9 OpenStreetMap \u00a9 CARTO',
+        const tileCfg = getTileLayerConfig(isDarkMode);
+        L.tileLayer(tileCfg.url, {
+          attribution: tileCfg.attribution,
           subdomains: 'abcd',
-          maxZoom: 20
+          ...tileCfg.opts,
         }).addTo(map);
 
         // Destination emoji marker
@@ -13174,12 +13213,16 @@
     };
 
     // ==================== SHARED MAP VIEW (read-only, no auth) ====================
-    const SharedMapView = ({ shareId, isDarkMode }) => {
+    const SharedMapView = ({ shareId, isDarkMode, initialTab }) => {
       const [sharedData, setSharedData] = useState(null);
       const [loading, setLoading] = useState(true);
       const [error, setError] = useState(null);
       const [selectedPin, setSelectedPin] = useState(null);
-      const [sharedViewMode, setSharedViewMode] = useState('map'); // 'map' or 'list'
+      // 'map' | 'list' | 'trip' — defaults to whatever the URL deep-linked to.
+      const validInitialTab = (initialTab === 'list' || initialTab === 'trip') ? initialTab : 'map';
+      const [sharedViewMode, setSharedViewMode] = useState(validInitialTab);
+      // Star-rating filter for the trip recap. 0 = show all, 4 = only 4★+, etc.
+      const [sharedTripMinStars, setSharedTripMinStars] = useState(0);
       const [sharedFilters, setSharedFilters] = useState({
         openNow: false, openAt: null, category: null, source: null, googleRating: null, vegetarian: false,
       });
@@ -13214,6 +13257,16 @@
         })();
       }, [shareId]);
 
+      // Keep the URL in sync with the active tab so share links can deep-link, e.g.
+      // #shared/<id>/trip lands you straight on the Trip recap view.
+      useEffect(() => {
+        if (!shareId) return;
+        const target = sharedViewMode === 'map' ? `#shared/${shareId}` : `#shared/${shareId}/${sharedViewMode}`;
+        if (window.location.hash !== target) {
+          try { window.history.replaceState(null, '', target); } catch (e) {}
+        }
+      }, [shareId, sharedViewMode]);
+
       // Init Leaflet map (only when in map mode) — use small delay to ensure DOM is ready
       useEffect(() => {
         if (!sharedData || sharedViewMode !== 'map') return;
@@ -13236,10 +13289,11 @@
 
           const map = L.map(container, { zoomControl: false }).setView(center, 13);
           L.control.zoom({ position: 'bottomright' }).addTo(map);
-          L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png', {
-            attribution: '\u00a9 OpenStreetMap \u00a9 CARTO',
+          const tileCfg = getTileLayerConfig(isDarkMode);
+          L.tileLayer(tileCfg.url, {
+            attribution: tileCfg.attribution,
             subdomains: 'abcd',
-            maxZoom: 20
+            ...tileCfg.opts,
           }).addTo(map);
           mapInstanceRef.current = map;
 
@@ -13905,6 +13959,20 @@
                     )}
                   </div>
 
+                  {/* Star-rating filter — quickly narrow the recap to highlights only. */}
+                  <div className="flex items-center justify-center gap-1.5 flex-wrap text-xs">
+                    <span className="text-gray-500 dark:text-gray-400 mr-1">Show:</span>
+                    {[0, 3, 4, 5].map(threshold => (
+                      <button
+                        key={threshold}
+                        onClick={() => setSharedTripMinStars(threshold)}
+                        className={`px-2 py-1 rounded-full font-medium transition ${sharedTripMinStars === threshold ? 'bg-purple-500 text-white' : (isDarkMode ? 'bg-slate-700 text-gray-300 hover:bg-slate-600' : 'bg-gray-100 text-gray-700 hover:bg-gray-200')}`}
+                      >
+                        {threshold === 0 ? 'All' : `${threshold}★+`}
+                      </button>
+                    ))}
+                  </div>
+
                   {/* Day cards — minimal recap: emoji, name, rating, notes. No times,
                       no addresses, options groups skipped (only the picks/single items render). */}
                   {days.map((day, di) => {
@@ -13912,6 +13980,13 @@
                       .filter(i => i.day_id === day.id)
                       // Skip unconfirmed options groups — recap only shows what was actually done
                       .filter(i => !(i.options && i.options.length >= 2 && !i.confirmed_option))
+                      // Apply star-rating filter (compares item rating OR linked pin rating)
+                      .filter(i => {
+                        if (!sharedTripMinStars) return true;
+                        const pin = i.pin_id ? pinsById.get(i.pin_id) : null;
+                        const r = i.personal_rating || pin?.personal_rating || 0;
+                        return r >= sharedTripMinStars;
+                      })
                       .sort((a, b) => {
                         const ta = a.scheduled_time || '';
                         const tb = b.scheduled_time || '';
@@ -16044,10 +16119,8 @@
         });
         mapRef.current = map;
 
-        const tileUrl = isDarkMode
-          ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'
-          : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png';
-        window.L.tileLayer(tileUrl, { maxZoom: 18 }).addTo(map);
+        const tileCfg = getTileLayerConfig(isDarkMode);
+        window.L.tileLayer(tileCfg.url, { ...tileCfg.opts, attribution: tileCfg.attribution }).addTo(map);
 
         return () => {
           if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
@@ -19987,9 +20060,12 @@
         }
       };
 
-      // Restore view state from URL hash on load (e.g. #collection/nyc or #shared/abc)
+      // Restore view state from URL hash on load (e.g. #collection/nyc or #shared/abc/trip)
       const initialHash = window.location.hash.replace('#', '');
-      const [hashView, hashCollection] = initialHash.includes('/') ? initialHash.split('/') : [initialHash || 'home', ''];
+      const initialHashParts = initialHash.split('/');
+      const hashView = initialHashParts[0] || 'home';
+      const hashCollection = initialHashParts[1] || '';
+      const hashTab = initialHashParts[2] || ''; // e.g. 'trip' for Trip recap tab
 
       const [view, setView] = useState(
         hashView === 'shared' && hashCollection ? 'shared'
@@ -19997,6 +20073,8 @@
         : 'home'
       );
       const [sharedMapId, setSharedMapId] = useState(hashView === 'shared' ? hashCollection : null);
+      // Initial tab for the shared view, if specified in the URL (#shared/<id>/trip).
+      const [sharedInitialTab] = useState(hashView === 'shared' ? (hashTab || 'map') : 'map');
       const [showList, setShowList] = useState(window.innerWidth >= 768); // show sidebar on desktop, map on mobile
       const [selectedPin, setSelectedPin] = useState(null);
       const [pins, setPins] = useState(() => {
@@ -20044,10 +20122,20 @@
       const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
       const [showAddFromLink, setShowAddFromLink] = useState(false);
       const [showPasteText, setShowPasteText] = useState(false);
-      const [toast, setToast] = useState(null); // { message, type }
-      const showToast = (message, type = 'success') => {
-        setToast({ message, type });
-        setTimeout(() => setToast(null), 3000);
+      const [toast, setToast] = useState(null); // { message, type, loading }
+      const toastTimerRef = useRef(null);
+      const showToast = (message, type = 'success', opts = {}) => {
+        if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); toastTimerRef.current = null; }
+        const loading = !!opts.loading;
+        const duration = opts.duration != null ? opts.duration : (loading ? 0 : 3000);
+        setToast({ message, type, loading });
+        if (duration > 0) {
+          toastTimerRef.current = setTimeout(() => { setToast(null); toastTimerRef.current = null; }, duration);
+        }
+      };
+      const hideToast = () => {
+        if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); toastTimerRef.current = null; }
+        setToast(null);
       };
       // Custom uploaded icons stored in localStorage
       const [customIcons, setCustomIcons] = useState(() => {
@@ -21206,7 +21294,7 @@
 
       // Shared map view — no auth required
       if (view === 'shared' && sharedMapId) {
-        return <SharedMapView shareId={sharedMapId} isDarkMode={darkMode} />;
+        return <SharedMapView shareId={sharedMapId} isDarkMode={darkMode} initialTab={sharedInitialTab} />;
       }
 
       if (!user || !authorized) {
@@ -21328,8 +21416,9 @@
                 if (!col) { showToast('Select a map first', 'error'); return; }
                 const colPins = pins.filter(p => p.collection_id === activeCollection);
                 const url = `${window.location.origin}${window.location.pathname}#shared/${activeCollection}`;
+                // Persistent loading toast so the user knows the share is in flight
+                showToast('Preparing share link…', 'success', { loading: true });
                 try {
-                  // Bundle the active itinerary so the share view can render the trip recap.
                   let itineraryBundle = null;
                   try {
                     const itins = await MockFirebase.loadItineraries(activeCollection);
@@ -21343,37 +21432,33 @@
                     }
                   } catch (e) { console.warn('Itinerary bundle for share failed:', e); }
                   await MockFirebase.shareCollection(activeCollection, col, colPins, itineraryBundle);
-                  // Remember this collection is shared so future edits auto-refresh the share doc.
                   sharedColIdsRef.current.add(activeCollection);
                   persistSharedCols();
                 } catch (e) {
                   console.error('Share write failed:', e);
+                  hideToast();
                   showToast('Failed to save share data: ' + (e.message || e), 'error');
                   return;
                 }
-                // ALWAYS copy to clipboard first so the user has the URL even if they cancel
-                // the OS share sheet on mobile (or the share API isn't available).
                 let copied = false;
-                try {
-                  await navigator.clipboard.writeText(url);
-                  copied = true;
-                } catch (e) { /* clipboard may be blocked in some contexts; we'll fall back below */ }
-                // Then offer the OS share sheet on mobile (the user can pick a target or cancel)
+                try { await navigator.clipboard.writeText(url); copied = true; }
+                catch (e) { /* clipboard may be blocked */ }
                 let sharedViaSheet = false;
                 if (isMobile && navigator.share) {
                   try {
+                    // Replace the loading toast with a quieter "Opening share…" before invoking
+                    // the OS share sheet — the OS sheet itself is the visible UI from here on.
+                    showToast('Opening share…', 'success', { loading: true });
                     await navigator.share({ title: `Bo Wander - ${col.name}`, text: `Check out my ${col.name} map on Bo Wander`, url });
                     sharedViaSheet = true;
-                  } catch (e) {
-                    // User cancelled or share failed — no-op since we already copied
-                  }
+                  } catch (e) { /* user cancelled or share failed — already have clipboard */ }
                 }
+                hideToast();
                 if (sharedViaSheet) {
                   showToast(copied ? 'Shared! Link also copied to clipboard.' : 'Shared!');
                 } else if (copied) {
                   showToast('Share link copied to clipboard!');
                 } else {
-                  // Clipboard blocked AND no share sheet — surface the URL so the user can long-press to copy
                   showToast('Link: ' + url);
                 }
               }}
@@ -22014,31 +22099,17 @@
                     }
                     const draft = pathDraft;
                     setPathDraft(null);
-                    showToast('Saving walking path…');
-                    // Fetch routed polylines (OSRM, free, no API key) for each segment.
-                    // Falls back to straight lines if OSRM is unreachable.
-                    const segs = [];
-                    for (let i = 1; i < draft.waypoints.length; i++) {
-                      const a = draft.waypoints[i - 1], b = draft.waypoints[i];
-                      try {
-                        const url = `https://router.project-osrm.org/route/v1/foot/${a.lng},${a.lat};${b.lng},${b.lat}?overview=full&geometries=polyline`;
-                        const resp = await fetch(url);
-                        if (resp.ok) {
-                          const data = await resp.json();
-                          const poly = data.routes?.[0]?.geometry || '';
-                          segs.push(poly);
-                          continue;
-                        }
-                      } catch (e) { /* fall through to empty segment */ }
-                      segs.push(''); // empty = renderer will draw a dashed straight line
-                    }
+                    // Save the line EXACTLY as drawn — straight segments between the user's
+                    // tapped waypoints. (Earlier we routed each segment through OSRM, which
+                    // re-routed straight strokes along actual streets and produced a wildly
+                    // different shape from what the user drew. The user just wants the line.)
                     const saved = {
                       id: Date.now().toString(),
                       collection_id: activeCollection,
                       name: (draft.name || '').trim() || `Walking path ${walkingPaths.length + 1}`,
                       color: draft.color || PATH_COLORS[walkingPaths.length % PATH_COLORS.length],
                       waypoints: draft.waypoints,
-                      polyline_segments: segs,
+                      // No polyline_segments — renderer draws straight lines between waypoints.
                     };
                     try { await MockFirebase.saveWalkingPath(saved); showToast('Walking path saved'); }
                     catch (e) { showToast('Save failed: ' + (e.message || e), 'error'); }
@@ -22053,9 +22124,17 @@
           {toast && (
             <div className="fixed top-20 left-1/2 -translate-x-1/2 z-[10000] animate-bounce-in">
               <div className={`px-4 py-2.5 rounded-xl shadow-lg font-medium text-sm flex items-center gap-2 ${
-                toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'
+                toast.loading ? 'bg-blue-600 text-white' : (toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white')
               }`}>
-                <span>{toast.type === 'success' ? '✓' : '✗'}</span>
+                {toast.loading ? (
+                  // Inline spinner so the user knows the action is in flight
+                  <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.3" />
+                    <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                  </svg>
+                ) : (
+                  <span>{toast.type === 'success' ? '✓' : '✗'}</span>
+                )}
                 {toast.message}
               </div>
             </div>
