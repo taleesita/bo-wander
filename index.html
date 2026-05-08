@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v148';
+    const APP_VERSION = 'v150';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -14092,14 +14092,14 @@
             const allPins = sharedData.pins || [];
             const pinsById = new Map(allPins.map(p => [p.id, p]));
             // Look up the review for an item, falling back across same-place duplicates.
-            // Reservations and spots can both exist for the same place — the item is linked
-            // to one of them, but the review may live on the other. Pick whichever pin has a
-            // non-empty review so users don't see blanks for places they actually rated.
+            // Pin-level review is canonical (the pin IS the place); the same-place lookup
+            // catches reservation↔spot duplicates so the recap finds the review wherever it
+            // actually lives. Item-level personal_rating/notes is a fallback for pinless
+            // custom items, or for cases where no linked pin yet has a review. We prefer
+            // pin-level over item-level because the user typically updates the pin (where
+            // they review the place, not the day-item) — without this precedence, an old
+            // item-level review from a one-time DayReview swipe would shadow current pin edits.
             const findReviewForItem = (item) => {
-              // Item-level review wins outright if it has anything
-              if (item.personal_rating || item.personal_notes) {
-                return { rating: item.personal_rating || 0, notes: item.personal_notes || '' };
-              }
               const directPin = item.pin_id ? pinsById.get(item.pin_id) : null;
               const candidates = [];
               if (directPin) {
@@ -14113,6 +14113,10 @@
                 if (c.personal_rating || c.personal_notes) {
                   return { rating: c.personal_rating || 0, notes: c.personal_notes || '' };
                 }
+              }
+              // Final fallback: item-level review (pinless items, or no pin has a review yet)
+              if (item.personal_rating || item.personal_notes) {
+                return { rating: item.personal_rating || 0, notes: item.personal_notes || '' };
               }
               return { rating: 0, notes: '' };
             };
@@ -20608,6 +20612,63 @@
       const persistSharedCols = () => {
         try { localStorage.setItem('boWanderSharedCols', JSON.stringify([...sharedColIdsRef.current])); } catch (e) {}
       };
+      // Smart share handler — used by all "Share Map" entry points (mobile chip, desktop
+      // search bar overflow, ⋯ menu). When the active collection is already shared, this
+      // skips the snapshot rewrite (the auto-refresh effect handles that on its own) and
+      // jumps straight to copying / popping the OS share sheet. First-time shares still
+      // do the full create-snapshot flow with the loading toast.
+      const handleShareMap = async () => {
+        const col = collections.find(c => c.id === activeCollection);
+        if (!col) { showToast('Select a map first', 'error'); return; }
+        const url = `${window.location.origin}${window.location.pathname}#shared/${activeCollection}`;
+        const alreadyShared = sharedColIdsRef.current.has(activeCollection);
+        if (!alreadyShared) {
+          const colPins = pins.filter(p => p.collection_id === activeCollection);
+          showToast('Preparing share link…', 'success', { loading: true });
+          try {
+            let itineraryBundle = null;
+            try {
+              const itins = await MockFirebase.loadItineraries(activeCollection);
+              const activeItin = (itins || []).find(i => i.is_active) || (itins || [])[0];
+              if (activeItin) {
+                const [_days, _items] = await Promise.all([
+                  MockFirebase.loadDays(activeItin.id),
+                  MockFirebase.loadItems(activeItin.id),
+                ]);
+                itineraryBundle = { itinerary: activeItin, days: _days || [], items: _items || [] };
+              }
+            } catch (e) { console.warn('Itinerary bundle for share failed:', e); }
+            await MockFirebase.shareCollection(activeCollection, col, colPins, itineraryBundle);
+            sharedColIdsRef.current.add(activeCollection);
+            persistSharedCols();
+          } catch (e) {
+            console.error('Share write failed:', e);
+            hideToast();
+            showToast('Failed to save share data: ' + (e.message || e), 'error');
+            return;
+          }
+        }
+        // Copy + (mobile) OS share sheet — same for both already-shared and first-time flow
+        let copied = false;
+        try { await navigator.clipboard.writeText(url); copied = true; }
+        catch (e) { /* clipboard may be blocked */ }
+        let sharedViaSheet = false;
+        if (isMobile && navigator.share) {
+          try {
+            showToast('Opening share…', 'success', { loading: true });
+            await navigator.share({ title: `Bo Wander - ${col.name}`, text: `Check out my ${col.name} map on Bo Wander`, url });
+            sharedViaSheet = true;
+          } catch (e) { /* user cancelled — already have clipboard */ }
+        }
+        hideToast();
+        if (sharedViaSheet) {
+          showToast(copied ? 'Shared! Link also copied to clipboard.' : 'Shared!');
+        } else if (copied) {
+          showToast(alreadyShared ? 'Link copied — share already updates as you edit.' : 'Share link copied to clipboard!');
+        } else {
+          showToast('Link: ' + url);
+        }
+      };
       // A monotonic counter ItineraryPlanner can bump whenever it writes days/items so the
       // auto-refresh effect picks it up without needing to lift items/days into App state.
       const [itinChangeRev, setItinChangeRev] = useState(0);
@@ -20627,6 +20688,10 @@
       const PATH_COLORS = ['#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#22c55e', '#eab308', '#ef4444'];
       useEffect(() => {
         if (typeof navigator === 'undefined' || !navigator.geolocation) return;
+        // Share visitors shouldn't get a location prompt — there's nothing in the shared
+        // view that needs their GPS. Only the owner's main app uses watchPosition for the
+        // "you are here" dot on the day mini-map etc.
+        if (view === 'shared') return;
         let watchId = null;
         try {
           watchId = navigator.geolocation.watchPosition(
@@ -20636,7 +20701,7 @@
           );
         } catch (e) { /* ignore */ }
         return () => { if (watchId != null) try { navigator.geolocation.clearWatch(watchId); } catch (e) {} };
-      }, []);
+      }, [view]);
 
       // Auto-refresh shared map(s) when pins or itinerary content change. Without this,
       // a deleted pin would still show on the public share link until the user manually
@@ -21076,10 +21141,13 @@
         const lat = parseFloat(updatedPin.lat);
         const lng = parseFloat(updatedPin.lng);
         updatedPin = { ...updatedPin, lat: isNaN(lat) ? 0 : lat, lng: isNaN(lng) ? 0 : lng };
-        // Detect whether this save changed personal_rating or personal_notes — if so, we
-        // mirror those values to same-place duplicates (reservation↔spot pairs) so they
-        // can't drift apart again. Only fields that actually changed propagate, so saving
-        // an unrelated field (like notes-untouched-but-photos-edited) won't overwrite.
+        // Detect whether this save touched personal_rating or personal_notes. If so, the
+        // pin you're editing is implicitly the canonical review for this place — so we
+        // mirror BOTH rating AND notes to any same-place duplicates (reservation↔spot pairs).
+        // Mirroring both is intentional: if someone edits just the rating on the spot pin,
+        // they expect the rest of the review (notes) on the duplicate to match the spot pin
+        // too, not stay frozen with whatever stale text it had. Saves that don't touch the
+        // review (e.g. updating photos or description only) skip the sync entirely.
         const prevPin = pins.find(p => p.id === updatedPin.id);
         const ratingChanged = prevPin && prevPin.personal_rating !== updatedPin.personal_rating;
         const notesChanged = prevPin && (prevPin.personal_notes || '') !== (updatedPin.personal_notes || '');
@@ -21087,10 +21155,11 @@
         if (ratingChanged || notesChanged) {
           pins.forEach(p => {
             if (p.id !== updatedPin.id && isSamePlacePin(updatedPin, p)) {
-              const synced = { ...p };
-              if (ratingChanged) synced.personal_rating = updatedPin.personal_rating;
-              if (notesChanged) synced.personal_notes = updatedPin.personal_notes;
-              MockFirebase.savePin(synced);
+              MockFirebase.savePin({
+                ...p,
+                personal_rating: updatedPin.personal_rating,
+                personal_notes: updatedPin.personal_notes,
+              });
             }
           });
         }
@@ -21819,57 +21888,7 @@
               onUploadConfirmation={() => setShowUploadConfirmation(true)}
               onFromPhoto={() => { if (photoToPinInputRef.current) photoToPinInputRef.current.click(); }}
               onBulkPhotoScan={() => { if (bulkPhotoInputRef.current) bulkPhotoInputRef.current.click(); }}
-              onShareMap={async () => {
-                const col = collections.find(c => c.id === activeCollection);
-                if (!col) { showToast('Select a map first', 'error'); return; }
-                const colPins = pins.filter(p => p.collection_id === activeCollection);
-                const url = `${window.location.origin}${window.location.pathname}#shared/${activeCollection}`;
-                // Persistent loading toast so the user knows the share is in flight
-                showToast('Preparing share link…', 'success', { loading: true });
-                try {
-                  let itineraryBundle = null;
-                  try {
-                    const itins = await MockFirebase.loadItineraries(activeCollection);
-                    const activeItin = (itins || []).find(i => i.is_active) || (itins || [])[0];
-                    if (activeItin) {
-                      const [_days, _items] = await Promise.all([
-                        MockFirebase.loadDays(activeItin.id),
-                        MockFirebase.loadItems(activeItin.id),
-                      ]);
-                      itineraryBundle = { itinerary: activeItin, days: _days || [], items: _items || [] };
-                    }
-                  } catch (e) { console.warn('Itinerary bundle for share failed:', e); }
-                  await MockFirebase.shareCollection(activeCollection, col, colPins, itineraryBundle);
-                  sharedColIdsRef.current.add(activeCollection);
-                  persistSharedCols();
-                } catch (e) {
-                  console.error('Share write failed:', e);
-                  hideToast();
-                  showToast('Failed to save share data: ' + (e.message || e), 'error');
-                  return;
-                }
-                let copied = false;
-                try { await navigator.clipboard.writeText(url); copied = true; }
-                catch (e) { /* clipboard may be blocked */ }
-                let sharedViaSheet = false;
-                if (isMobile && navigator.share) {
-                  try {
-                    // Replace the loading toast with a quieter "Opening share…" before invoking
-                    // the OS share sheet — the OS sheet itself is the visible UI from here on.
-                    showToast('Opening share…', 'success', { loading: true });
-                    await navigator.share({ title: `Bo Wander - ${col.name}`, text: `Check out my ${col.name} map on Bo Wander`, url });
-                    sharedViaSheet = true;
-                  } catch (e) { /* user cancelled or share failed — already have clipboard */ }
-                }
-                hideToast();
-                if (sharedViaSheet) {
-                  showToast(copied ? 'Shared! Link also copied to clipboard.' : 'Shared!');
-                } else if (copied) {
-                  showToast('Share link copied to clipboard!');
-                } else {
-                  showToast('Link: ' + url);
-                }
-              }}
+              onShareMap={handleShareMap}
               onFetchTabelog={(() => {
                 const col = collections.find(c => c.id === activeCollection);
                 if (!isJapanCollection(col)) return null;
@@ -21935,36 +21954,7 @@
                   🗓️
                 </button>
                 <button
-                  onClick={async () => {
-                    const col = collections.find(c => c.id === activeCollection);
-                    if (!col) return;
-                    const colPins = pins.filter(p => p.collection_id === activeCollection);
-                    try {
-                      // Bundle the active itinerary so the share view can render the trip recap.
-                  let itineraryBundle = null;
-                  try {
-                    const itins = await MockFirebase.loadItineraries(activeCollection);
-                    const activeItin = (itins || []).find(i => i.is_active) || (itins || [])[0];
-                    if (activeItin) {
-                      const [_days, _items] = await Promise.all([
-                        MockFirebase.loadDays(activeItin.id),
-                        MockFirebase.loadItems(activeItin.id),
-                      ]);
-                      itineraryBundle = { itinerary: activeItin, days: _days || [], items: _items || [] };
-                    }
-                  } catch (e) { console.warn('Itinerary bundle for share failed:', e); }
-                  await MockFirebase.shareCollection(activeCollection, col, colPins, itineraryBundle);
-                  // Remember this collection is shared so future edits auto-refresh the share doc.
-                  sharedColIdsRef.current.add(activeCollection);
-                  persistSharedCols();
-                      const url = `${window.location.origin}${window.location.pathname}#shared/${activeCollection}`;
-                      await navigator.clipboard.writeText(url);
-                      showToast('Share link copied to clipboard!');
-                    } catch (e) {
-                      console.error('Share failed:', e);
-                      showToast('Failed to share — try again', 'error');
-                    }
-                  }}
+                  onClick={handleShareMap}
                   className="w-10 h-10 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-full shadow-lg text-base transition"
                   title="Share this map"
                 >
@@ -22887,40 +22877,7 @@
               </div>
               <div
                 className="fam-item"
-                onClick={async () => {
-                  setShowAddMenu(false);
-                  const col = collections.find(c => c.id === activeCollection);
-                  if (!col) return;
-                  const colPins = pins.filter(p => p.collection_id === activeCollection);
-                  try {
-                    // Bundle the active itinerary so the share view can render the trip recap.
-                  let itineraryBundle = null;
-                  try {
-                    const itins = await MockFirebase.loadItineraries(activeCollection);
-                    const activeItin = (itins || []).find(i => i.is_active) || (itins || [])[0];
-                    if (activeItin) {
-                      const [_days, _items] = await Promise.all([
-                        MockFirebase.loadDays(activeItin.id),
-                        MockFirebase.loadItems(activeItin.id),
-                      ]);
-                      itineraryBundle = { itinerary: activeItin, days: _days || [], items: _items || [] };
-                    }
-                  } catch (e) { console.warn('Itinerary bundle for share failed:', e); }
-                  await MockFirebase.shareCollection(activeCollection, col, colPins, itineraryBundle);
-                  // Remember this collection is shared so future edits auto-refresh the share doc.
-                  sharedColIdsRef.current.add(activeCollection);
-                  persistSharedCols();
-                    const url = `${window.location.origin}${window.location.pathname}#shared/${activeCollection}`;
-                    if (navigator.share) {
-                      await navigator.share({ title: `Bo Wander - ${col.name}`, text: `Check out my ${col.name} map on Bo Wander`, url });
-                    } else {
-                      await navigator.clipboard.writeText(url);
-                      showToast('Share link copied!');
-                    }
-                  } catch (e) {
-                    if (e.name !== 'AbortError') showToast('Failed to share', 'error');
-                  }
-                }}
+                onClick={() => { setShowAddMenu(false); handleShareMap(); }}
               >
                 <span>🔗</span>
                 <span>Share Map</span>
