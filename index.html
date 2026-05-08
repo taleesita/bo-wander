@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v151';
+    const APP_VERSION = 'v152';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -624,7 +624,12 @@
     //           - With a MapTiler API key: MapTiler Streets (clean Carto-like style, English labels)
     //           - Without a key: Esri World Topo Map fallback (more topo-styled, less flat)
     const getMapLang = () => { try { return localStorage.getItem('boWanderMapLang') || 'local'; } catch (e) { return 'local'; } };
-    const setMapLang = (lang) => { try { localStorage.setItem('boWanderMapLang', lang); } catch (e) {} };
+    const setMapLang = (lang) => {
+      try { localStorage.setItem('boWanderMapLang', lang); } catch (e) {}
+      // Broadcast so every open map (main, day mini, share) can swap its tile layer in place
+      // instead of forcing a full app reload. Listeners live inside each map's tile effect.
+      try { window.dispatchEvent(new CustomEvent('bw-map-lang-change', { detail: { lang } })); } catch (e) {}
+    };
     // MapTiler API key — optional. When set + lang='en', map uses MapTiler tiles with
     // proper English labels (lang=en) which look much more like Carto Voyager than the
     // Esri Topo fallback. Free tier: 100k tiles/month, no credit card required.
@@ -4794,10 +4799,24 @@
                   {onFetchTabelog && (
                     <button
                       onClick={() => { onFetchTabelog(); setIsFocused(false); setQuery(''); }}
-                      className={`px-2.5 py-2.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm ${showDropdown ? '' : 'rounded-r-full'}`}
+                      className={`px-2.5 py-2.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-sm ${getMapTilerKey() ? 'border-r dark:border-slate-600' : (showDropdown ? '' : 'rounded-r-full')}`}
                       title="Fetch Tabelog ratings"
                     >
                       🍜
+                    </button>
+                  )}
+                  {/* Lang toggle, gated on MapTiler key being set (EN looks best with MapTiler). */}
+                  {getMapTilerKey() && (
+                    <button
+                      onClick={() => {
+                        const next = getMapLang() === 'en' ? 'local' : 'en';
+                        setMapLang(next);
+                        setIsFocused(false); setQuery('');
+                      }}
+                      className={`px-2.5 py-2.5 text-gray-500 dark:text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition text-[11px] font-bold ${showDropdown ? '' : 'rounded-r-full'}`}
+                      title={getMapLang() === 'en' ? 'English labels — tap for local language' : 'Local language — tap for English labels'}
+                    >
+                      {getMapLang() === 'en' ? 'EN' : '文'}
                     </button>
                   )}
                 </div>
@@ -4874,6 +4893,23 @@
                         >
                           <span className="text-base">🍜</span>
                           <span>Fetch Tabelog ratings</span>
+                        </button>
+                      )}
+                      {/* Map language toggle — only when a MapTiler key is set, because EN
+                          looks cleanest with MapTiler tiles. Without the key the toggle would
+                          jump to the Esri Topo fallback, which the user disliked, so we hide
+                          the option entirely until they've configured MapTiler. */}
+                      {getMapTilerKey() && (
+                        <button
+                          className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-slate-700 transition border-t dark:border-slate-700"
+                          onClick={() => {
+                            const next = getMapLang() === 'en' ? 'local' : 'en';
+                            setMapLang(next); // dispatches event; maps swap tiles in place
+                            setShowMoreMenu(false); setIsFocused(false); setQuery('');
+                          }}
+                        >
+                          <span className="text-base font-bold w-[18px] text-center" style={{ fontSize: 11 }}>{getMapLang() === 'en' ? 'EN' : '文'}</span>
+                          <span>{getMapLang() === 'en' ? 'Switch to local language' : 'Switch to English labels'}</span>
                         </button>
                       )}
                     </div>
@@ -5431,9 +5467,23 @@
           let inlineDesc = '';
           let name = raw;
           const dashSplit = raw.match(/^(.+?)\s+(?:[—–]|-)\s+(.+)$/);
-          if (dashSplit && dashSplit[1].trim().length >= 3 && dashSplit[1].trim().length <= 80) {
-            name = dashSplit[1].trim();
-            inlineDesc = dashSplit[2].trim();
+          if (dashSplit) {
+            const candidate = dashSplit[1].trim();
+            if (candidate.length >= 3 && candidate.length <= 80) {
+              name = candidate;
+              inlineDesc = dashSplit[2].trim();
+            } else if (candidate.length > 80) {
+              // Name-too-long fallback: many guides use "Name, address line — description"
+              // (e.g. "% ARABICA Kyoto Arashiyama, 3-1 Sagatenryuji Susukinobabacho… — World-renowned…").
+              // Take everything up to the first comma as the name, fold the address into the description.
+              const firstComma = candidate.indexOf(',');
+              if (firstComma >= 3 && firstComma <= 80) {
+                name = candidate.slice(0, firstComma).trim();
+                const addressTail = candidate.slice(firstComma + 1).trim();
+                const post = dashSplit[2].trim();
+                inlineDesc = addressTail && post ? `${addressTail} — ${post}` : (post || addressTail);
+              }
+            }
           }
           name = name.replace(/[.,:;]$/, '').trim();
           if (name.length < 3 || name.length > 80) continue;
@@ -12300,17 +12350,23 @@
         }
       }, [previewPin]);
 
-      // Update tiles when dark mode changes
+      // Update tiles when dark mode changes — also listen for in-place language swaps
+      // (dispatched by setMapLang) so toggling EN/文 doesn't require a full app reload.
       useEffect(() => {
-        const map = mapInstanceRef.current;
-        if (!map) return;
-        if (tileLayerRef.current) map.removeLayer(tileLayerRef.current);
-        const tileCfg = getTileLayerConfig(isDarkMode);
-        tileLayerRef.current = L.tileLayer(tileCfg.url, {
-          attribution: tileCfg.attribution,
-          subdomains: 'abcd',
-          ...tileCfg.opts,
-        }).addTo(map);
+        const swapTiles = () => {
+          const map = mapInstanceRef.current;
+          if (!map) return;
+          if (tileLayerRef.current) map.removeLayer(tileLayerRef.current);
+          const tileCfg = getTileLayerConfig(isDarkMode);
+          tileLayerRef.current = L.tileLayer(tileCfg.url, {
+            attribution: tileCfg.attribution,
+            subdomains: 'abcd',
+            ...tileCfg.opts,
+          }).addTo(map);
+        };
+        swapTiles();
+        window.addEventListener('bw-map-lang-change', swapTiles);
+        return () => window.removeEventListener('bw-map-lang-change', swapTiles);
       }, [isDarkMode]);
 
       // Update markers and fit bounds when pins change
@@ -12605,23 +12661,8 @@
               </svg>
             </button>
           )}
-          {/* Language toggle — switches map tiles between local script (Carto Voyager) and
-              English (MapTiler if a key is set in Settings, else Esri Topo fallback) */}
-          <button
-            onClick={() => {
-              const next = getMapLang() === 'en' ? 'local' : 'en';
-              setMapLang(next);
-              // Hard-reload so every open map (main, day, share) picks up the new tile layer cleanly.
-              try { window.location.reload(); } catch (e) {}
-            }}
-            className="absolute rounded-md shadow-lg flex items-center justify-center transition-all bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700"
-            style={{ right: 10, bottom: 235, zIndex: 1000, width: 34, height: 34 }}
-            title={getMapLang() === 'en' ? 'English labels — tap for local language' : 'Local language — tap for English labels'}
-          >
-            <span className="text-[10px] font-bold text-gray-700 dark:text-gray-200 leading-none">
-              {getMapLang() === 'en' ? 'EN' : '文'}
-            </span>
-          </button>
+          {/* (Language toggle moved to search bar overflow menu in v152 — only visible
+              when a MapTiler API key is set, since EN looks cleanest with MapTiler tiles.) */}
           {/* Locate me button — above Leaflet zoom controls */}
           <button
             onClick={() => {
@@ -15285,6 +15326,13 @@
       const [pinSearch, setPinSearch] = useState('');
       const [shortlist, setShortlist] = useState(item?.options || []); // [{pin_id, name, emoji, lat, lng}]
       const longPressTimer = React.useRef(null);
+      // Tap-guard: when async results (web search, path matches) repaint the list, briefly
+      // ignore taps so a finger that was already aimed at row N doesn't accidentally trigger
+      // a different row that just slid into that screen position. 150ms is short enough not
+      // to feel laggy, long enough to absorb the layout swap.
+      const tapGuardUntilRef = React.useRef(0);
+      const markTapGuard = () => { tapGuardUntilRef.current = Date.now() + 150; };
+      const shouldIgnoreTap = () => Date.now() < tapGuardUntilRef.current;
       const longPressTriggered = React.useRef(false);
 
       // If a meal preset passed an anchor location (e.g. "sort by proximity to my 12:30 item"),
@@ -15633,13 +15681,16 @@
                                 type: f.properties.osm_value || f.properties.type || '',
                               }));
                               setWebSearchResults(results);
+                              markTapGuard();
                             } else {
                               console.warn('[Search] Photon API error:', resp.status);
                               setWebSearchResults([]);
+                              markTapGuard();
                             }
                           } catch(e) {
                             console.warn('[Search] Photon fetch failed:', e);
                             setWebSearchResults([]);
+                            markTapGuard();
                           }
                           setWebSearching(false);
                         }, 400);
@@ -15677,6 +15728,7 @@
                       return matches.map(p => (
                         <button key={`path-${p.id}`}
                           onClick={() => {
+                            if (shouldIgnoreTap()) return;
                             // Keep the Pin tab active visually — selectedPathId is the signal
                             // that handleSave should route through the walking-path branch
                             // (so the user doesn't get jolted to a different tab).
@@ -15754,15 +15806,27 @@
                       );
                     })}
                   </div>
-                  {/* Web search results — find new places not on the map */}
+                  {/* Web search results — find new places not on the map.
+                      Fixed-height container so the section doesn't grow/shrink as results
+                      arrive — keeps the form below from sliding under the user's finger. */}
                   {pinSearch.trim().length >= 3 && (
-                    <div className="mt-1">
-                      {webSearching && <p className="text-[10px] text-gray-400 text-center py-1">🔍 Searching places…</p>}
-                      {!webSearching && webSearchResults.length === 0 && <p className="text-[10px] text-gray-400 text-center py-1">No external results · try a different search</p>}
-                      {webSearchResults.length > 0 && (
-                        <>
-                          <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-1">Not on your map? Add from search:</p>
-                          <div className="max-h-40 overflow-y-auto space-y-1 border rounded-lg border-dashed border-green-300 dark:border-green-700 p-1 bg-green-50/30 dark:bg-green-900/10">
+                    <div className="mt-1 border rounded-lg border-dashed border-green-300 dark:border-green-700 bg-green-50/30 dark:bg-green-900/10 overflow-hidden" style={{ height: 168 }}>
+                      {webSearching ? (
+                        <div className="h-full flex items-center justify-center text-[11px] text-gray-400 dark:text-gray-500 gap-1.5">
+                          <svg className="animate-spin" width="11" height="11" viewBox="0 0 24 24" fill="none">
+                            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.3" />
+                            <path d="M22 12a10 10 0 0 0-10-10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                          </svg>
+                          Searching places…
+                        </div>
+                      ) : webSearchResults.length === 0 ? (
+                        <div className="h-full flex items-center justify-center text-[11px] text-gray-400 dark:text-gray-500">
+                          No external results · try a different search
+                        </div>
+                      ) : (
+                        <div className="h-full overflow-y-auto p-1">
+                          <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-1 px-1">Not on your map? Add from search:</p>
+                          <div className="space-y-1">
                             {webSearchResults.map((place, i) => {
                               const placeKey = `${place.displayName}::${place.lat}::${place.lng}`;
                               const alreadyAdded = addedSearchPlaces.has(placeKey);
@@ -15770,6 +15834,10 @@
                               <button key={i}
                                 disabled={alreadyAdded}
                                 onClick={() => {
+                                  // Tap-guard: ignore taps fired within ~150ms of results refreshing.
+                                  // Without this, a finger aimed at row N can accidentally trigger
+                                  // the new row that just slid into that spot.
+                                  if (shouldIgnoreTap()) return;
                                   // One-click full add: create the pin on the map (or reuse an
                                   // existing same-place pin), then commit the day item right away.
                                   // Previously this only filled the form fields and left it to the
@@ -15826,7 +15894,7 @@
                               );
                             })}
                           </div>
-                        </>
+                        </div>
                       )}
                     </div>
                   )}
@@ -16020,7 +16088,18 @@
               {/* Time + Duration */}
               <div className="grid grid-cols-2 gap-3">
                 <div style={{ minWidth: 0 }}>
-                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Time</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Time</label>
+                    {scheduledTime && (
+                      // iOS's native "Reset" button only resets the picker to its initial value
+                      // and gives no way to clear the input — so we add an explicit Clear that
+                      // wipes the time, making the item unscheduled.
+                      <button type="button" onClick={() => setScheduledTime('')}
+                        className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400 px-1">
+                        ✕ Clear
+                      </button>
+                    )}
+                  </div>
                   <input type="time" value={scheduledTime} onChange={e => setScheduledTime(e.target.value)}
                     className="w-full px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
                     style={{ WebkitAppearance: 'none', boxSizing: 'border-box', minHeight: 42 }} />
@@ -16478,6 +16557,7 @@
       // and only swapping its layers preserves their interactive zoom state.
       const markersRef = useRef([]);
       const polylineLayersRef = useRef([]);
+      const tileLayerRef = useRef(null);
       const hasFitRef = useRef(false);
       const [ready, setReady] = useState(false);
       // Reorder mode state — when active, tapping pins builds a new visit order.
@@ -16513,12 +16593,23 @@
         mapRef.current = map;
 
         const tileCfg = getTileLayerConfig(isDarkMode);
-        window.L.tileLayer(tileCfg.url, { ...tileCfg.opts, attribution: tileCfg.attribution }).addTo(map);
+        tileLayerRef.current = window.L.tileLayer(tileCfg.url, { ...tileCfg.opts, attribution: tileCfg.attribution }).addTo(map);
+
+        // Hot-swap tile layer when the lang preference changes — no full re-mount needed.
+        const swapTiles = () => {
+          if (!mapRef.current) return;
+          if (tileLayerRef.current) try { mapRef.current.removeLayer(tileLayerRef.current); } catch (e) {}
+          const cfg = getTileLayerConfig(isDarkMode);
+          tileLayerRef.current = window.L.tileLayer(cfg.url, { ...cfg.opts, attribution: cfg.attribution }).addTo(mapRef.current);
+        };
+        window.addEventListener('bw-map-lang-change', swapTiles);
 
         return () => {
+          window.removeEventListener('bw-map-lang-change', swapTiles);
           if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; }
           markersRef.current = [];
           polylineLayersRef.current = [];
+          tileLayerRef.current = null;
           hasFitRef.current = false;
         };
       }, [ready, isDarkMode]);
@@ -17107,13 +17198,29 @@
         { name: 'Dinner', emoji: '🍽️', defaultTime: 18.5 * 60, windowStart: 17.5 * 60, windowEnd: 19 * 60, mealType: 'dinner' },
       ];
       const foodCats = new Set(['restaurant', 'cafe', 'treats', 'bar']);
+      // Broader meal-emoji set so e.g. a "🥯" bagel item or "🍰" pastry item also counts.
+      // Anything food-or-drink-iconic that the user might pick belongs here.
+      const mealEmojis = new Set([
+        '🍱','🥐','🍽️','🍣','🍜','☕','🍺','🍰','🍩','🧁','🥖','🥯','🍵','🧋','🥗',
+        '🍙','🍳','🍕','🍔','🌮','🌯','🥡','🥞','🥨','🌭','🥪','🍝','🥘','🍲','🧀','🍤','🍦',
+      ]);
+      const mealNameKeywords = /\b(breakfast|brunch|lunch|dinner|coffee|caf[eé]|bakery|bagel|brunch|tea|cocktail)\b/i;
       const allTimedItems = [...allReal, ...transitItems].map(it => {
         const t = it.scheduled_time;
         if (!t) return null;
         const [h, m] = t.split(':').map(Number);
         const dur = it.estimated_duration_minutes || it.duration_minutes || 60;
         const startMins = h * 60 + m;
-        return { startMins, endMins: startMins + dur, isMeal: foodCats.has(pins.find(p => p.id === it.pin_id)?.category) || it.type === 'meal' || it.emoji === '🍱' || it.emoji === '🥐' || it.emoji === '🍽️' || it.emoji === '🍣' || it.emoji === '🍜' || it.emoji === '☕' || it.emoji === '🍺' };
+        const linkedPin = it.pin_id ? pins.find(p => p.id === it.pin_id) : null;
+        const pinTaggedMeal = Array.isArray(linkedPin?.mealTags) && linkedPin.mealTags.length > 0;
+        const isMeal = (
+          (linkedPin && foodCats.has(linkedPin.category))
+          || pinTaggedMeal
+          || it.type === 'meal'
+          || (it.emoji && mealEmojis.has(it.emoji))
+          || (it.name && mealNameKeywords.test(it.name))
+        );
+        return { startMins, endMins: startMins + dur, isMeal, mealTags: linkedPin?.mealTags || [] };
       }).filter(Boolean).sort((a, b) => a.startMins - b.startMins);
 
       const mealSlots = mealDefs.filter(meal => {
@@ -17123,6 +17230,9 @@
         if (allReal.some(it => it.options && it.options.length >= 2 && it.name?.toLowerCase().includes(meal.mealType))) return false;
         // Don't show if a meal-like item already exists in this window
         if (allTimedItems.some(e => e.isMeal && e.startMins >= meal.windowStart && e.startMins <= meal.windowEnd)) return false;
+        // Also hide if any timed item is explicitly tagged for this meal type — handles cases
+        // where the user scheduled a tagged spot slightly outside the default window.
+        if (allTimedItems.some(e => e.mealTags && e.mealTags.includes(meal.mealType))) return false;
         // Hide meal slot if more than 5 hours past meal time AND this is today
         const _now = new Date();
         const _today = `${_now.getFullYear()}-${String(_now.getMonth() + 1).padStart(2, '0')}-${String(_now.getDate()).padStart(2, '0')}`;
