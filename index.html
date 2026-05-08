@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v150';
+    const APP_VERSION = 'v151';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -1776,6 +1776,15 @@
       async deleteWalkingPath(pathId) {
         try { await db.collection('walking_paths').doc(pathId).delete(); }
         catch (e) { console.warn('[walking_paths] delete failed:', e); }
+      },
+      // One-shot read of all walking paths for a collection — used by backup export.
+      async loadWalkingPaths(collectionId) {
+        try {
+          const snap = await db.collection('walking_paths').where('collection_id', '==', collectionId).get();
+          const paths = [];
+          snap.forEach(d => paths.push({ id: d.id, ...d.data() }));
+          return paths;
+        } catch (e) { console.warn('[walking_paths] load failed:', e); return []; }
       },
       onWalkingPathsSnapshot(collectionId, callback) {
         try {
@@ -14306,13 +14315,15 @@
     };
 
     // ==================== HOME PAGE COMPONENT ====================
-    const HomePage = ({ collections, pins, onSelectCollection, onCreateCollection, onDeleteCollection, isDarkMode, isMobile }) => {
+    const HomePage = ({ collections, pins, onSelectCollection, onCreateCollection, onDeleteCollection, onExportBackup, onImportBackup, isDarkMode, isMobile }) => {
       const [showCreateDialog, setShowCreateDialog] = useState(false);
       const [newCollectionName, setNewCollectionName] = useState('');
       const [showSettings, setShowSettings] = useState(false);
       const [apiKeyInput, setApiKeyInput] = useState(getGoogleApiKey());
       const [mapTilerKeyInput, setMapTilerKeyInput] = useState(getMapTilerKey());
       const [mapTilerSaved, setMapTilerSaved] = useState(false);
+      const backupFileInputRef = useRef(null);
+      const [backupBusy, setBackupBusy] = useState(false);
       const [confirmDelete, setConfirmDelete] = useState(null); // collection id to confirm delete
       const [editingCover, setEditingCover] = useState(null); // { id, name } of collection being edited
       const [coverUrl, setCoverUrl] = useState('');
@@ -14724,6 +14735,55 @@
                     </summary>
                     <div className="pt-1 pl-2">
                       <ApiUsagePanel />
+                    </div>
+                  </details>
+
+                  <details className="group">
+                    <summary className="flex items-center justify-between cursor-pointer py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400">
+                      <span>💾 Backup & Restore</span>
+                      <span className="text-xs text-gray-400 group-open:rotate-90 transition-transform">▶</span>
+                    </summary>
+                    <div className="pt-2 pb-3 pl-2 space-y-2">
+                      <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                        Download a single JSON file containing all your maps, pins, trips, walking paths and travel docs. Stash it in Drive / Dropbox / wherever you keep things safe. Restore reads a backup file and re-saves everything (additive — nothing gets deleted).
+                      </p>
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <button
+                          disabled={backupBusy}
+                          onClick={async () => {
+                            if (!onExportBackup) return;
+                            setBackupBusy(true);
+                            try { await onExportBackup(); } finally { setBackupBusy(false); }
+                          }}
+                          className="flex-1 px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition flex items-center justify-center gap-1.5"
+                        >
+                          📤 Download backup
+                        </button>
+                        <button
+                          disabled={backupBusy}
+                          onClick={() => { if (backupFileInputRef.current) backupFileInputRef.current.click(); }}
+                          className="flex-1 px-3 py-2 border border-gray-300 dark:border-slate-600 text-gray-700 dark:text-gray-200 rounded-lg text-sm font-medium hover:bg-gray-100 dark:hover:bg-slate-700 disabled:opacity-50 transition flex items-center justify-center gap-1.5"
+                        >
+                          📥 Restore from file
+                        </button>
+                      </div>
+                      <input
+                        ref={backupFileInputRef}
+                        type="file"
+                        accept="application/json,.json"
+                        style={{ display: 'none' }}
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          // Reset value so re-picking the same file still triggers onChange
+                          e.target.value = '';
+                          if (!file || !onImportBackup) return;
+                          setBackupBusy(true);
+                          try { await onImportBackup(file); } finally { setBackupBusy(false); }
+                        }}
+                      />
+                      <p className="text-[11px] text-gray-400 dark:text-gray-500">
+                        Tip: do this monthly, before big trip planning, or before you delete things.
+                      </p>
                     </div>
                   </details>
                 </div>
@@ -21750,6 +21810,144 @@
         }
       };
 
+      // ===== Backup / Restore =====
+      // Export everything in Firestore (collections, pins with attachments inlined,
+      // itineraries, days, items, walking paths, travel docs) plus localStorage prefs as
+      // a single JSON file the user can stash anywhere. Import re-saves via the existing
+      // save methods (merge:true under the hood) so it's additive — nothing gets deleted.
+      const handleExportBackup = async () => {
+        showToast('Preparing backup…', 'success', { loading: true });
+        try {
+          // Pull live data straight from Firestore (don't trust in-memory state for backup
+          // accuracy — local state can lag Firestore by a beat after recent edits).
+          const [freshPins, freshCols] = await Promise.all([
+            MockFirebase.loadPins(),
+            MockFirebase.loadCollections(),
+          ]);
+          // Resolve any large attachments stored separately so the backup is self-contained.
+          const pinsWithAttachments = await Promise.all(freshPins.map(async (p) => {
+            if (p.attachment?.data === '__stored_separately__') {
+              try {
+                const data = await MockFirebase.loadAttachment(p.id);
+                if (data) return { ...p, attachment: { ...p.attachment, data } };
+              } catch (e) { /* keep marker — partial backup is still useful */ }
+            }
+            return p;
+          }));
+          // Walk every collection to collect its itineraries / days / items / paths / docs.
+          const allItineraries = [];
+          const allDays = [];
+          const allItems = [];
+          const allWalkingPaths = [];
+          const allTravelDocs = [];
+          for (const col of freshCols) {
+            const itins = await MockFirebase.loadItineraries(col.id);
+            for (const it of (itins || [])) {
+              allItineraries.push(it);
+              const [_days, _items] = await Promise.all([
+                MockFirebase.loadDays(it.id),
+                MockFirebase.loadItems(it.id),
+              ]);
+              allDays.push(...(_days || []));
+              allItems.push(...(_items || []));
+            }
+            const [_paths, _docs] = await Promise.all([
+              MockFirebase.loadWalkingPaths(col.id),
+              MockFirebase.loadTravelDocs(col.id),
+            ]);
+            allWalkingPaths.push(...(_paths || []));
+            allTravelDocs.push(...(_docs || []));
+          }
+          const backup = {
+            format: 'bo-wander-backup',
+            format_version: 1,
+            app_version: APP_VERSION,
+            exported_at: new Date().toISOString(),
+            user_email: MockFirebase.currentUser?.email || '',
+            data: {
+              collections: freshCols,
+              pins: pinsWithAttachments,
+              itineraries: allItineraries,
+              days: allDays,
+              items: allItems,
+              walking_paths: allWalkingPaths,
+              travel_docs: allTravelDocs,
+            },
+            preferences: {
+              custom_icons: (() => { try { return JSON.parse(localStorage.getItem('bo_custom_icons') || '[]'); } catch { return []; } })(),
+            },
+          };
+          const json = JSON.stringify(backup, null, 2);
+          const blob = new Blob([json], { type: 'application/json' });
+          const stamp = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+          const filename = `bo-wander-backup-${stamp}.json`;
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+          hideToast();
+          const summary = `${freshCols.length} maps · ${pinsWithAttachments.length} pins · ${allItineraries.length} trips · ${allWalkingPaths.length} paths · ${allTravelDocs.length} docs`;
+          showToast(`Backup downloaded — ${summary}`);
+        } catch (e) {
+          console.error('Backup export failed:', e);
+          hideToast();
+          showToast('Backup failed: ' + (e.message || e), 'error');
+        }
+      };
+
+      const handleImportBackup = async (file) => {
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const backup = JSON.parse(text);
+          if (backup.format !== 'bo-wander-backup' || !backup.data) {
+            showToast('Not a Bo Wander backup file', 'error');
+            return;
+          }
+          const d = backup.data;
+          const cnt = (arr) => Array.isArray(arr) ? arr.length : 0;
+          const summary = [
+            `${cnt(d.collections)} maps`,
+            `${cnt(d.pins)} pins`,
+            `${cnt(d.itineraries)} trips`,
+            `${cnt(d.days)} days`,
+            `${cnt(d.items)} items`,
+            `${cnt(d.walking_paths)} paths`,
+            `${cnt(d.travel_docs)} docs`,
+          ].join(' · ');
+          const stampLabel = backup.exported_at ? new Date(backup.exported_at).toLocaleDateString() : 'unknown date';
+          if (!confirm(
+            `Restore from backup taken ${stampLabel}?\n\n` +
+            `${summary}\n\n` +
+            `Existing items with the same ID will be updated. New items will be added. ` +
+            `Nothing will be deleted by this import.`
+          )) return;
+          showToast('Restoring backup…', 'success', { loading: true });
+          let written = 0;
+          // Order matters a bit: collections first, then their dependents
+          for (const c of (d.collections || [])) { await MockFirebase.saveCollection(c); written++; }
+          for (const p of (d.pins || [])) { await MockFirebase.savePin(p); written++; }
+          for (const it of (d.itineraries || [])) { await MockFirebase.saveItinerary(it); written++; }
+          if (Array.isArray(d.days) && d.days.length) { await MockFirebase.saveDays(d.days); written += d.days.length; }
+          if (Array.isArray(d.items) && d.items.length) { await MockFirebase.saveItems(d.items); written += d.items.length; }
+          for (const w of (d.walking_paths || [])) { await MockFirebase.saveWalkingPath(w); written++; }
+          for (const td of (d.travel_docs || [])) { await MockFirebase.saveTravelDoc(td); written++; }
+          // Restore localStorage prefs
+          if (backup.preferences?.custom_icons) {
+            try { localStorage.setItem('bo_custom_icons', JSON.stringify(backup.preferences.custom_icons)); } catch (e) {}
+          }
+          hideToast();
+          showToast(`Restored ${written} records — reload to see everything`);
+        } catch (e) {
+          console.error('Restore failed:', e);
+          hideToast();
+          showToast('Restore failed: ' + (e.message || e), 'error');
+        }
+      };
+
       const handleDeleteCollection = (collectionId) => {
         setCollections(prev => {
           const updated = prev.filter(c => c.id !== collectionId);
@@ -21804,6 +22002,8 @@
               }}
               onCreateCollection={handleAddCollection}
               onDeleteCollection={handleDeleteCollection}
+              onExportBackup={handleExportBackup}
+              onImportBackup={handleImportBackup}
               isDarkMode={darkMode}
               isMobile={isMobile}
             />
