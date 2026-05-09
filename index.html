@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v154';
+    const APP_VERSION = 'v156';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -14354,8 +14354,156 @@
       return CARD_GRADIENTS[collectionIndex % CARD_GRADIENTS.length];
     };
 
+    // ==================== DUPLICATE PIN AUDIT MODAL ====================
+    // Shows the result of a duplicate scan: each group is a cluster of pins that look like
+    // the same place (non-booking only). User can:
+    //   - flip the keeper inside a group (radio buttons)
+    //   - skip a group entirely (toggle off the whole group)
+    //   - confirm to merge — at which point each unchecked-keeper loser gets folded in,
+    //     itinerary items pointing to losers are repointed, and losers are deleted.
+    const DuplicateAuditModal = ({ groups, isDarkMode, collections, items, onClose, onConfirm }) => {
+      // Per-group state: { skip: boolean, keeperId: string }
+      const [groupState, setGroupState] = useState(() => {
+        const init = {};
+        (groups || []).forEach((g, i) => {
+          init[i] = { skip: false, keeperId: g.keeper.id };
+        });
+        return init;
+      });
+      const [confirming, setConfirming] = useState(false);
+      const colName = (id) => collections.find(c => c.id === id)?.name || 'Unknown map';
+      const itemCountForPin = (pinId) => (items || []).filter(it => it.pin_id === pinId).length;
+      const preview = (s, n) => { const t = (s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; };
+      const activeGroupCount = Object.values(groupState).filter(s => !s.skip).length;
+      const buildPlan = () => {
+        // Convert UI state into a merge plan: groups with skip=false, keeper rotated by user
+        const plan = [];
+        (groups || []).forEach((g, i) => {
+          const st = groupState[i];
+          if (!st || st.skip) return;
+          const all = [g.keeper, ...g.losers];
+          const keeper = all.find(p => p.id === st.keeperId) || g.keeper;
+          const losers = all.filter(p => p.id !== keeper.id);
+          if (losers.length > 0) plan.push({ keeper, losers });
+        });
+        return plan;
+      };
+      const handleConfirm = async () => {
+        if (confirming) return;
+        const plan = buildPlan();
+        if (plan.length === 0) { onClose(); return; }
+        setConfirming(true);
+        await onConfirm(plan);
+        setConfirming(false);
+      };
+      if (!groups) return null;
+      return (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-start justify-center p-4 overflow-y-auto" style={{ zIndex: 10001 }} onClick={onClose}>
+          <div className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-xl w-full max-w-2xl shadow-2xl my-8`} onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b dark:border-slate-700 flex items-center justify-between">
+              <div>
+                <h3 className="font-bold text-lg dark:text-white">🔍 Duplicate audit</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  {groups.length === 0
+                    ? 'No duplicates found — every place looks unique.'
+                    : `Found ${groups.length} group${groups.length === 1 ? '' : 's'} of likely duplicates. Review each before merging.`}
+                </p>
+              </div>
+              <button onClick={onClose} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-gray-500"><CloseIcon /></button>
+            </div>
+            {groups.length === 0 ? (
+              <div className="p-8 text-center text-gray-500 dark:text-gray-400">
+                <div className="text-4xl mb-2">✨</div>
+                <p className="text-sm">Your pins look clean. Nothing to merge.</p>
+              </div>
+            ) : (
+              <>
+                <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+                  {groups.map((g, i) => {
+                    const st = groupState[i] || { skip: false, keeperId: g.keeper.id };
+                    const all = [g.keeper, ...g.losers];
+                    return (
+                      <div key={i} className={`border rounded-lg overflow-hidden ${st.skip ? 'opacity-40 dark:border-slate-700' : 'dark:border-slate-700'}`}>
+                        <div className="px-3 py-2 bg-gray-50 dark:bg-slate-800 flex items-center justify-between">
+                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                            <span className="font-semibold dark:text-gray-200">Group {i + 1}</span>
+                            {' · '}{all.length} pins · {colName(g.keeper.collection_id)}
+                          </div>
+                          <label className="text-[11px] text-gray-500 dark:text-gray-400 flex items-center gap-1.5 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={!st.skip}
+                              onChange={(e) => setGroupState(s => ({ ...s, [i]: { ...st, skip: !e.target.checked } }))}
+                            />
+                            Merge this group
+                          </label>
+                        </div>
+                        <div className="divide-y dark:divide-slate-700">
+                          {all.map(p => {
+                            const isKeeper = st.keeperId === p.id;
+                            const itemCount = itemCountForPin(p.id);
+                            return (
+                              <label key={p.id} className={`flex items-start gap-2 px-3 py-2 cursor-pointer ${isKeeper ? 'bg-green-50 dark:bg-green-900/20' : 'hover:bg-gray-50 dark:hover:bg-slate-800'}`}>
+                                <input
+                                  type="radio"
+                                  name={`keeper-${i}`}
+                                  checked={isKeeper}
+                                  onChange={() => setGroupState(s => ({ ...s, [i]: { ...st, keeperId: p.id } }))}
+                                  className="mt-1.5 flex-shrink-0"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-base flex-shrink-0">{p.emoji || '📌'}</span>
+                                    <span className="font-medium dark:text-white text-sm truncate">{p.name || '(unnamed)'}</span>
+                                    {isKeeper && <span className="text-[10px] bg-green-500 text-white px-1.5 py-0.5 rounded font-semibold">KEEPER</span>}
+                                    {!isKeeper && !st.skip && <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">→ merges into keeper</span>}
+                                  </div>
+                                  <div className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 space-y-0.5">
+                                    <div>
+                                      {p.category || 'no category'}
+                                      {' · '}
+                                      {(p.description || '').length} chars
+                                      {' · '}
+                                      {(p.photos || []).length} photos
+                                      {itemCount > 0 && <span className="text-amber-600 dark:text-amber-400">{' · '}on {itemCount} day item{itemCount === 1 ? '' : 's'}</span>}
+                                      {p.personal_rating && <span>{' · '}{'★'.repeat(Math.floor(p.personal_rating))}</span>}
+                                    </div>
+                                    {p.description && <div className="text-gray-400 dark:text-gray-500 italic">"{preview(p.description, 140)}"</div>}
+                                    {p.source_url && <div className="truncate">📎 {p.source_url}</div>}
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="px-5 py-3 border-t dark:border-slate-700 flex items-center justify-between gap-3">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    Will merge {activeGroupCount} of {groups.length} groups
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button onClick={onClose} disabled={confirming}
+                      className="px-3 py-2 text-sm border dark:border-slate-600 rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700 disabled:opacity-50">
+                      Cancel
+                    </button>
+                    <button onClick={handleConfirm} disabled={confirming || activeGroupCount === 0}
+                      className="px-3 py-2 text-sm bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 disabled:opacity-50">
+                      {confirming ? 'Merging…' : `Merge ${activeGroupCount} group${activeGroupCount === 1 ? '' : 's'}`}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      );
+    };
+
     // ==================== HOME PAGE COMPONENT ====================
-    const HomePage = ({ collections, pins, onSelectCollection, onCreateCollection, onDeleteCollection, onExportBackup, onImportBackup, isDarkMode, isMobile }) => {
+    const HomePage = ({ collections, pins, onSelectCollection, onCreateCollection, onDeleteCollection, onExportBackup, onImportBackup, onScanForDuplicates, isDarkMode, isMobile }) => {
       const [showCreateDialog, setShowCreateDialog] = useState(false);
       const [newCollectionName, setNewCollectionName] = useState('');
       const [showSettings, setShowSettings] = useState(false);
@@ -14826,6 +14974,29 @@
                       </p>
                     </div>
                   </details>
+
+                  {onScanForDuplicates && (
+                    <details className="group">
+                      <summary className="flex items-center justify-between cursor-pointer py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400">
+                        <span>🔍 Find duplicate pins</span>
+                        <span className="text-xs text-gray-400 group-open:rotate-90 transition-transform">▶</span>
+                      </summary>
+                      <div className="pt-2 pb-3 pl-2 space-y-2">
+                        <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                          Scan all your maps for likely-duplicate pins (same place, no booking). Shows a list to review before any merging happens. You pick which copy to keep per group; merging combines descriptions / sources / photos and re-points any itinerary items that referenced the loser.
+                        </p>
+                        <button
+                          onClick={onScanForDuplicates}
+                          className="w-full px-3 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 transition flex items-center justify-center gap-1.5"
+                        >
+                          🔍 Scan for duplicates
+                        </button>
+                        <p className="text-[11px] text-gray-400 dark:text-gray-500">
+                          Booking pins are skipped — those keep their dual-tab spot/booking pair.
+                        </p>
+                      </div>
+                    </details>
+                  )}
                 </div>
                 <div className="mt-4 pt-3 border-t border-gray-200 dark:border-slate-700">
                   <span className="text-xs text-gray-400 dark:text-slate-500">Bo Wander {APP_VERSION}</span>
@@ -16557,6 +16728,11 @@
       const polylineLayersRef = useRef([]);
       const tileLayerRef = useRef(null);
       const hasFitRef = useRef(false);
+      // Cache of decoded routed polylines per from→to segment. Persists across re-renders
+      // of this component so the parent rebuilding `points` doesn't cause already-fetched
+      // routes to flicker back to a dashed straight line. Key format:
+      //   "lat1,lng1->lat2,lng2"  (coords rounded to ~1m precision)
+      const routeCacheRef = useRef(new Map());
       const [ready, setReady] = useState(false);
       // Reorder mode state — when active, tapping pins builds a new visit order.
       const [reorderMode, setReorderMode] = useState(false);
@@ -16750,6 +16926,15 @@
           if (routePts.length >= 2) {
             const lineColor = isDarkMode ? '#60a5fa' : '#3b82f6';
             const segmentLayers = [];
+            // Build a stable cache key for a from→to segment. Coords are rounded to 5
+            // decimal places (≈1m) so floating-point noise doesn't miss cache hits.
+            const segKey = (from, to) => {
+              const r = (x) => Math.round(x * 100000) / 100000;
+              return `${r(from.lat)},${r(from.lng)}->${r(to.lat)},${r(to.lng)}`;
+            };
+            // Track which segments need a fetch (we already have a routed polyline drawn
+            // either from transit_info.polyline OR from the persistent cache, so we skip).
+            const segNeedsFetch = [];
             for (let i = 1; i < routePts.length; i++) {
               const pt = routePts[i];
               const prevPt = routePts[i - 1];
@@ -16757,33 +16942,46 @@
               const bestMode = pt.transit_info?.mode;
               const modeData = bestMode && pt.transit_info?.all_modes?.[bestMode];
               const encoded = modeData?.polyline;
+              // 1) Pin's own stored polyline (transit_info) — preferred when present
               if (encoded) {
                 const decoded = decodePolyline(encoded);
                 if (decoded.length > 1) {
                   const layer = window.L.polyline(decoded, { color: segColor, weight: 3, opacity: 0.7 }).addTo(map);
                   segmentLayers.push(layer);
                   polylineLayersRef.current.push(layer);
+                  segNeedsFetch.push(false);
                   continue;
                 }
               }
+              // 2) Cached routed polyline from a previous render — skip the dashed flash
+              const key = segKey(prevPt, pt);
+              const cached = routeCacheRef.current.get(key);
+              if (cached && cached.length > 1) {
+                const layer = window.L.polyline(cached, { color: segColor, weight: 3, opacity: 0.7 }).addTo(map);
+                segmentLayers.push(layer);
+                polylineLayersRef.current.push(layer);
+                segNeedsFetch.push(false);
+                continue;
+              }
+              // 3) No prior data — show a dashed fallback while we fetch
               const fallback = window.L.polyline([[prevPt.lat, prevPt.lng], [pt.lat, pt.lng]], {
                 color: segColor, weight: 3, opacity: 0.5, dashArray: '8,6',
               }).addTo(map);
               segmentLayers.push(fallback);
               polylineLayersRef.current.push(fallback);
+              segNeedsFetch.push(true);
             }
 
             const apiKey = getGoogleApiKey();
             if (apiKey) {
               for (let i = 1; i < routePts.length; i++) {
+                if (!segNeedsFetch[i - 1]) continue; // already drawn from transit_info or cache
                 const pt = routePts[i];
-                const bestMode = pt.transit_info?.mode;
-                const modeData = bestMode && pt.transit_info?.all_modes?.[bestMode];
-                if (modeData?.polyline) continue;
                 const prevPt = routePts[i - 1];
                 const segColor = (pt.isOptions || prevPt.isOptions) ? (pt.optionColor || prevPt.optionColor || lineColor) : lineColor;
                 const segIdx = i - 1;
-                (async (idx, from, to, col) => {
+                const key = segKey(prevPt, pt);
+                (async (idx, from, to, col, cacheKey) => {
                   try {
                     const resp = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
                       method: 'POST',
@@ -16800,6 +16998,8 @@
                     if (!encoded || !mapRef.current) return;
                     const decoded = decodePolyline(encoded);
                     if (decoded.length > 1) {
+                      // Cache so subsequent re-renders skip the dashed flash for this segment
+                      routeCacheRef.current.set(cacheKey, decoded);
                       if (segmentLayers[idx]) {
                         try { mapRef.current.removeLayer(segmentLayers[idx]); } catch (e) {}
                         const remIdx = polylineLayersRef.current.indexOf(segmentLayers[idx]);
@@ -16809,7 +17009,7 @@
                       polylineLayersRef.current.push(layer);
                     }
                   } catch (e) { /* keep dashed fallback */ }
-                })(segIdx, prevPt, pt, segColor);
+                })(segIdx, prevPt, pt, segColor, key);
               }
             }
           }
@@ -20852,6 +21052,9 @@
       // The walking path whose details (name, color, description, source link) are being edited
       // in the modal. Null when no detail editor is open.
       const [pathDetailEditing, setPathDetailEditing] = useState(null);
+      // Duplicate-pin scanner: holds the result of the most recent scan so the audit
+      // modal can render groups and the user can spot-check before merging.
+      const [dupeScanGroups, setDupeScanGroups] = useState(null); // null = closed; [] = scanned, no dupes found
       // Auto-assigned color palette for new paths (cycles by current count).
       const PATH_COLORS = ['#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#22c55e', '#eab308', '#ef4444'];
       useEffect(() => {
@@ -21366,6 +21569,144 @@
           mealTags: Array.from(new Set([...(existing.mealTags || []), ...(incoming.mealTags || [])])),
           updated_at: new Date().toISOString(),
         };
+      };
+
+      // Helper: scan a flat pin list and find clusters of same-place duplicates (non-booking
+      // only). Uses union-find so transitive matches (A↔B and B↔C) end up in the same group.
+      // Returns an array of groups; each group has a chosen "keeper" (the pin with the most
+      // content) and the list of losers to be merged into it. Booking pins (anything with
+      // reservation_details) are skipped — those are intentional spot+booking pairs.
+      const findDuplicateGroups = (allPins) => {
+        const candidates = (allPins || []).filter(p => p && !p.reservation_details);
+        const parent = {};
+        const find = (a) => parent[a] === a ? a : (parent[a] = find(parent[a]));
+        const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent[ra] = rb; };
+        candidates.forEach(p => { parent[p.id] = p.id; });
+        for (let i = 0; i < candidates.length; i++) {
+          const a = candidates[i];
+          // Reuse the same matcher used for new-pin auto-merge so the scanner shows exactly
+          // what would have merged at import time.
+          for (let j = i + 1; j < candidates.length; j++) {
+            const b = candidates[j];
+            if (a.collection_id !== b.collection_id) continue;
+            // Inline the matching logic (a single-direction call to findSamePlaceNonBookingPin
+            // does name+coords matching against the same allPins list, but we want a pairwise
+            // check here against a fresh "incoming" so we re-use that helper symmetrically).
+            const ma = findSamePlaceNonBookingPin({ ...a, id: '__cmp_a__' }, [b]);
+            const mb = findSamePlaceNonBookingPin({ ...b, id: '__cmp_b__' }, [a]);
+            if (ma || mb) union(a.id, b.id);
+          }
+        }
+        // Bucket pins by their root id
+        const buckets = {};
+        candidates.forEach(p => {
+          const r = find(p.id);
+          (buckets[r] = buckets[r] || []).push(p);
+        });
+        // Score for "richness": prefer the pin with most description + photos + ratings
+        const richness = (p) => (
+          (p.description || '').length
+          + ((p.photos || []).length * 200)
+          + ((p.info_photos || []).length * 200)
+          + (p.google_rating ? 50 : 0)
+          + (p.tabelog_rating ? 50 : 0)
+          + ((p.sources || []).length * 100)
+          + (p.personal_notes ? 300 : 0)
+        );
+        const groups = Object.values(buckets)
+          .filter(g => g.length >= 2)
+          .map(g => {
+            const sorted = [...g].sort((a, b) => richness(b) - richness(a));
+            return { keeper: sorted[0], losers: sorted.slice(1) };
+          });
+        return groups;
+      };
+
+      // Execute a planned merge: fold each loser into the keeper, repoint any itinerary
+      // items that reference the loser, then delete the loser pins. Returns counts so the
+      // caller can show a summary. Skips losers that no longer exist (e.g. user already
+      // deleted them in a different tab).
+      const executeMergePlan = async (groups) => {
+        let mergedPins = 0;
+        let repointedItems = 0;
+        let deletedPins = 0;
+        for (const group of groups) {
+          let keeper = group.keeper;
+          // Fold each loser into the keeper one at a time so multi-way merges accumulate
+          for (const loser of group.losers) {
+            keeper = mergeIntoExistingPin(keeper, loser);
+          }
+          try { await MockFirebase.savePin(keeper); mergedPins++; } catch (e) { console.warn('merge save failed', e); }
+          // Repoint any itinerary items that referenced a loser pin to point at the keeper
+          for (const loser of group.losers) {
+            try {
+              // Walk every itinerary in this collection
+              const itins = await MockFirebase.loadItineraries(keeper.collection_id);
+              for (const itin of (itins || [])) {
+                const items = await MockFirebase.loadItems(itin.id);
+                const toUpdate = (items || []).filter(it => it.pin_id === loser.id);
+                if (toUpdate.length > 0) {
+                  const repointed = toUpdate.map(it => ({ ...it, pin_id: keeper.id }));
+                  await MockFirebase.saveItems(repointed);
+                  repointedItems += repointed.length;
+                }
+              }
+            } catch (e) { console.warn('repoint failed', e); }
+            // Delete the loser pin
+            try { await MockFirebase.deletePin(loser.id, loser.collection_id); deletedPins++; } catch (e) { console.warn('delete failed', e); }
+          }
+        }
+        return { mergedPins, repointedItems, deletedPins };
+      };
+
+      // Cached items list used by the duplicate scanner modal so it can show how many
+      // itinerary day-items reference each pin. Loaded just-in-time when a scan is launched.
+      const [allItemsForScan, setAllItemsForScan] = useState([]);
+
+      const handleScanForDuplicates = async () => {
+        showToast('Scanning for duplicates…', 'success', { loading: true });
+        try {
+          // Load every item across every itinerary so the modal can flag which pins are
+          // already on the itinerary (those merges trigger the items-repoint pass).
+          const allItems = [];
+          for (const c of collections) {
+            try {
+              const itins = await MockFirebase.loadItineraries(c.id);
+              for (const it of (itins || [])) {
+                const its = await MockFirebase.loadItems(it.id);
+                allItems.push(...(its || []));
+              }
+            } catch (e) { /* tolerate per-collection failures */ }
+          }
+          setAllItemsForScan(allItems);
+          const groups = findDuplicateGroups(pins);
+          hideToast();
+          setDupeScanGroups(groups);
+          if (groups.length === 0) {
+            showToast('No duplicates found — nothing to merge.');
+          } else {
+            showToast(`Found ${groups.length} duplicate group${groups.length === 1 ? '' : 's'} — review the list`);
+          }
+        } catch (e) {
+          console.error('Dupe scan failed:', e);
+          hideToast();
+          showToast('Scan failed: ' + (e.message || e), 'error');
+        }
+      };
+
+      const handleConfirmMergePlan = async (plan) => {
+        showToast('Merging duplicates…', 'success', { loading: true });
+        try {
+          const summary = await executeMergePlan(plan);
+          hideToast();
+          // The Firestore listeners will pick up the saves/deletes and update local pins state.
+          setDupeScanGroups(null);
+          showToast(`Merged ${summary.deletedPins} pin${summary.deletedPins === 1 ? '' : 's'} into ${summary.mergedPins}; repointed ${summary.repointedItems} day item${summary.repointedItems === 1 ? '' : 's'}`);
+        } catch (e) {
+          console.error('Merge failed:', e);
+          hideToast();
+          showToast('Merge failed: ' + (e.message || e), 'error');
+        }
       };
 
       const handleSavePin = (pin) => {
@@ -22228,6 +22569,7 @@
               onDeleteCollection={handleDeleteCollection}
               onExportBackup={handleExportBackup}
               onImportBackup={handleImportBackup}
+              onScanForDuplicates={handleScanForDuplicates}
               isDarkMode={darkMode}
               isMobile={isMobile}
             />
@@ -22935,6 +23277,18 @@
               }}
               onClose={() => setShowPasteText(false)}
               isDarkMode={darkMode}
+            />
+          )}
+
+          {/* Duplicate-pin audit modal — opens after user runs a scan from Settings */}
+          {dupeScanGroups !== null && (
+            <DuplicateAuditModal
+              groups={dupeScanGroups}
+              isDarkMode={darkMode}
+              collections={collections}
+              items={allItemsForScan}
+              onClose={() => setDupeScanGroups(null)}
+              onConfirm={handleConfirmMergePlan}
             />
           )}
 
