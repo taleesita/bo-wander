@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v156';
+    const APP_VERSION = 'v157';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -2830,7 +2830,7 @@
     // Lightweight markdown renderer — handles ##, **bold**, *italic*, - lists, [links](url)
     const SimpleMarkdown = ({ text, className }) => {
       if (!text) return null;
-      const html = text
+      let html = text
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') // escape HTML
         .replace(/^### (.+)$/gm, '<strong class="text-sm block mt-2 mb-0.5">$1</strong>')
         .replace(/^## (.+)$/gm, '<strong class="text-base block mt-2 mb-0.5">$1</strong>')
@@ -2838,8 +2838,26 @@
         .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
         .replace(/\*([^*]+)\*/g, '<em>$1</em>')
         .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" class="text-blue-600 dark:text-blue-400 hover:underline">$1</a>')
-        .replace(/^[-–•] (.+)$/gm, '<span class="block pl-3 relative"><span class="absolute left-0">•</span>$1</span>')
-        .replace(/\n/g, '<br/>');
+        .replace(/^[-–•] (.+)$/gm, '<span class="block pl-3 relative"><span class="absolute left-0">•</span>$1</span>');
+      // Autolink bare URLs — but skip text already inside <a>...</a> from markdown links so
+      // we don't double-wrap. Split on existing anchor tags, autolink only the segments
+      // between them, then rejoin. Trailing punctuation (period, comma, paren) is left
+      // outside the link so URLs at end of sentence don't pull the period into the href.
+      const parts = html.split(/(<a [^>]*>[\s\S]*?<\/a>)/);
+      html = parts.map((part, i) => {
+        if (i % 2 === 1) return part; // existing anchor tag — leave alone
+        return part.replace(/(https?:\/\/[^\s<]+)/g, (url) => {
+          const trail = url.match(/[.,!?;:)\]]+$/);
+          let cleanUrl = url;
+          let trailing = '';
+          if (trail) {
+            cleanUrl = url.slice(0, -trail[0].length);
+            trailing = trail[0];
+          }
+          return `<a href="${cleanUrl}" target="_blank" rel="noopener" class="text-blue-600 dark:text-blue-400 hover:underline break-all">${cleanUrl}</a>${trailing}`;
+        });
+      }).join('');
+      html = html.replace(/\n/g, '<br/>');
       return React.createElement('div', {
         className: className || '',
         dangerouslySetInnerHTML: { __html: html }
@@ -13924,14 +13942,14 @@
 
                       {/* Description */}
                       {selectedPin.description && (
-                        <p className="text-sm text-gray-700 dark:text-gray-300 mb-3 whitespace-pre-line">{selectedPin.description}</p>
+                        <SimpleMarkdown text={selectedPin.description} className="text-sm text-gray-700 dark:text-gray-300 mb-3 whitespace-pre-line" />
                       )}
 
                       {/* Personal notes */}
                       {selectedPin.personal_notes && (
                         <div className="bg-purple-50 dark:bg-purple-900/20 rounded-lg p-2.5 mb-3">
                           <p className="text-xs font-medium text-purple-700 dark:text-purple-300 mb-0.5">Notes</p>
-                          <p className="text-sm text-purple-900 dark:text-purple-200">{selectedPin.personal_notes}</p>
+                          <SimpleMarkdown text={selectedPin.personal_notes} className="text-sm text-purple-900 dark:text-purple-200" />
                         </div>
                       )}
 
@@ -16254,10 +16272,11 @@
                 </div>
               )}
 
-              {/* Time + Duration */}
+              {/* Time + Duration — both labels live in matching flex rows so the inputs
+                  start at the same vertical offset whether or not Time has a Clear button. */}
               <div className="grid grid-cols-2 gap-3">
                 <div style={{ minWidth: 0 }}>
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between" style={{ minHeight: 18 }}>
                     <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Time</label>
                     {scheduledTime && (
                       // iOS's native "Reset" button only resets the picker to its initial value
@@ -16274,7 +16293,9 @@
                     style={{ WebkitAppearance: 'none', boxSizing: 'border-box', minHeight: 42 }} />
                 </div>
                 <div style={{ minWidth: 0 }}>
-                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Duration (min)</label>
+                  <div className="flex items-center justify-between" style={{ minHeight: 18 }}>
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400">Duration (min)</label>
+                  </div>
                   <input type="number" value={duration} onChange={e => setDuration(e.target.value)} min="0" step="5"
                     placeholder="—"
                     className="w-full px-2 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
@@ -17179,8 +17200,16 @@
         return `${hr % 12 || 12}:${m} ${ampm}`;
       };
 
-      // Filter to real items only (no transit docs, no meal slots)
-      const reviewable = items.filter(i => !i._isTransitDoc && !i._isMealSlot && !String(i.id).startsWith('transit-') && !String(i.id).startsWith('meal-slot-'));
+      // Filter to real reviewable items only — skip transit docs, meal-slot placeholders,
+      // and items linked to hotel pins (you don't review the place you slept in here).
+      const reviewable = items.filter(i => {
+        if (i._isTransitDoc || i._isMealSlot) return false;
+        if (String(i.id).startsWith('transit-') || String(i.id).startsWith('meal-slot-')) return false;
+        const linkedPin = i.pin_id ? pins.find(p => p.id === i.pin_id) : null;
+        if (linkedPin?.category === 'hotel') return false;
+        if (i.emoji === '🏨' || i.emoji === '✈️' || i.emoji === '🚆') return false;
+        return true;
+      });
       const item = reviewable[idx];
       if (!item) return null;
 
@@ -17215,24 +17244,15 @@
       const goNext = () => { if (idx < reviewable.length - 1) setIdx(idx + 1); else onClose(); };
       const goPrev = () => { if (idx > 0) setIdx(idx - 1); };
 
-      const handleTouchStart = (e) => { touchStart.current = e.touches[0].clientX; };
-      const handleTouchEnd = (e) => {
-        if (touchStart.current == null) return;
-        const diff = e.changedTouches[0].clientX - touchStart.current;
-        if (Math.abs(diff) > 60) {
-          if (diff < 0) goNext();
-          else goPrev();
-        }
-        touchStart.current = null;
-      };
+      // Swipe-between-reviews removed — it was firing during text edits in the notes
+      // textarea and accidentally jumping users to the next review. Use the next/prev
+      // buttons in the footer instead.
 
       return (
         <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60" onClick={onClose}>
           <div
             className={`relative w-full max-w-sm mx-4 rounded-2xl shadow-2xl overflow-hidden ${isDarkMode ? 'bg-slate-800 text-white' : 'bg-white text-gray-900'}`}
             onClick={e => e.stopPropagation()}
-            onTouchStart={handleTouchStart}
-            onTouchEnd={handleTouchEnd}
           >
             {/* Header */}
             <div className={`flex items-center justify-between px-4 py-3 border-b ${isDarkMode ? 'border-slate-700' : 'border-gray-200'}`}>
@@ -20028,6 +20048,14 @@
 
       // Quick-add pin to a specific day
       const handleQuickAddToDay = (dayId, pin) => {
+        if (!pin || !pin.id) {
+          console.warn('[itinerary] handleQuickAddToDay called with no pin id', pin);
+          return;
+        }
+        if (!activeItinerary?.id) {
+          console.warn('[itinerary] handleQuickAddToDay called with no active itinerary');
+          return;
+        }
         const item = {
           id: generateId(),
           itinerary_id: activeItinerary.id,
@@ -20044,7 +20072,23 @@
           order_in_day: items.filter(i => i.day_id === dayId).length,
         };
         setItems(prev => [...prev, item]);
-        MockFirebase.saveItems([item]);
+        // Surface success/failure via a custom event the App listens for — without this,
+        // a Firestore save error would silently leave the user wondering whether the add
+        // landed or not.
+        const dispatchToast = (message, type = 'success') => {
+          try { window.dispatchEvent(new CustomEvent('bw-toast', { detail: { message, type } })); } catch (e) {}
+        };
+        MockFirebase.saveItems([item])
+          .then(() => {
+            const day = days.find(d => d.id === dayId);
+            const dayLabel = day?.date ? new Date(day.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : 'day';
+            dispatchToast(`Added to ${dayLabel}`);
+          })
+          .catch(err => {
+            console.error('[itinerary] Failed to save day item:', err);
+            dispatchToast('Failed to add item: ' + (err.message || err), 'error');
+            setItems(prev => prev.filter(i => i.id !== item.id));
+          });
         setExpandedDays(prev => ({ ...prev, [dayId]: true }));
         setShowDayPicker(null);
       };
@@ -20893,6 +20937,16 @@
           toastTimerRef.current = setTimeout(() => { setToast(null); toastTimerRef.current = null; }, duration);
         }
       };
+      // Listen for toast events dispatched from deeper components (ItineraryPlanner etc.)
+      // that don't have direct access to showToast in their closure.
+      useEffect(() => {
+        const handler = (e) => {
+          const { message, type, loading } = e.detail || {};
+          if (message) showToast(message, type || 'success', { loading: !!loading });
+        };
+        window.addEventListener('bw-toast', handler);
+        return () => window.removeEventListener('bw-toast', handler);
+      }, []);
       const hideToast = () => {
         if (toastTimerRef.current) { clearTimeout(toastTimerRef.current); toastTimerRef.current = null; }
         setToast(null);
@@ -21754,7 +21808,7 @@
         if (savedPin.lat && savedPin.lng) {
           setMapPanTarget({ lat: savedPin.lat, lng: savedPin.lng, zoom: 16, _t: Date.now() });
         }
-        if (!isExisting) {
+        if (!isEditOfExisting) {
           // Auto-fetch ratings for new pins in the background
           setTimeout(() => fetchRatingsForPin(savedPin), 200);
         }
