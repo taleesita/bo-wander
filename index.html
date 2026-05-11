@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v158';
+    const APP_VERSION = 'v159';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -21529,20 +21529,27 @@
 
       // Helper: "is this incoming pin the same place as an existing one we already have?"
       // The matcher MUST satisfy both halves:
-      //   1) name similarity — exact, normalized-equal, or substring containment (≥5 chars)
+      //   1) name similarity — exact raw match OR exact normalized match
       //   2) coord proximity within 1km (when both pins have coords)
-      // Earlier versions accepted proximity alone, which caused unrelated places in the same
-      // neighborhood to merge (e.g. KOI Thé folding into Takoyaki Wanaka because they're both
-      // in Nanba). Names AND location are required.
+      // Substring containment was tried earlier and produced wrong merges like
+      // "Wired Café Roppongi Hills" → "Roppongi" because "roppongi" is a substring of
+      // the longer name. Now matches require the normalized names to be EQUAL, not just
+      // related. Japanese place suffixes (jinja/jingu/taisha/jo/dera/tera) get stripped
+      // even when attached to the previous word so "Kasuga-taisha" and "Kasugataisha"
+      // still normalize to the same key.
       const findSamePlaceNonBookingPin = (incoming, allPins) => {
         if (!incoming || incoming.reservation_details) return null; // booking pins keep dual-tab pairs
-        // "the" intentionally NOT in this list — it strips "Thé" (French for tea) and turns
-        // "KOI Thé" into just "koi", which then matches any too-short normalized name.
-        const noiseWords = /\b(shrine|temple|jinja|jingu|taisha|cafe|restaurant|bar|hotel|museum|park|garden|market|castle)\b/g;
+        // Word-bounded noise words. "the" deliberately excluded — it would nuke "Thé".
+        const noiseWords = /\b(shrine|temple|cafe|restaurant|bar|hotel|museum|park|garden|market|castle)\b/g;
+        // Japanese place suffixes — strip even when attached without a space (Osakajo,
+        // Kasugataisha). The `\w{3,}` prefix guard avoids false positives on tiny words
+        // (a standalone "jo" or "ji" won't trigger).
+        const jpSuffixes = /(\w{3,})(jinja|jingu|taisha|jo|dera|tera)\b/g;
         const norm = (s) => (s || '')
           .normalize('NFD').replace(/[̀-ͯ]/g, '')
           .toLowerCase()
           .replace(/[^a-z0-9 ]/g, ' ')
+          .replace(jpSuffixes, '$1') // strip Japanese suffix while keeping the place root
           .replace(noiseWords, ' ')
           .replace(/\s+/g, ' ')
           .trim();
@@ -21564,18 +21571,16 @@
           if (!p || !p.name || p.id === incoming.id) return false;
           if (p.reservation_details) return false; // don't fold a new pin into a booking
           if (cid && p.collection_id && p.collection_id !== cid) return false; // different map
-          // ── Step 1: do the names look like the same place? ──
+          // ── Step 1: do the names match strictly? ──
           const pRaw = p.name.trim().toLowerCase();
           const pKey = norm(p.name);
           let namesMatch = false;
           if (rawNameKey && pRaw === rawNameKey) namesMatch = true;
           else if (nameKey && pKey && nameKey === pKey) namesMatch = true;
-          else if (nameKey && pKey && nameKey.length >= 5 && pKey.length >= 5 &&
-                   (pKey.includes(nameKey) || nameKey.includes(pKey))) namesMatch = true;
           if (!namesMatch) return false;
           // ── Step 2: when both have coords, confirm they're in the same area ──
-          // 1km is generous enough to absorb geocode differences between API providers but
-          // tight enough to reject same-name chain stores in different cities.
+          // 1km absorbs geocode drift between API providers but rejects same-name chain
+          // stores in different cities (e.g. KOI Thé Tokyo ≠ KOI Thé Osaka).
           const pLat = parseFloat(p.lat), pLng = parseFloat(p.lng);
           const pHasCoords = !isNaN(pLat) && !isNaN(pLng) && (pLat !== 0 || pLng !== 0);
           if (hasCoords && pHasCoords) {
