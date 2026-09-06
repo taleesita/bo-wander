@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bo-wander-v162';
+const CACHE_NAME = 'bo-wander-v163';
 // Bumped to v2 in v162 so stale Carto "API KEY REQUIRED" placeholder tiles get purged
 // when the SW activates. Bump this version any time the tile provider changes.
 const TILE_CACHE = 'bo-wander-tiles-v2';
