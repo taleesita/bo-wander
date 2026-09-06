@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v159';
+    const APP_VERSION = 'v162';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -657,12 +657,24 @@
           opts: { maxZoom: 19 },
         };
       }
+      // Default (local-language) tiles. As of late-2026 Carto's free tile URLs started
+      // returning "API KEY REQUIRED" placeholders, so we can't rely on their basemaps
+      // anymore without a paid account. Prefer MapTiler when the user has a key set
+      // (its streets style is a close visual match to Carto Voyager); otherwise fall
+      // back to plain OpenStreetMap tiles which are free and always work.
+      const mtKeyLocal = getMapTilerKey();
+      if (mtKeyLocal) {
+        const styleId = isDark ? 'streets-v2-dark' : 'streets-v2';
+        return {
+          url: `https://api.maptiler.com/maps/${styleId}/{z}/{x}/{y}.png?key=${encodeURIComponent(mtKeyLocal)}`,
+          attribution: '© MapTiler © OpenStreetMap',
+          opts: { maxZoom: 20, tileSize: 512, zoomOffset: -1 },
+        };
+      }
       return {
-        url: isDark
-          ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'
-          : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
-        attribution: '© OpenStreetMap © CARTO',
-        opts: { maxZoom: 20 },
+        url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        attribution: '© OpenStreetMap contributors',
+        opts: { maxZoom: 19 },
       };
     };
     const FIREBASE_CONFIG = {
@@ -4435,7 +4447,7 @@
     };
 
     // Unified search bar — searches existing pins + Photon (Komoot) for places/businesses
-    const UnifiedSearchBar = ({ pins, onSelectPin, onAddPlace, onUploadConfirmation, onAddFromLink, onPasteText, onFromPhoto, onBulkPhotoScan, onShareMap, onFetchTabelog, isDarkMode, isMobile, activeCollection, collections, mapCenter }) => {
+    const UnifiedSearchBar = ({ pins, onSelectPin, onAddPlace, onUploadConfirmation, onAddFromLink, onFromGoogleMapsLink, onPasteText, onFromPhoto, onBulkPhotoScan, onShareMap, onFetchTabelog, isDarkMode, isMobile, activeCollection, collections, mapCenter }) => {
       const [query, setQuery] = useState('');
       const [placeResults, setPlaceResults] = useState([]);
       const [searching, setSearching] = useState(false);
@@ -4873,6 +4885,15 @@
                         <span className="text-base">🔗</span>
                         <span>Add from link</span>
                       </button>
+                      {onFromGoogleMapsLink && (
+                        <button
+                          className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-slate-700 transition border-t dark:border-slate-700"
+                          onClick={() => { onFromGoogleMapsLink(); setShowMoreMenu(false); setIsFocused(false); setQuery(''); }}
+                        >
+                          <span className="text-base">🗺️</span>
+                          <span>From Google Maps link</span>
+                        </button>
+                      )}
                       {onFromPhoto && (
                         <button
                           className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 dark:text-gray-200 hover:bg-blue-50 dark:hover:bg-slate-700 transition border-t dark:border-slate-700"
@@ -5140,6 +5161,121 @@
       const topLevelPlacemarks = doc.querySelectorAll('Document > Placemark');
       if (topLevelPlacemarks.length > 0) processPlacemarks(topLevelPlacemarks, '');
       return { mapName, places };
+    };
+
+    // ---- Google Maps URL parsing ----
+    // Pulls a place name + coords out of a Google Maps share URL. Handles three formats:
+    //   1) Long URL: https://www.google.com/maps/place/<Name>/@lat,lng,…
+    //   2) Legacy ?q= + ?ll= URL
+    //   3) Short URL: https://maps.app.goo.gl/abc OR https://goo.gl/maps/xyz
+    // Short URLs need a redirect-follow, which we do via the allorigins CORS proxy that
+    // already powers other features in the app. Returns null if nothing parseable.
+    const parseGoogleMapsUrl = async (rawUrl) => {
+      let url = (rawUrl || '').trim();
+      if (!url) return null;
+      // Resolve short links — allorigins returns the final URL after redirects in status.url
+      if (/^https?:\/\/(maps\.app\.)?goo\.gl\//i.test(url) || /^https?:\/\/goo\.gl\/maps\//i.test(url)) {
+        try {
+          const proxyResp = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`);
+          if (proxyResp.ok) {
+            const data = await proxyResp.json();
+            if (data.status && data.status.url) url = data.status.url;
+            // Some resolutions return HTML with the real URL inside <meta property="og:url">
+            else if (data.contents) {
+              const m = String(data.contents).match(/<meta[^>]+(?:property|name)=["']og:url["'][^>]+content=["']([^"']+)["']/i)
+                       || String(data.contents).match(/<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i);
+              if (m) url = m[1];
+            }
+          }
+        } catch (e) { console.warn('[gmaps-link] short-link resolve failed', e); }
+      }
+      // Try a /maps/place/<Name>/@lat,lng URL
+      const placeMatch = url.match(/\/maps\/place\/([^/]+)\/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+      if (placeMatch) {
+        let name = placeMatch[1].replace(/\+/g, ' ');
+        try { name = decodeURIComponent(name); } catch (e) {}
+        return { name: name.trim(), lat: parseFloat(placeMatch[2]), lng: parseFloat(placeMatch[3]), sourceUrl: url };
+      }
+      // Try ?q=<name>&...&ll=lat,lng style
+      const qMatch = url.match(/[?&]q=([^&]+)/);
+      const llMatch = url.match(/[?&]ll=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+      if (qMatch && llMatch) {
+        let name = qMatch[1].replace(/\+/g, ' ');
+        try { name = decodeURIComponent(name); } catch (e) {}
+        return { name: name.trim(), lat: parseFloat(llMatch[1]), lng: parseFloat(llMatch[2]), sourceUrl: url };
+      }
+      // Fallback: name in /place/ segment, coords elsewhere on the URL
+      const nameOnly = url.match(/\/maps\/place\/([^/?#]+)/);
+      const anyCoords = url.match(/[@!]?(-?\d{1,2}\.\d{4,}),(-?\d{1,3}\.\d{4,})/);
+      if (nameOnly && anyCoords) {
+        let name = nameOnly[1].replace(/\+/g, ' ');
+        try { name = decodeURIComponent(name); } catch (e) {}
+        return { name: name.trim(), lat: parseFloat(anyCoords[1]), lng: parseFloat(anyCoords[2]), sourceUrl: url };
+      }
+      // Last resort: coords with no name — user will need to fill in name themselves
+      if (anyCoords) {
+        return { name: '', lat: parseFloat(anyCoords[1]), lng: parseFloat(anyCoords[2]), sourceUrl: url };
+      }
+      return null;
+    };
+
+    // ---- GoogleMapsLinkModal: paste a maps URL, parse, open the Add Place form ----
+    const GoogleMapsLinkModal = ({ onClose, onParsed, isDarkMode }) => {
+      const [url, setUrl] = useState('');
+      const [busy, setBusy] = useState(false);
+      const [error, setError] = useState('');
+      const handleParse = async () => {
+        if (busy) return;
+        setBusy(true);
+        setError('');
+        try {
+          const result = await parseGoogleMapsUrl(url);
+          if (!result || (!result.lat && !result.lng)) {
+            setError("Couldn't find a location in that link. Make sure it's a Google Maps share URL.");
+            setBusy(false);
+            return;
+          }
+          onParsed(result);
+        } catch (e) {
+          setError('Failed to read link: ' + (e.message || e));
+          setBusy(false);
+        }
+      };
+      return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4" style={{ zIndex: 10003 }} onClick={onClose}>
+          <div className={`${isDarkMode ? 'dark' : ''} bg-white dark:bg-slate-900 rounded-xl w-full max-w-md shadow-2xl`} onClick={e => e.stopPropagation()}>
+            <div className="p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold dark:text-white flex items-center gap-2"><span>🗺️</span> Add from Google Maps link</h3>
+                <button onClick={onClose} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-700 rounded text-gray-500"><CloseIcon /></button>
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                Paste any Google Maps URL — the short share link (<code>maps.app.goo.gl/…</code>), the long <code>/maps/place/…</code> URL, or whatever the Maps app's share menu hands you. We'll pull the place name + coordinates and open the Add Place form so you can review before saving.
+              </p>
+              <input
+                type="url"
+                value={url}
+                onChange={e => { setUrl(e.target.value); if (error) setError(''); }}
+                onKeyDown={e => { if (e.key === 'Enter' && url.trim()) handleParse(); }}
+                placeholder="https://maps.app.goo.gl/… or https://www.google.com/maps/place/…"
+                className="w-full px-3 py-2 border rounded-lg text-sm dark:bg-slate-800 dark:border-slate-700 dark:text-white"
+                autoFocus
+              />
+              {error && <p className="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 p-2 rounded">{error}</p>}
+              <div className="flex gap-2 pt-1">
+                <button onClick={onClose} disabled={busy}
+                  className="flex-1 px-3 py-2 border dark:border-slate-600 rounded-lg text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-700 disabled:opacity-50">
+                  Cancel
+                </button>
+                <button onClick={handleParse} disabled={busy || !url.trim()}
+                  className="flex-1 px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                  {busy ? 'Resolving link…' : 'Pull location'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
     };
 
     const AddFromLinkModal = ({ onSelect, onBulkSelect, onClose, isDarkMode, startInPasteMode = false, initialBulkData = null }) => {
@@ -10232,24 +10368,48 @@
     const loadCustomCategories = () => {
       try { return JSON.parse(localStorage.getItem('bo_custom_categories') || '{}'); } catch { return {}; }
     };
+    // Tombstone list — category ids the user explicitly deleted. Stops registerMissingCategories
+    // from auto-resurrecting a deleted category just because pins still reference its id.
+    // Without this, hitting the ✕ on a custom category in the picker briefly worked, then the
+    // next Firestore snapshot brought it right back.
+    const loadDeletedCategories = () => {
+      try { return new Set(JSON.parse(localStorage.getItem('bo_deleted_custom_categories') || '[]')); } catch { return new Set(); }
+    };
+    const persistDeletedCategories = (set) => {
+      try { localStorage.setItem('bo_deleted_custom_categories', JSON.stringify([...set])); } catch {}
+    };
     const saveCustomCategory = (id, data) => {
       const customs = loadCustomCategories();
       customs[id] = data;
       localStorage.setItem('bo_custom_categories', JSON.stringify(customs));
       PIN_CATEGORIES[id] = data;
+      // If the user re-creates a category they previously deleted, lift the tombstone
+      const deleted = loadDeletedCategories();
+      if (deleted.has(id)) { deleted.delete(id); persistDeletedCategories(deleted); }
     };
     const deleteCustomCategory = (id) => {
       const customs = loadCustomCategories();
       delete customs[id];
       localStorage.setItem('bo_custom_categories', JSON.stringify(customs));
       delete PIN_CATEGORIES[id];
+      const deleted = loadDeletedCategories();
+      deleted.add(id);
+      persistDeletedCategories(deleted);
     };
-    // Load custom categories on startup
-    Object.assign(PIN_CATEGORIES, loadCustomCategories());
-    // Auto-register categories from existing pins that aren't in PIN_CATEGORIES
+    // Load custom categories on startup, minus anything tombstoned
+    (() => {
+      const customs = loadCustomCategories();
+      const deleted = loadDeletedCategories();
+      Object.entries(customs).forEach(([id, data]) => {
+        if (!deleted.has(id)) PIN_CATEGORIES[id] = data;
+      });
+    })();
+    // Auto-register categories from existing pins that aren't in PIN_CATEGORIES — but
+    // skip ids the user explicitly deleted so they don't keep coming back.
     const registerMissingCategories = (pins) => {
+      const deleted = loadDeletedCategories();
       pins.forEach(pin => {
-        if (pin.category && !PIN_CATEGORIES[pin.category]) {
+        if (pin.category && !PIN_CATEGORIES[pin.category] && !deleted.has(pin.category)) {
           const label = pin.category.charAt(0).toUpperCase() + pin.category.slice(1).replace(/-/g, ' ');
           const icon = pin.emoji || '📍';
           const color = CATEGORY_COLORS[Object.keys(PIN_CATEGORIES).length % CATEGORY_COLORS.length] || '#9E9E9E';
@@ -14521,7 +14681,7 @@
     };
 
     // ==================== HOME PAGE COMPONENT ====================
-    const HomePage = ({ collections, pins, onSelectCollection, onCreateCollection, onDeleteCollection, onExportBackup, onImportBackup, onScanForDuplicates, isDarkMode, isMobile }) => {
+    const HomePage = ({ collections, pins, onSelectCollection, onCreateCollection, onDeleteCollection, onExportBackup, onImportBackup, onScanForDuplicates, pinsLoaded = true, isDarkMode, isMobile }) => {
       const [showCreateDialog, setShowCreateDialog] = useState(false);
       const [newCollectionName, setNewCollectionName] = useState('');
       const [showSettings, setShowSettings] = useState(false);
@@ -15132,7 +15292,9 @@
                           </div>
                           <div className="bg-white dark:bg-slate-800 p-4">
                             <p className="text-sm font-medium text-gray-600 dark:text-gray-400">
-                              {stats.pinCount} {stats.pinCount === 1 ? 'place' : 'places'}
+                              {!pinsLoaded && stats.pinCount === 0
+                                ? '…'
+                                : `${stats.pinCount} ${stats.pinCount === 1 ? 'place' : 'places'}`}
                             </p>
                           </div>
                         </button>
@@ -20889,6 +21051,10 @@
         } catch {}
         return [];
       });
+      // Track whether the first Firestore pins snapshot has arrived. Cards on the home
+      // screen show a "…" instead of "0 places" until this flips true, so a slow initial
+      // hydration doesn't look like data loss.
+      const [pinsLoaded, setPinsLoaded] = useState(false);
       const [collections, setCollections] = useState(() => {
         try {
           const saved = JSON.parse(localStorage.getItem('boWanderCollections'));
@@ -20925,6 +21091,7 @@
       const [navigationPin, setNavigationPin] = useState(null);
       const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
       const [showAddFromLink, setShowAddFromLink] = useState(false);
+      const [showGmapsLink, setShowGmapsLink] = useState(false);
       const [showPasteText, setShowPasteText] = useState(false);
       const [toast, setToast] = useState(null); // { message, type, loading }
       const toastTimerRef = useRef(null);
@@ -21223,6 +21390,8 @@
             toResave.forEach(p => { try { MockFirebase.savePin(p); } catch {} });
           }
           setPins(fixed);
+          // Flip loaded=true so collection cards stop showing "loading" indicators
+          setPinsLoaded(true);
         };
         const handleCollectionsSnapshot = (firestoreCols) => setCollections(firestoreCols);
 
@@ -22640,6 +22809,7 @@
               onExportBackup={handleExportBackup}
               onImportBackup={handleImportBackup}
               onScanForDuplicates={handleScanForDuplicates}
+              pinsLoaded={pinsLoaded}
               isDarkMode={darkMode}
               isMobile={isMobile}
             />
@@ -22720,6 +22890,7 @@
                 });
               }}
               onAddFromLink={() => setShowAddFromLink(true)}
+              onFromGoogleMapsLink={() => setShowGmapsLink(true)}
               onPasteText={() => setShowPasteText(true)}
               onUploadConfirmation={() => setShowUploadConfirmation(true)}
               onFromPhoto={() => { if (photoToPinInputRef.current) photoToPinInputRef.current.click(); }}
@@ -23022,6 +23193,39 @@
               pin={navigationPin}
               onClose={() => setNavigationPin(null)}
               isDarkMode={darkMode}
+            />
+          )}
+
+          {/* From Google Maps Link Modal */}
+          {showGmapsLink && (
+            <GoogleMapsLinkModal
+              isDarkMode={darkMode}
+              onClose={() => setShowGmapsLink(false)}
+              onParsed={({ name, lat, lng, sourceUrl }) => {
+                setShowGmapsLink(false);
+                const defaultCollection = activeCollection === 'all' ? collections[0]?.id : activeCollection;
+                // Pan + preview so the user immediately sees where the pin will land
+                if (lat && lng) {
+                  setMapPanTarget({ lat, lng, zoom: 17, _t: Date.now() });
+                  setPreviewPin({ lat, lng, name: name || 'New place', emoji: '📍' });
+                }
+                // Open the Add Place form pre-filled. User reviews + picks a category + saves.
+                setEditingPin({
+                  name: name || '',
+                  address: '',
+                  description: '',
+                  emoji: '📍',
+                  category: 'other',
+                  source_name: 'Google Maps',
+                  source_url: sourceUrl || '',
+                  sources: sourceUrl ? [{ label: 'Google Maps', url: sourceUrl }] : [],
+                  collection_id: defaultCollection,
+                  photos: [],
+                  opening_hours: {},
+                  lat, lng,
+                  google_maps_url: sourceUrl || '',
+                });
+              }}
             />
           )}
 
