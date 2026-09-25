@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v163';
+    const APP_VERSION = 'v164';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -12407,23 +12407,84 @@
       }, []);
 
       // ===== Walking-path drawing mode =====
-      // While pathDraft is non-null, every map click adds a waypoint via onAddWaypoint.
-      // The click handler is detached when drawing mode ends so it doesn't intercept normal taps.
+      // While pathDraft is non-null, every map tap adds a waypoint via onAddWaypoint.
+      // Registers Leaflet 'click' (works on desktop and MOST mobile) AND a native
+      // touchend listener (iOS Safari + Leaflet 1.9 sometimes fails to fire click from
+      // touch alone). A small time-based dedupe stops both handlers from double-firing
+      // on the same tap. Both handlers detach when drawing mode ends.
       useEffect(() => {
         const map = mapInstanceRef.current;
         if (!map) return;
         if (!pathDraft || typeof onAddWaypoint !== 'function') return;
+        const container = map.getContainer();
+        let touchStartXY = null;
+        let lastAddAt = 0;
+        const addAt = (lat, lng) => {
+          const now = Date.now();
+          if (now - lastAddAt < 250) return; // click + touchend fire together on iOS — dedupe
+          lastAddAt = now;
+          onAddWaypoint(lat, lng);
+        };
         const onMapClick = (e) => {
           const lat = e.latlng?.lat, lng = e.latlng?.lng;
           if (typeof lat !== 'number' || typeof lng !== 'number') return;
-          onAddWaypoint(lat, lng);
+          addAt(lat, lng);
+        };
+        const onTouchStart = (e) => {
+          if (e.touches.length !== 1) { touchStartXY = null; return; }
+          touchStartXY = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        };
+        const onTouchEnd = (e) => {
+          if (!touchStartXY || e.changedTouches.length !== 1) { touchStartXY = null; return; }
+          const t = e.changedTouches[0];
+          const dx = t.clientX - touchStartXY.x;
+          const dy = t.clientY - touchStartXY.y;
+          touchStartXY = null;
+          // Move >10px = drag, not a tap. Ignore.
+          if (Math.abs(dx) > 10 || Math.abs(dy) > 10) return;
+          // Convert page coords to lat/lng via the map's container-point mapping.
+          const rect = container.getBoundingClientRect();
+          const point = [t.clientX - rect.left, t.clientY - rect.top];
+          try {
+            const ll = map.containerPointToLatLng(point);
+            addAt(ll.lat, ll.lng);
+          } catch (err) { /* map not ready */ }
+        };
+        // Belt-and-suspenders pointer fallback for the case where Leaflet's click event
+        // doesn't fire (some browser/version combos where a mousedown/mouseup on the
+        // tile layer isn't bubbling up as a Leaflet click). Uses the same drag-vs-tap
+        // heuristic as the touch handlers, plus the same 250ms dedupe.
+        let pointerDownXY = null;
+        const onPointerDown = (e) => {
+          if (e.pointerType === 'touch') return; // covered by touch handlers
+          pointerDownXY = { x: e.clientX, y: e.clientY };
+        };
+        const onPointerUp = (e) => {
+          if (e.pointerType === 'touch') return;
+          if (!pointerDownXY) return;
+          const dx = e.clientX - pointerDownXY.x;
+          const dy = e.clientY - pointerDownXY.y;
+          pointerDownXY = null;
+          if (Math.abs(dx) > 5 || Math.abs(dy) > 5) return; // drag
+          const rect = container.getBoundingClientRect();
+          try {
+            const ll = map.containerPointToLatLng([e.clientX - rect.left, e.clientY - rect.top]);
+            addAt(ll.lat, ll.lng);
+          } catch (err) {}
         };
         map.on('click', onMapClick);
-        // Crosshair cursor signals draw mode without us building a custom one
-        try { map.getContainer().style.cursor = 'crosshair'; } catch (e) {}
+        container.addEventListener('touchstart', onTouchStart, { passive: true });
+        container.addEventListener('touchend', onTouchEnd, { passive: true });
+        container.addEventListener('pointerdown', onPointerDown);
+        container.addEventListener('pointerup', onPointerUp);
+        try { container.style.cursor = 'crosshair'; } catch (e) {}
         return () => {
           try { map.off('click', onMapClick); } catch (e) {}
-          try { map.getContainer().style.cursor = ''; } catch (e) {}
+          try { container.removeEventListener('touchstart', onTouchStart); } catch (e) {}
+          try { container.removeEventListener('touchend', onTouchEnd); } catch (e) {}
+          try { container.removeEventListener('pointerdown', onPointerDown); } catch (e) {}
+          try { container.removeEventListener('pointerup', onPointerUp); } catch (e) {}
+          try { container.style.cursor = ''; } catch (e) {}
         };
       }, [pathDraft, onAddWaypoint]);
 
