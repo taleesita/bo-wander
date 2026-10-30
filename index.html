@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v168';
+    const APP_VERSION = 'v169';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -641,17 +641,37 @@
     const getCartoKey = () => { try { return localStorage.getItem('boWanderCartoKey') || ''; } catch (e) { return ''; } };
     const setCartoKey = (key) => { try { localStorage.setItem('boWanderCartoKey', key || ''); } catch (e) {} };
     // Returns { url, attribution, opts } for the active tile provider.
+    // Sessions-scoped kill switch for Carto: when runtime tile fetches start failing
+    // (bad key, rate-limited, network issue), we flip this so getTileLayerConfig falls
+    // through to MapTiler/OSM for the rest of the session without the user having to
+    // clear their key. Cleared on page reload so transient issues self-heal.
+    const isCartoBroken = () => { try { return sessionStorage.getItem('bwCartoBroken') === '1'; } catch (e) { return false; } };
+    const markCartoBroken = () => {
+      try { sessionStorage.setItem('bwCartoBroken', '1'); } catch (e) {}
+      try { window.dispatchEvent(new CustomEvent('bw-map-lang-change', { detail: { lang: getMapLang(), reason: 'carto-fallback' } })); } catch (e) {}
+    };
+    // Helper to wire tileerror → fallback on a freshly-created Leaflet tile layer.
+    // Only acts when the layer's provider is Carto; after a handful of errors it marks
+    // Carto broken for the session and broadcasts a reload so all maps swap in place.
+    window.attachCartoFallback = (layer, provider) => {
+      if (!layer || provider !== 'carto') return;
+      let errCount = 0;
+      layer.on('tileerror', () => {
+        errCount++;
+        if (errCount >= 3 && !isCartoBroken()) markCartoBroken();
+      });
+    };
     const getTileLayerConfig = (isDark) => {
       const lang = getMapLang();
       const cartoKey = getCartoKey();
-      // Carto Voyager (preferred when a key is set) — the original look. Works for both
-      // local-language and 'en' modes since Voyager labels are English already.
-      if (cartoKey) {
+      // Carto Voyager (preferred when a key is set and not flagged broken this session)
+      if (cartoKey && !isCartoBroken()) {
         const style = isDark ? 'dark_matter' : 'voyager';
         return {
-          url: `https://{s}.basemaps.cartocdn.com/rastertiles/${style}/{z}/{x}/{y}.png?api_key=${encodeURIComponent(cartoKey)}`,
+          url: `https://basemaps.cartocdn.com/rastertiles/${style}/{z}/{x}/{y}.png?key=${encodeURIComponent(cartoKey)}`,
           attribution: '© OpenStreetMap contributors © CARTO',
-          opts: { maxZoom: 20, subdomains: 'abcd' },
+          opts: { maxZoom: 20 },
+          provider: 'carto',
         };
       }
       if (lang === 'en') {
@@ -12498,6 +12518,7 @@
           subdomains: 'abcd',
           ...tileCfg.opts,
         }).addTo(map);
+        if (window.attachCartoFallback) window.attachCartoFallback(tileLayerRef.current, tileCfg.provider);
 
         return () => {
           window.removeEventListener('resize', handleResize);
@@ -12705,6 +12726,7 @@
             subdomains: 'abcd',
             ...tileCfg.opts,
           }).addTo(map);
+          if (window.attachCartoFallback) window.attachCartoFallback(tileLayerRef.current, tileCfg.provider);
         };
         swapTiles();
         window.addEventListener('bw-map-lang-change', swapTiles);
@@ -14900,6 +14922,8 @@
       const [mapTilerSaved, setMapTilerSaved] = useState(false);
       const [cartoKeyInput, setCartoKeyInput] = useState(getCartoKey());
       const [cartoSaved, setCartoSaved] = useState(false);
+      const [cartoError, setCartoError] = useState('');
+      const [cartoTesting, setCartoTesting] = useState(false);
       const backupFileInputRef = useRef(null);
       const [backupBusy, setBackupBusy] = useState(false);
       const [confirmDelete, setConfirmDelete] = useState(null); // collection id to confirm delete
@@ -15312,20 +15336,54 @@
                           className="flex-1 px-3 py-1.5 text-sm border rounded-lg bg-white dark:bg-slate-700 dark:border-slate-600 dark:text-white"
                         />
                         <button
-                          onClick={() => {
-                            setCartoKey(cartoKeyInput.trim());
-                            setCartoSaved(true);
-                            // Broadcast so open maps rebuild their tile layer immediately
-                            try { window.dispatchEvent(new CustomEvent('bw-map-lang-change', { detail: { lang: getMapLang() } })); } catch (e) {}
+                          disabled={cartoTesting}
+                          onClick={async () => {
+                            setCartoError('');
+                            setCartoSaved(false);
+                            const key = cartoKeyInput.trim();
+                            if (!key) {
+                              // Clearing the key — always allow + reset session flag
+                              setCartoKey('');
+                              try { sessionStorage.removeItem('bwCartoBroken'); } catch (e) {}
+                              setCartoSaved(true);
+                              try { window.dispatchEvent(new CustomEvent('bw-map-lang-change', { detail: { lang: getMapLang() } })); } catch (e) {}
+                              return;
+                            }
+                            setCartoTesting(true);
+                            try {
+                              // Test-fetch a tile (zoom 0, 0/0) with the key. A bad key returns
+                              // a 200 with the "API KEY REQUIRED" watermark PNG — detectable by
+                              // small response size (watermark PNG is <5KB; real tiles are 10-80KB).
+                              const testUrl = `https://basemaps.cartocdn.com/rastertiles/voyager/0/0/0.png?key=${encodeURIComponent(key)}`;
+                              const resp = await fetch(testUrl, { cache: 'no-store' });
+                              if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                              const blob = await resp.blob();
+                              if (blob.size < 5000) {
+                                throw new Error('Key not accepted — got watermark tile back. Double-check the key.');
+                              }
+                              setCartoKey(key);
+                              try { sessionStorage.removeItem('bwCartoBroken'); } catch (e) {}
+                              setCartoSaved(true);
+                              try { window.dispatchEvent(new CustomEvent('bw-map-lang-change', { detail: { lang: getMapLang() } })); } catch (e) {}
+                            } catch (err) {
+                              setCartoError(err.message || 'Could not validate key — check your connection and try again.');
+                            } finally {
+                              setCartoTesting(false);
+                            }
                           }}
-                          className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition"
+                          className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition disabled:opacity-50"
                         >
-                          Save
+                          {cartoTesting ? 'Testing…' : 'Save'}
                         </button>
                       </div>
                       {cartoSaved && (
                         <p className="text-xs text-green-600 dark:text-green-400 mt-1">
                           ✓ Saved. Carto Voyager will load on the next map view (or reload the page).
+                        </p>
+                      )}
+                      {cartoError && (
+                        <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                          ✗ {cartoError}
                         </p>
                       )}
                       <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">
@@ -17262,6 +17320,7 @@
 
         const tileCfg = getTileLayerConfig(isDarkMode);
         tileLayerRef.current = window.L.tileLayer(tileCfg.url, { ...tileCfg.opts, attribution: tileCfg.attribution }).addTo(map);
+        if (window.attachCartoFallback) window.attachCartoFallback(tileLayerRef.current, tileCfg.provider);
 
         // Hot-swap tile layer when the lang preference changes — no full re-mount needed.
         const swapTiles = () => {
@@ -17269,6 +17328,7 @@
           if (tileLayerRef.current) try { mapRef.current.removeLayer(tileLayerRef.current); } catch (e) {}
           const cfg = getTileLayerConfig(isDarkMode);
           tileLayerRef.current = window.L.tileLayer(cfg.url, { ...cfg.opts, attribution: cfg.attribution }).addTo(mapRef.current);
+          if (window.attachCartoFallback) window.attachCartoFallback(tileLayerRef.current, cfg.provider);
         };
         window.addEventListener('bw-map-lang-change', swapTiles);
 

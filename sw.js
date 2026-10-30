@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bo-wander-v168';
+const CACHE_NAME = 'bo-wander-v169';
 // Bumped to v2 in v162 so stale Carto "API KEY REQUIRED" placeholder tiles get purged.
 // Bumped to v3 in v168 when Carto Voyager returned as the preferred provider (keyed) —
 // forces OSM/MapTiler cached tiles to clear so users see Carto load immediately.
