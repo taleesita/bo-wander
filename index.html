@@ -453,7 +453,7 @@
     };
 
     // ==================== CONSTANTS ====================
-    const APP_VERSION = 'v167';
+    const APP_VERSION = 'v168';
 
     // Google Places API key — stored in localStorage, set via Settings
     const GOOGLE_PLACES_API_KEY = 'AIzaSyCuc0FLVkdQBRj9B5Fi1RX7vzNTO5VU2sM';
@@ -635,9 +635,25 @@
     // Esri Topo fallback. Free tier: 100k tiles/month, no credit card required.
     const getMapTilerKey = () => { try { return localStorage.getItem('boWanderMapTilerKey') || ''; } catch (e) { return ''; } };
     const setMapTilerKey = (key) => { try { localStorage.setItem('boWanderMapTilerKey', key || ''); } catch (e) {} };
+    // Carto API key — optional. When set, Carto Voyager is preferred over MapTiler
+    // (and over OSM) because its clean, label-rich style was Bo Wander's original look.
+    // Free tier requires only an API key (no approval queue): carto.com/basemaps/apikey/
+    const getCartoKey = () => { try { return localStorage.getItem('boWanderCartoKey') || ''; } catch (e) { return ''; } };
+    const setCartoKey = (key) => { try { localStorage.setItem('boWanderCartoKey', key || ''); } catch (e) {} };
     // Returns { url, attribution, opts } for the active tile provider.
     const getTileLayerConfig = (isDark) => {
       const lang = getMapLang();
+      const cartoKey = getCartoKey();
+      // Carto Voyager (preferred when a key is set) — the original look. Works for both
+      // local-language and 'en' modes since Voyager labels are English already.
+      if (cartoKey) {
+        const style = isDark ? 'dark_matter' : 'voyager';
+        return {
+          url: `https://{s}.basemaps.cartocdn.com/rastertiles/${style}/{z}/{x}/{y}.png?api_key=${encodeURIComponent(cartoKey)}`,
+          attribution: '© OpenStreetMap contributors © CARTO',
+          opts: { maxZoom: 20, subdomains: 'abcd' },
+        };
+      }
       if (lang === 'en') {
         const mtKey = getMapTilerKey();
         if (mtKey) {
@@ -14882,6 +14898,8 @@
       const [apiKeyInput, setApiKeyInput] = useState(getGoogleApiKey());
       const [mapTilerKeyInput, setMapTilerKeyInput] = useState(getMapTilerKey());
       const [mapTilerSaved, setMapTilerSaved] = useState(false);
+      const [cartoKeyInput, setCartoKeyInput] = useState(getCartoKey());
+      const [cartoSaved, setCartoSaved] = useState(false);
       const backupFileInputRef = useRef(null);
       const [backupBusy, setBackupBusy] = useState(false);
       const [confirmDelete, setConfirmDelete] = useState(null); // collection id to confirm delete
@@ -15275,6 +15293,48 @@
                         Free tier: 100k tiles/month, no credit card. Sign up at{' '}
                         <a href="https://www.maptiler.com/cloud/" target="_blank" rel="noopener noreferrer" className="underline text-blue-500">maptiler.com/cloud</a>{' '}
                         → copy the default API key from your dashboard → paste above.
+                      </p>
+                    </div>
+                  </details>
+
+                  <details className="group" open={!getCartoKey()}>
+                    <summary className="flex items-center justify-between cursor-pointer py-2 text-sm font-medium text-gray-700 dark:text-gray-200 hover:text-blue-600 dark:hover:text-blue-400">
+                      <span>🗺️ Carto API Key (original Voyager look)</span>
+                      <span className="text-xs text-gray-400 group-open:rotate-90 transition-transform">▶</span>
+                    </summary>
+                    <div className="pt-2 pb-3 pl-2">
+                      <div className="flex gap-2">
+                        <input
+                          type="password"
+                          value={cartoKeyInput}
+                          onChange={(e) => { setCartoKeyInput(e.target.value); setCartoSaved(false); }}
+                          placeholder="paste Carto key…"
+                          className="flex-1 px-3 py-1.5 text-sm border rounded-lg bg-white dark:bg-slate-700 dark:border-slate-600 dark:text-white"
+                        />
+                        <button
+                          onClick={() => {
+                            setCartoKey(cartoKeyInput.trim());
+                            setCartoSaved(true);
+                            // Broadcast so open maps rebuild their tile layer immediately
+                            try { window.dispatchEvent(new CustomEvent('bw-map-lang-change', { detail: { lang: getMapLang() } })); } catch (e) {}
+                          }}
+                          className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition"
+                        >
+                          Save
+                        </button>
+                      </div>
+                      {cartoSaved && (
+                        <p className="text-xs text-green-600 dark:text-green-400 mt-1">
+                          ✓ Saved. Carto Voyager will load on the next map view (or reload the page).
+                        </p>
+                      )}
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">
+                        When set, Carto Voyager is preferred over MapTiler/OSM — it's the original Bo Wander look (clean, label-rich, light pastels). Dark mode uses Carto Dark Matter.
+                      </p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        Free tier, no approval queue. Request at{' '}
+                        <a href="https://carto.com/basemaps/apikey/" target="_blank" rel="noopener noreferrer" className="underline text-blue-500">carto.com/basemaps/apikey</a>{' '}
+                        → fill the form → key arrives by email → paste above.
                       </p>
                     </div>
                   </details>
